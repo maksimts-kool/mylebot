@@ -10,7 +10,7 @@ A TypeScript service that receives authenticated Roblox presence events, maintai
 - Discord.js publishes live/final embeds and implements `/session` and `/leaderboard` with persistent buttons and modals.
 - Bloxlink lookups are cached on identities. Existing cached links remain usable during an API outage.
 
-All database timestamps are UTC. Report dates are complete calendar days in `REPORT_TIMEZONE` (Tallinn by default): the start is inclusive and the day after the selected end is exclusive. Leaderboards sort and filter on total elapsed time, including inactive and reconnecting time.
+All database timestamps are UTC. Report dates are complete calendar days in `REPORT_TIMEZONE` (Tallinn by default): the start is inclusive and the day after the selected end is exclusive. Leaderboards sort and filter on active plus inactive time; reconnecting gaps are excluded.
 
 ## Discord and Roblox setup
 
@@ -28,11 +28,14 @@ All database timestamps are UTC. Report dates are complete calendar days in `REP
 
 The commands are:
 
-- `/session add`, `edit`, and `remove`: restricted to `DISCORD_ADMIN_ROLE_IDS` (or Discord administrators). All changes produce audit entries.
-- `/session view` and `/leaderboard`: available to configured staff roles, administrators, and eligible Bloxlink-linked staff.
+- `/session add user` opens a form to add a completed session for a Bloxlink-linked Discord user. `/session manage sessionid` shows a completed session with Edit and Remove buttons. Both are restricted to `DISCORD_ADMIN_ROLE_IDS` (or Discord administrators), and all changes produce audit entries.
+- `/session view user` and `/leaderboard`: available to configured staff roles, administrators, and eligible Bloxlink-linked staff.
+- Live sessions cannot be edited or removed through `/session manage`.
 - Live session messages expose Join Server, View History, and Refresh controls. Ended messages remove Join Server and add calendar-year total and previous-session information.
 
 Manual durations accept values such as `2h 15m 30s`; active plus inactive must exactly equal end minus start. ISO timestamps such as `2026-07-11T12:00:00+03:00` are accepted.
+
+Automatic inactivity is set in the server-only Roblox `SessionTrackerConfig` module: `InactiveSeconds = 300` by default. After that much time without client input or verified character movement, the next `HeartbeatSeconds` check (30 seconds by default) records the player as inactive. The backend `.env` does not control this threshold.
 
 ## Local Docker workflow
 
@@ -97,10 +100,10 @@ npm run typecheck
 npm run build
 ```
 
-The focused unit tests cover state overlap, reconnect-as-inactive accounting, manual duration invariants, inclusive rank limits, configured IDs, stale timestamps, Tallinn DST day boundaries, minimum filtering, and total-time leaderboard ordering. Database/Discord integration tests require disposable PostgreSQL and Discord test credentials; use the simulator and deployment checklist for those external flows.
+The focused unit tests cover state overlap, reconnect-excluded accounting, manual duration invariants, inclusive rank limits, configured IDs, stale timestamps, Tallinn DST day boundaries, minimum filtering, and total-time leaderboard ordering. Database/Discord integration tests require disposable PostgreSQL and Discord test credentials; use the simulator and deployment checklist for those external flows.
 
 ## Ingestion contract
 
 `POST /v1/roblox/presence/batch` requires `Authorization: Bearer <ROBLOX_INGESTION_SECRET>` and JSON `{ "events": [...] }`. Each event contains a UUID `eventId`, `JOIN|HEARTBEAT|LEAVE|SHUTDOWN`, an offset-bearing ISO timestamp, universe/place/job IDs, and a player snapshot. Accepted event IDs are persisted; retries are safe. Events older than the configured age or older than the session's latest event are not applied.
 
-Sessions enter Reconnecting after leave, shutdown, or heartbeat loss. Rejoining any configured place before the two-minute default deadline reuses the same session and message, updates the join target, and counts the gap as inactive. On restart, the service sweeps stale sessions and restores unfinished Discord messages using the same rules.
+Sessions enter Reconnecting after leave, shutdown, or heartbeat loss. Rejoining any configured place before the two-minute default deadline reuses the same session and message and updates the join target; the reconnecting gap is not counted as active or inactive time. On restart, the service sweeps stale sessions and restores unfinished Discord messages using the same rules.

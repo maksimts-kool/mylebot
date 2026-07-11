@@ -18,7 +18,7 @@ export function totalsForPeriod(
   for (const segment of segments) {
     const milliseconds = overlapMilliseconds(segment.startedAt, segment.endedAt ?? now, periodStart, periodEnd);
     if (segment.state === "ACTIVE") activeMs += milliseconds;
-    if (segment.state === "INACTIVE" || segment.state === "RECONNECTING") inactiveMs += milliseconds;
+    if (segment.state === "INACTIVE") inactiveMs += milliseconds;
   }
   return { activeMs, inactiveMs, totalMs: activeMs + inactiveMs };
 }
@@ -37,4 +37,3 @@ export function assertDurationInvariant(start: Date, end: Date, activeMs: number
     throw new Error("Active plus inactive time must equal the session duration");
   }
 }
-

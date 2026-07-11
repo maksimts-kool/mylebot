@@ -24,7 +24,6 @@ const schema = z.object({
   API_PORT: int(3000),
   TRUST_PROXY: z.enum(["false", "loopback"]).default("loopback"),
   REPORT_TIMEZONE: z.string().default("Europe/Tallinn"),
-  INACTIVITY_SECONDS: int(300),
   RECONNECT_GRACE_SECONDS: int(120),
   HEARTBEAT_STALE_SECONDS: int(75),
   DISCORD_UPDATE_SECONDS: int(60),
@@ -44,4 +43,3 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   return parsed;
 }
-

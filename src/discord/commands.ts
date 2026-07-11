@@ -16,29 +16,12 @@ type Db = typeof database;
 
 export const commandData = [
   new SlashCommandBuilder().setName("session").setDescription("Manage staff sessions")
-    .addSubcommand((s) => s.setName("add").setDescription("Add a completed session")
-      .addStringOption((o) => o.setName("start").setDescription("When the session started (ISO date and time)").setRequired(true))
-      .addStringOption((o) => o.setName("end").setDescription("When the session ended (ISO date and time)").setRequired(true))
-      .addStringOption((o) => o.setName("active").setDescription("Active time, for example 2h 15m").setRequired(true))
-      .addStringOption((o) => o.setName("inactive").setDescription("Inactive time, for example 10m").setRequired(true))
-      .addStringOption((o) => o.setName("note").setDescription("Why this session is being added").setRequired(true))
-      .addUserOption((o) => o.setName("member").setDescription("Linked Discord member"))
-      .addStringOption((o) => o.setName("roblox_username").setDescription("Roblox username")))
-    .addSubcommand((s) => s.setName("edit").setDescription("Correct a session")
-      .addStringOption((o) => o.setName("session_id").setDescription("Session ID").setRequired(true))
-      .addStringOption((o) => o.setName("start").setDescription("Corrected start date and time"))
-      .addStringOption((o) => o.setName("end").setDescription("Corrected end date and time (completed sessions only)"))
-      .addStringOption((o) => o.setName("active").setDescription("Corrected active time, for example 2h 15m"))
-      .addStringOption((o) => o.setName("inactive").setDescription("Corrected inactive time, for example 10m"))
-      .addStringOption((o) => o.setName("roblox_username").setDescription("Corrected Roblox username"))
-      .addIntegerOption((o) => o.setName("rank_number").setDescription("Corrected Roblox group rank").setMinValue(0).setMaxValue(255))
-      .addStringOption((o) => o.setName("rank_name").setDescription("Corrected Roblox group role name"))
-      .addStringOption((o) => o.setName("note").setDescription("Why this session is being corrected")))
-    .addSubcommand((s) => s.setName("remove").setDescription("Remove a session").addStringOption((o) => o.setName("session_id").setDescription("Session ID").setRequired(true)))
-    .addSubcommand((s) => s.setName("view").setDescription("View session history")
-      .addStringOption((o) => o.setName("session_id").setDescription("Session ID"))
-      .addUserOption((o) => o.setName("member").setDescription("Discord member"))
-      .addStringOption((o) => o.setName("roblox_username").setDescription("Roblox username"))),
+    .addSubcommand((s) => s.setName("view").setDescription("📚 View a user's session history")
+      .addUserOption((o) => o.setName("user").setDescription("Discord user").setRequired(true)))
+    .addSubcommand((s) => s.setName("manage").setDescription("🛠️ Manage a completed session")
+      .addStringOption((o) => o.setName("sessionid").setDescription("Completed session ID").setRequired(true)))
+    .addSubcommand((s) => s.setName("add").setDescription("➕ Add a completed session")
+      .addUserOption((o) => o.setName("user").setDescription("Discord user").setRequired(true))),
   new SlashCommandBuilder().setName("leaderboard").setDescription("Show the staff leaderboard")
     .addStringOption((o) => o.setName("period").setDescription("Reporting period (defaults to this month)")
       .addChoices(
@@ -140,144 +123,50 @@ export class CommandHandler {
       await this.renderLeaderboard(interaction, startDate, endDate, 0, 0); return;
     }
     const action = interaction.options.getSubcommand();
-    if (["add", "edit", "remove"].includes(action) && !this.isAdmin(interaction)) throw new Error("Administrator role required");
+    if (["add", "manage"].includes(action) && !this.isAdmin(interaction)) throw new Error("Administrator role required");
     if (action === "view" && !await this.canReport(interaction)) throw new Error("You do not have permission to view history");
-    if (action === "add") await this.addSessionFromCommand(interaction);
-    if (action === "edit") await this.editSessionFromCommand(interaction);
-    if (action === "remove") await this.showRemove(interaction);
+    if (action === "add") await this.showAdd(interaction);
+    if (action === "manage") await this.showManage(interaction);
     if (action === "view") await this.showView(interaction);
   }
 
-  private async addSessionFromCommand(interaction: ChatInputCommandInteraction): Promise<void> {
-    const member = interaction.options.getUser("member");
-    const username = interaction.options.getString("roblox_username");
-    if (Boolean(member) === Boolean(username)) throw new Error("Choose exactly one Discord member or Roblox username");
-    const start = parseInstant(interaction.options.getString("start", true));
-    const end = parseInstant(interaction.options.getString("end", true));
-    const active = parseDuration(interaction.options.getString("active", true));
-    const inactive = parseDuration(interaction.options.getString("inactive", true));
-    const note = interaction.options.getString("note", true);
-    assertDurationInvariant(start, end, active, inactive);
-
-    let userId: bigint;
-    let robloxUsername: string;
-    let discordUserId: string | null = null;
-    if (member) {
-      const mapped = await this.bloxlink.robloxForDiscord(member.id);
-      if (!mapped) throw new Error("That Discord member has no Bloxlink mapping");
-      userId = mapped.userId;
-      robloxUsername = mapped.username;
-      discordUserId = member.id;
-    } else {
-      const response = await fetch("https://users.roblox.com/v1/usernames/users", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ usernames: [username], excludeBannedUsers: true }),
-      });
-      if (!response.ok) throw new Error("Roblox username lookup failed");
-      const body = await response.json() as { data?: Array<{ id: number; name: string }> };
-      const found = body.data?.[0];
-      if (!found) throw new Error("Roblox user not found");
-      userId = BigInt(found.id);
-      robloxUsername = found.name;
-    }
-    const identity = await this.db.identity.upsert({
-      where: { robloxUserId: userId },
-      create: { robloxUserId: userId, robloxUsername, discordUserId },
-      update: { robloxUsername, ...(discordUserId ? { discordUserId } : {}) },
-    });
-    const session = await this.db.$transaction(async (tx) => {
-      const created = await tx.session.create({ data: {
-        identityId: identity.id, state: "ENDED", startedAt: start, endedAt: end, lastEventAt: end, lastStateAt: end,
-        activeMilliseconds: BigInt(active), inactiveMilliseconds: BigInt(inactive), rankNumber: this.config.ROBLOX_MIN_RANK,
-        rankName: "Manual entry", universeId: this.config.ROBLOX_UNIVERSE_ID, placeId: this.config.ROBLOX_ALLOWED_PLACE_IDS[0]!, jobId: "manual",
-      } });
-      const activeEnd = new Date(start.getTime() + active);
-      if (active) await tx.timeSegment.create({ data: { sessionId: created.id, state: "ACTIVE", startedAt: start, endedAt: activeEnd } });
-      if (inactive) await tx.timeSegment.create({ data: { sessionId: created.id, state: "INACTIVE", startedAt: activeEnd, endedAt: end } });
-      await tx.auditEntry.create({ data: { sessionId: created.id, actorType: "DISCORD", actorId: interaction.user.id, action: "SESSION_ADD", note } });
-      return created;
-    });
-    await this.publisher.refresh(session.id);
-    await interaction.reply({
-      embeds: [new EmbedBuilder().setTitle("Session added").setDescription(`A completed session was added for **${robloxUsername}**.`).addFields(
-        { name: "When", value: `<t:${Math.floor(start.getTime()/1000)}:f> to <t:${Math.floor(end.getTime()/1000)}:t>` },
-        { name: "Time recorded", value: `${friendlyDuration(active)} active · ${friendlyDuration(inactive)} inactive` },
-        { name: "Session ID", value: `\`${session.id}\`` },
-      )],
-      flags: MessageFlags.Ephemeral,
-    });
+  private async showAdd(interaction: ChatInputCommandInteraction): Promise<void> {
+    const user = interaction.options.getUser("user", true);
+    const mapped = await this.bloxlink.robloxForDiscord(user.id);
+    if (!mapped) throw new Error("That Discord user has no Bloxlink mapping");
+    const modal = new ModalBuilder().setCustomId(`add:${user.id}`).setTitle("➕ Add completed session").addComponents(
+      input("start", "Start (ISO date and time)"), input("end", "End (ISO date and time)"),
+      input("active", "Active time (example: 2h 15m)"), input("inactive", "Inactive time (example: 10m)"),
+      input("note", "Reason for adding this session"),
+    );
+    await interaction.showModal(modal);
   }
 
-  private async editSessionFromCommand(interaction: ChatInputCommandInteraction): Promise<void> {
-    const id = interaction.options.getString("session_id", true);
-    const current = await this.db.session.findUnique({ where: { id }, include: { identity: true } });
-    if (!current || current.deletedAt) throw new Error("Session not found");
-    const username = interaction.options.getString("roblox_username") ?? current.identity.robloxUsername;
-    const rankNumber = interaction.options.getInteger("rank_number") ?? current.rankNumber;
-    const rankName = interaction.options.getString("rank_name") ?? current.rankName;
-    const note = interaction.options.getString("note") ?? "Session corrected by an administrator";
-    const start = interaction.options.getString("start") ? parseInstant(interaction.options.getString("start", true)) : current.startedAt;
-
-    if (current.state !== "ENDED") {
-      if (interaction.options.getString("end") || interaction.options.getString("active") || interaction.options.getString("inactive")) {
-        throw new Error("Live session counters cannot be edited directly");
-      }
-      if (start >= current.lastStateAt) throw new Error("Start must be before the latest session update");
-      await this.db.$transaction([
-        this.db.identity.update({ where: { id: current.identityId }, data: { robloxUsername: username } }),
-        this.db.session.update({ where: { id }, data: { startedAt: start, rankNumber, rankName } }),
-        this.db.timeSegment.updateMany({ where: { sessionId: id, startedAt: current.startedAt }, data: { startedAt: start } }),
-        this.db.auditEntry.create({ data: { sessionId: id, actorType: "DISCORD", actorId: interaction.user.id, action: "SESSION_EDIT_LIVE", note } }),
-      ]);
-    } else {
-      const end = interaction.options.getString("end") ? parseInstant(interaction.options.getString("end", true)) : current.endedAt!;
-      const active = interaction.options.getString("active") ? parseDuration(interaction.options.getString("active", true)) : Number(current.activeMilliseconds);
-      const inactive = interaction.options.getString("inactive") ? parseDuration(interaction.options.getString("inactive", true)) : Number(current.inactiveMilliseconds + current.reconnectMilliseconds);
-      assertDurationInvariant(start, end, active, inactive);
-      await this.db.$transaction(async (tx) => {
-        await tx.identity.update({ where: { id: current.identityId }, data: { robloxUsername: username } });
-        await tx.timeSegment.deleteMany({ where: { sessionId: id } });
-        const activeEnd = new Date(start.getTime() + active);
-        if (active) await tx.timeSegment.create({ data: { sessionId: id, state: "ACTIVE", startedAt: start, endedAt: activeEnd } });
-        if (inactive) await tx.timeSegment.create({ data: { sessionId: id, state: "INACTIVE", startedAt: activeEnd, endedAt: end } });
-        await tx.session.update({ where: { id }, data: { startedAt: start, endedAt: end, lastEventAt: end, lastStateAt: end, activeMilliseconds: BigInt(active), inactiveMilliseconds: BigInt(inactive), reconnectMilliseconds: 0, rankNumber, rankName } });
-        await tx.auditEntry.create({ data: { sessionId: id, actorType: "DISCORD", actorId: interaction.user.id, action: "SESSION_EDIT_ENDED", note } });
-      });
-    }
-    await this.publisher.refresh(id);
-    await interaction.reply({
-      embeds: [new EmbedBuilder().setTitle("Session updated").setDescription(`The session for **${username}** was corrected successfully.`).addFields({ name: "Session ID", value: `\`${id}\`` })],
-      flags: MessageFlags.Ephemeral,
-    });
-  }
-
-  private async showRemove(interaction: ChatInputCommandInteraction): Promise<void> {
-    const id = interaction.options.getString("session_id", true);
+  private async showManage(interaction: ChatInputCommandInteraction): Promise<void> {
+    const id = interaction.options.getString("sessionid", true);
     const session = await this.db.session.findUnique({ where: { id }, include: { identity: true } });
     if (!session || session.deletedAt) throw new Error("Session not found");
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId(`remove:${id}`).setStyle(ButtonStyle.Danger).setLabel("Permanently hide from statistics"),
-      new ButtonBuilder().setCustomId("cancel").setStyle(ButtonStyle.Secondary).setLabel("Cancel"),
+    if (session.state !== "ENDED") throw new Error("Live sessions cannot be managed");
+    const totals = Number(session.activeMilliseconds) + Number(session.inactiveMilliseconds);
+    const embed = new EmbedBuilder().setTitle("🛠️ Manage completed session").setDescription(`Manage the completed session for **${session.identity.robloxUsername}**.`).addFields(
+      { name: "👤 Staff", value: session.identity.discordUserId ? `<@${session.identity.discordUserId}>` : "No linked Discord user", inline: true },
+      { name: "🗓️ When", value: `<t:${Math.floor(session.startedAt.getTime() / 1000)}:f> to <t:${Math.floor(session.endedAt!.getTime() / 1000)}:f>`, inline: false },
+      { name: "⏱️ Recorded time", value: `${friendlyDuration(totals)} total · ${friendlyDuration(Number(session.activeMilliseconds))} active`, inline: false },
+      { name: "🆔 Session ID", value: `\`${session.id}\`` },
     );
-    await interaction.reply({ content: `Remove session **${id}** for **${session.identity.robloxUsername}**? The audit record will be retained.`, components: [row], flags: MessageFlags.Ephemeral });
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId(`editended:${id}`).setStyle(ButtonStyle.Primary).setLabel("Edit").setEmoji("✏️"),
+      new ButtonBuilder().setCustomId(`remove:${id}`).setStyle(ButtonStyle.Danger).setLabel("Remove").setEmoji("🗑️"),
+      new ButtonBuilder().setCustomId("cancel").setStyle(ButtonStyle.Secondary).setLabel("Close").setEmoji("✖️"),
+    );
+    await interaction.reply({ embeds: [embed], components: [row], flags: MessageFlags.Ephemeral });
   }
 
   private async showView(interaction: ChatInputCommandInteraction): Promise<void> {
-    const sessionId = interaction.options.getString("session_id");
-    const member = interaction.options.getUser("member");
-    const username = interaction.options.getString("roblox_username");
-    const supplied = [sessionId, member, username].filter(Boolean);
-    if (supplied.length !== 1) throw new Error("Choose exactly one lookup field");
-    if (sessionId) {
-      const session = await this.db.session.findUnique({ where: { id: sessionId } });
-      if (!session || session.deletedAt) throw new Error("Session not found");
-      await this.replyHistory(interaction, session.identityId, 0); return;
-    }
-    let identity = member
-      ? await this.db.identity.findFirst({ where: { discordUserId: member.id } })
-      : await this.db.identity.findFirst({ where: { robloxUsername: { equals: username!, mode: "insensitive" } } });
-    if (!identity && member) {
-      const mapped = await this.bloxlink.robloxForDiscord(member.id);
+    const user = interaction.options.getUser("user", true);
+    let identity = await this.db.identity.findFirst({ where: { discordUserId: user.id } });
+    if (!identity) {
+      const mapped = await this.bloxlink.robloxForDiscord(user.id);
       if (mapped) identity = await this.db.identity.findUnique({ where: { robloxUserId: mapped.userId } });
     }
     if (!identity) throw new Error("Identity not found");
@@ -286,31 +175,25 @@ export class CommandHandler {
 
   private async handleModal(interaction: ModalSubmitInteraction): Promise<void> {
     if (interaction.customId.startsWith("add:")) await this.addSession(interaction);
-    else if (interaction.customId.startsWith("editlive:")) await this.editLive(interaction);
     else if (interaction.customId.startsWith("editended:")) await this.editEnded(interaction);
   }
 
   private async addSession(interaction: ModalSubmitInteraction): Promise<void> {
+    if (!this.isAdmin(interaction)) throw new Error("Administrator role required");
     const start = parseInstant(interaction.fields.getTextInputValue("start"));
     const end = parseInstant(interaction.fields.getTextInputValue("end"));
     const active = parseDuration(interaction.fields.getTextInputValue("active"));
     const inactive = parseDuration(interaction.fields.getTextInputValue("inactive"));
     assertDurationInvariant(start, end, active, inactive);
-    const parts = interaction.customId.slice(4).split(":");
-    let userId: bigint;
-    let username: string;
-    let discordUserId: string | undefined;
-    if (parts[0] === "id") {
-      userId = BigInt(parts[1]!); username = decodeURIComponent(parts[2]!); discordUserId = parts[3];
-    } else {
-      username = parts.slice(1).join(":");
-      const response = await fetch(`https://users.roblox.com/v1/usernames/users`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ usernames: [username], excludeBannedUsers: true }) });
-      if (!response.ok) throw new Error("Roblox username lookup failed");
-      const body = await response.json() as { data?: Array<{ id: number; name: string }> };
-      const found = body.data?.[0]; if (!found) throw new Error("Roblox user not found");
-      userId = BigInt(found.id); username = found.name;
-    }
-    const identity = await this.db.identity.upsert({ where: { robloxUserId: userId }, create: { robloxUserId: userId, robloxUsername: username, discordUserId: discordUserId ?? null }, update: { robloxUsername: username, ...(discordUserId ? { discordUserId } : {}) } });
+    const discordUserId = interaction.customId.slice(4);
+    const mapped = await this.bloxlink.robloxForDiscord(discordUserId);
+    if (!mapped) throw new Error("That Discord user has no Bloxlink mapping");
+    const username = mapped.username;
+    const identity = await this.db.identity.upsert({
+      where: { robloxUserId: mapped.userId },
+      create: { robloxUserId: mapped.userId, robloxUsername: username, discordUserId },
+      update: { robloxUsername: username, discordUserId },
+    });
     const session = await this.db.$transaction(async (tx) => {
       const created = await tx.session.create({ data: {
         identityId: identity.id, state: "ENDED", startedAt: start, endedAt: end, lastEventAt: end, lastStateAt: end,
@@ -324,40 +207,53 @@ export class CommandHandler {
       return created;
     });
     await this.publisher.refresh(session.id);
-    await interaction.reply({ content: `Created session ${session.id}.`, flags: MessageFlags.Ephemeral });
-  }
-
-  private async editLive(interaction: ModalSubmitInteraction): Promise<void> {
-    const id = interaction.customId.slice("editlive:".length);
-    const current = await this.db.session.findUnique({ where: { id }, include: { identity: true } });
-    if (!current || current.state === "ENDED" || current.deletedAt) throw new Error("Live session not found");
-    const start = parseInstant(interaction.fields.getTextInputValue("start"));
-    if (start >= current.lastStateAt) throw new Error("Start must be before the last state update");
-    const rankNumber = Number(interaction.fields.getTextInputValue("rankNumber"));
-    if (!Number.isInteger(rankNumber) || rankNumber < 0 || rankNumber > 255) throw new Error("Rank number must be an integer from 0 to 255");
-    await this.db.$transaction([
-      this.db.identity.update({ where: { id: current.identityId }, data: { robloxUsername: interaction.fields.getTextInputValue("username") } }),
-      this.db.session.update({ where: { id }, data: { startedAt: start, rankNumber, rankName: interaction.fields.getTextInputValue("rankName") } }),
-      this.db.timeSegment.updateMany({ where: { sessionId: id, startedAt: current.startedAt }, data: { startedAt: start } }),
-      this.db.auditEntry.create({ data: { sessionId: id, actorType: "DISCORD", actorId: interaction.user.id, action: "SESSION_EDIT_LIVE", note: interaction.fields.getTextInputValue("note") } }),
-    ]);
-    await this.publisher.refresh(id); await interaction.reply({ content: "Live session updated.", flags: MessageFlags.Ephemeral });
+    await interaction.reply({
+      embeds: [new EmbedBuilder().setTitle("✅ Session added").setDescription(`A completed session was added for **${username}**.`).addFields(
+        { name: "🗓️ When", value: `<t:${Math.floor(start.getTime() / 1000)}:f> to <t:${Math.floor(end.getTime() / 1000)}:t>` },
+        { name: "⏱️ Time recorded", value: `${friendlyDuration(active)} active · ${friendlyDuration(inactive)} inactive` },
+        { name: "🆔 Session ID", value: `\`${session.id}\`` },
+      )],
+      flags: MessageFlags.Ephemeral,
+    });
   }
 
   private async editEnded(interaction: ModalSubmitInteraction): Promise<void> {
+    if (!this.isAdmin(interaction)) throw new Error("Administrator role required");
     const id = interaction.customId.slice("editended:".length);
     const start = parseInstant(interaction.fields.getTextInputValue("start")); const end = parseInstant(interaction.fields.getTextInputValue("end"));
     const active = parseDuration(interaction.fields.getTextInputValue("active")); const inactive = parseDuration(interaction.fields.getTextInputValue("inactive"));
-    assertDurationInvariant(start, end, active, inactive);
     const current = await this.db.session.findUnique({ where: { id } }); if (!current || current.state !== "ENDED" || current.deletedAt) throw new Error("Completed session not found");
+    const reconnect = Number(current.reconnectMilliseconds);
+    assertDurationInvariant(start, end, active, inactive + reconnect);
     await this.db.$transaction(async (tx) => {
       await tx.timeSegment.deleteMany({ where: { sessionId: id } }); const activeEnd = new Date(start.getTime() + active);
       if (active) await tx.timeSegment.create({ data: { sessionId: id, state: "ACTIVE", startedAt: start, endedAt: activeEnd } });
-      if (inactive) await tx.timeSegment.create({ data: { sessionId: id, state: "INACTIVE", startedAt: activeEnd, endedAt: end } });
-      await tx.session.update({ where: { id }, data: { startedAt: start, endedAt: end, lastEventAt: end, lastStateAt: end, activeMilliseconds: BigInt(active), inactiveMilliseconds: BigInt(inactive), reconnectMilliseconds: 0 } });
+      const inactiveEnd = new Date(activeEnd.getTime() + inactive);
+      if (inactive) await tx.timeSegment.create({ data: { sessionId: id, state: "INACTIVE", startedAt: activeEnd, endedAt: inactiveEnd } });
+      if (reconnect) await tx.timeSegment.create({ data: { sessionId: id, state: "RECONNECTING", startedAt: inactiveEnd, endedAt: end } });
+      await tx.session.update({ where: { id }, data: { startedAt: start, endedAt: end, lastEventAt: end, lastStateAt: end, activeMilliseconds: BigInt(active), inactiveMilliseconds: BigInt(inactive), reconnectMilliseconds: BigInt(reconnect) } });
       await tx.auditEntry.create({ data: { sessionId: id, actorType: "DISCORD", actorId: interaction.user.id, action: "SESSION_EDIT_ENDED", note: interaction.fields.getTextInputValue("note") } });
     });
-    await this.publisher.refresh(id); await interaction.reply({ content: "Completed session updated.", flags: MessageFlags.Ephemeral });
+    await this.publisher.refresh(id);
+    await interaction.reply({
+      embeds: [new EmbedBuilder().setTitle("✅ Session updated").setDescription("The completed session was updated successfully.").addFields({ name: "🆔 Session ID", value: `\`${id}\`` })],
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  private async showEditEndedModal(interaction: ButtonInteraction, id: string): Promise<void> {
+    if (!this.isAdmin(interaction)) throw new Error("Administrator role required");
+    const session = await this.db.session.findUnique({ where: { id } });
+    if (!session || session.deletedAt) throw new Error("Session not found");
+    if (session.state !== "ENDED") throw new Error("Live sessions cannot be managed");
+    const modal = new ModalBuilder().setCustomId(`editended:${id}`).setTitle("✏️ Edit completed session").addComponents(
+      input("start", "Start (ISO date and time)", session.startedAt.toISOString()),
+      input("end", "End (ISO date and time)", session.endedAt!.toISOString()),
+      input("active", "Active time (example: 2h 15m)", formatDuration(session.activeMilliseconds)),
+      input("inactive", "Inactive time (example: 10m)", formatDuration(session.inactiveMilliseconds)),
+      input("note", "Reason for this edit"),
+    );
+    await interaction.showModal(modal);
   }
 
   private async handleButton(interaction: ButtonInteraction): Promise<void> {
@@ -370,13 +266,16 @@ export class CommandHandler {
       const [, startDate, endDate, minimum, page] = interaction.customId.split(":");
       await this.renderLeaderboard(interaction, startDate!, endDate!, Number(minimum), Number(page)); return;
     }
+    if (interaction.customId.startsWith("editended:")) {
+      await this.showEditEndedModal(interaction, interaction.customId.slice("editended:".length)); return;
+    }
     if (interaction.customId.startsWith("remove:")) {
       if (!this.isAdmin(interaction)) throw new Error("Administrator role required"); const id = interaction.customId.slice(7);
       const current = await this.db.session.findUnique({ where: { id } }); if (!current || current.deletedAt) throw new Error("Session not found");
+      if (current.state !== "ENDED") throw new Error("Live sessions cannot be managed");
       const now = new Date();
       await this.db.$transaction(async (tx) => {
-        if (current.state !== "ENDED") { await tx.timeSegment.updateMany({ where: { sessionId: id, endedAt: null }, data: { endedAt: now } }); }
-        await tx.session.update({ where: { id }, data: { state: "ENDED", endedAt: current.endedAt ?? now, deletedAt: now, reconnectDeadline: null } });
+        await tx.session.update({ where: { id }, data: { deletedAt: now } });
         await tx.auditEntry.create({ data: { sessionId: id, actorType: "DISCORD", actorId: interaction.user.id, action: "SESSION_REMOVE" } });
       });
       await this.publisher.refresh(id, true);
@@ -397,14 +296,15 @@ export class CommandHandler {
       const timing = session.endedAt
         ? `Started <t:${Math.floor(session.startedAt.getTime()/1000)}:f> and ended <t:${Math.floor(session.endedAt.getTime()/1000)}:R>`
         : `Started <t:${Math.floor(session.startedAt.getTime()/1000)}:R>`;
-      return `**${state}**\n${timing}\n${friendlyDuration(totals.totalMs)} total · ${friendlyDuration(totals.activeMs)} active · ${friendlyDuration(totals.inactiveMs)} inactive\nSession ID: \`${session.id}\``;
+      const icon = session.state === "ENDED" ? "✅" : session.state === "ACTIVE" ? "🟢" : session.state === "INACTIVE" ? "🟡" : "🔵";
+      return `${icon} **${state}**\n🗓️ ${timing}\n⏱️ ${friendlyDuration(totals.totalMs)} total · ${friendlyDuration(totals.activeMs)} active · ${friendlyDuration(totals.inactiveMs)} inactive\n🆔 Session ID: \`${session.id}\``;
     }).join("\n\n");
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId(`historypage:${identityId}:${page-1}`).setLabel("Previous").setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
       new ButtonBuilder().setCustomId(`historypage:${identityId}:${page+1}`).setLabel("Next").setStyle(ButtonStyle.Secondary).setDisabled((page+1)*pageSize >= count),
     );
     const response = {
-      embeds: [new EmbedBuilder().setTitle("Session history").setDescription(`${owner}\n\n${description}`).setFooter({ text: `Page ${page+1} of ${Math.max(1, Math.ceil(count/pageSize))}` })],
+      embeds: [new EmbedBuilder().setTitle("📚 Session history").setDescription(`👤 ${owner}\n\n${description}`).setFooter({ text: `Page ${page+1} of ${Math.max(1, Math.ceil(count/pageSize))}` })],
       components: [row],
     };
     if (interaction.isButton()) await interaction.update(response);
@@ -434,23 +334,23 @@ export class CommandHandler {
     const ranking = pageRows.map((row, index) => {
       const place = page * 10 + index + 1;
       const marker = (["🥇", "🥈", "🥉"] as const)[place - 1] ?? `**${place}.**`;
-      return `${marker} **${row.username}**\n> ${friendlyDuration(row.totals.totalMs)} total · ${friendlyDuration(row.totals.activeMs)} active`;
+      return `${marker} **${row.username}**\n⏱️ ${friendlyDuration(row.totals.totalMs)} total · ${friendlyDuration(row.totals.activeMs)} active`;
     }).join("\n\n");
     const description = ranking
-      ? `Here’s how the team ranks for **${period}**.\n\n${ranking}`
-      : `No one has logged any time during **${period}** yet.`;
+      ? `🗓️ **Period:** ${period}\n\n${ranking}`
+      : `🗓️ **Period:** ${period}\n\n👥 No one has logged any time yet.`;
     const components: Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>> = [];
-    if (pageRows.length) components.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(new StringSelectMenuBuilder().setCustomId("leaderboard-user").setPlaceholder("Choose someone to view their history").addOptions(pageRows.map((row) => ({ label: row.username.split(" · ")[0]!.slice(0,100), value: row.identityId })))));
+    if (pageRows.length) components.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(new StringSelectMenuBuilder().setCustomId("leaderboard-user").setPlaceholder("👤 View a user's session history").addOptions(pageRows.map((row) => ({ label: row.username.split(" · ")[0]!.slice(0,100), value: row.identityId })))));
     components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId(`leaderboard:${startDate}:${endDate}:${minimum}:${page-1}`).setLabel("Previous").setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
-      new ButtonBuilder().setCustomId(`leaderboard:${startDate}:${endDate}:${minimum}:${page}`).setLabel("Refresh").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`leaderboard:${startDate}:${endDate}:${minimum}:${page+1}`).setLabel("Next").setStyle(ButtonStyle.Secondary).setDisabled((page+1)*10 >= rows.length),
+      new ButtonBuilder().setCustomId(`leaderboard:${startDate}:${endDate}:${minimum}:${page-1}`).setLabel("Previous").setEmoji("◀️").setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+      new ButtonBuilder().setCustomId(`leaderboard:${startDate}:${endDate}:${minimum}:${page}`).setLabel("Refresh").setEmoji("🔄").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`leaderboard:${startDate}:${endDate}:${minimum}:${page+1}`).setLabel("Next").setEmoji("▶️").setStyle(ButtonStyle.Secondary).setDisabled((page+1)*10 >= rows.length),
     ));
     const response = {
       embeds: [new EmbedBuilder()
-        .setTitle("Staff leaderboard")
+        .setTitle("🏆 Staff leaderboard")
         .setDescription(description)
-        .setFooter({ text: `Page ${page+1} of ${Math.max(1, Math.ceil(rows.length/10))} · Total time includes inactive and reconnecting time` })],
+        .setFooter({ text: `Page ${page+1} of ${Math.max(1, Math.ceil(rows.length/10))} · Total time includes inactive time; reconnecting gaps are excluded` })],
       components,
     };
     if (interaction.isButton()) await interaction.update(response);
