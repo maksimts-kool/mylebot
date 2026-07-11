@@ -14,7 +14,6 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "simulate": "tsx scripts/simulate.ts",
-    "roblox:installer": "tsx scripts/build-roblox-installer.ts",
     "commands:deploy": "tsx scripts/deploy-commands.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",

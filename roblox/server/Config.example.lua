@@ -1,5 +1,5 @@
--- Copy this file to SessionTrackerConfig.lua and fill in the server-only values.
--- SessionTrackerConfig.lua is gitignored because it contains the ingestion secret.
+-- Copy this to Config.lua and fill in the server-only values.
+-- Config.lua is gitignored because it contains the ingestion secret.
 return {
 	IngestionBaseUrl = "https://sessions.example.com",
 	IngestionSecret = "REPLACE_WITH_THE_SAME_RANDOM_SECRET_AS_THE_BACKEND",

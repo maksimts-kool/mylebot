@@ -4,5 +4,6 @@ dist/
 coverage/
 *.log
 roblox/SessionTrackerConfig.lua
+roblox/server/Config.lua
 .idea/
 .vscode/
