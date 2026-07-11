@@ -14,7 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "simulate": "tsx scripts/simulate.ts",
-    "commands:deploy": "tsx scripts/deploy-commands.ts",
+    "commands:deploy": "tsx --env-file-if-exists=.env scripts/deploy-commands.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy"
