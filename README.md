@@ -1,62 +1,271 @@
-# Discord-Roblox Session Tracker
+# Discord–Roblox Session Tracker
 
-Tracks eligible Roblox staff sessions in PostgreSQL and shows them in Discord.
+A Node.js service that records eligible Roblox group members' play sessions in PostgreSQL and publishes session information and reports to Discord. Roblox servers send authenticated presence events to an HTTP API; the service validates and processes those events, maintains session state, and exposes the resulting data through Discord messages and slash commands.
 
-## Setup
+## Features
 
-1. Copy `.env.example` to `.env` and fill in the Discord, Roblox, database, and secret values.
-2. Install dependencies and deploy the Discord commands:
+- Tracks active, inactive, reconnecting, and completed Roblox sessions across places in one universe.
+- Accepts authenticated, batched Roblox events with payload validation, rate limiting, event-age checks, ordering, and idempotency.
+- Persists identities, sessions, time segments, processed events, runtime settings, Discord message references, and audit records in PostgreSQL through Prisma.
+- Publishes and periodically refreshes session-log messages in Discord.
+- Provides session history, manual session administration, and timezone-aware leaderboards.
+- Resolves Roblox and Discord identities through Bloxlink when an API key is configured.
+- Includes Docker Compose definitions for local deployment and Portainer stacks.
+- Includes server and client Lua components for each Roblox place.
 
-   ```powershell
-   npm ci
-   npm run commands:deploy
-   ```
+## How it works
 
-3. Add the Roblox scripts to every place. See [`roblox/README.md`](roblox/README.md).
+1. The Roblox package monitors player joins, activity, departures, and server shutdowns. It queues events and posts batches to `POST /v1/roblox/presence/batch` with a shared bearer secret.
+2. The Fastify API authenticates the request and validates the universe, place, group rank, timestamps, and event payload.
+3. The session service applies events in order and stores transitions in PostgreSQL. A departure or shutdown moves a session to `RECONNECTING`; a qualifying join during the grace period resumes it, otherwise the session ends.
+4. The Discord publisher creates or updates the corresponding session-log message. Scheduled jobs sweep reconnecting or stale sessions, refresh live messages, and remove expired event-deduplication records.
+5. Discord slash commands query the same persisted data for history and reports. Administrative changes are audited.
 
-## Discord permissions and configuration
+The main components are:
 
-Permission levels are fixed by feature: anyone can use `/leaderboard`, staff (level 2) can view session history, admins (level 3) can add, edit, and remove sessions, and managers (level 4) can run `/config`.
+- [`src/api.ts`](src/api.ts): authenticated ingestion and health endpoints.
+- [`src/services/session-service.ts`](src/services/session-service.ts): session state transitions and persistence.
+- [`src/discord/publisher.ts`](src/discord/publisher.ts): Discord session-log projection.
+- [`src/discord/commands.ts`](src/discord/commands.ts): slash commands and permission handling.
+- [`prisma/schema.prisma`](prisma/schema.prisma): PostgreSQL data model.
+- [`roblox/`](roblox/): Roblox server and client sender package.
 
-Set at least one bootstrap manager role in `DISCORD_MANAGER_ROLE_IDS` before starting the bot. Server administrators also have manager access. Managers can then use these commands in Discord:
+## Prerequisites
 
-- `/config logs` to set the channel where session log embeds are posted.
-- `/config tracking` to pause or resume Roblox event tracking.
-- `/config permission-set` and `/config permission-remove` to assign Discord roles staff, admin, or manager access.
+For a native development setup:
 
-The existing `DISCORD_STAFF_ROLE_IDS` and `DISCORD_ADMIN_ROLE_IDS` settings remain supported as initial role assignments. After changing slash commands, run `npm run commands:deploy`.
+- Node.js 24 or newer
+- npm
+- PostgreSQL
+- A Discord application and bot added to the target guild
+- A Roblox experience and group
 
-Manual session forms accept local dates such as `11/07/2026 14:30` in `REPORT_TIMEZONE`; ISO timestamps continue to work.
+For container deployment, Docker Engine with Docker Compose is sufficient; the supplied Compose files run PostgreSQL 17 alongside the application.
 
-When a valid Roblox event reports a rank below `ROBLOX_MIN_RANK`, the bot permanently deletes that player's stored identity, sessions, related audit and processed-event records, and published session-log messages.
+Roblox must be able to reach the ingestion endpoint over HTTPS. Do not expose a plain HTTP endpoint to production Roblox servers.
+
+## Configuration
+
+Copy [`.env.example`](.env.example) to `.env` and replace its placeholder values. In PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Comma-separated ID settings must not contain surrounding quotes. Roblox IDs are decimal strings.
+
+### Database
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | Prisma PostgreSQL connection URL. The example uses the Compose service hostname `db`; use a host such as `127.0.0.1` for a natively installed database. |
+| `POSTGRES_USER` | PostgreSQL user created by Compose. |
+| `POSTGRES_PASSWORD` | PostgreSQL password. Replace `change-me`; Compose requires this value. |
+| `POSTGRES_DB` | PostgreSQL database created by Compose. |
+
+### Discord and Bloxlink
+
+| Variable | Purpose |
+| --- | --- |
+| `DISCORD_TOKEN` | Discord bot token. If empty, the service starts in API-only mode. |
+| `DISCORD_APPLICATION_ID` | Discord application ID, required for command deployment. |
+| `DISCORD_GUILD_ID` | Guild where commands are installed and Bloxlink mappings are resolved. |
+| `DISCORD_SESSION_CHANNEL_ID` | Initial/fallback channel for session-log messages. Managers can change it through `/config`. |
+| `DISCORD_STAFF_ROLE_IDS` | Optional comma-separated bootstrap role IDs for staff access. |
+| `DISCORD_ADMIN_ROLE_IDS` | Optional comma-separated bootstrap role IDs for admin access. |
+| `DISCORD_MANAGER_ROLE_IDS` | Comma-separated bootstrap role IDs for manager access. Configure at least one unless guild administrators will perform initial setup. |
+| `BLOXLINK_API_KEY` | Optional Bloxlink API key. Without it, uncached Discord↔Roblox mappings cannot be resolved. |
+| `BLOXLINK_BASE_URL` | Bloxlink API base URL; normally leave the default unchanged. |
+
+Guild members with Discord's Administrator permission always receive manager access. Role assignments made later through `/config` are stored in PostgreSQL; the three role-ID variables remain bootstrap and fallback assignments.
+
+### Roblox ingestion
+
+| Variable | Purpose |
+| --- | --- |
+| `ROBLOX_INGESTION_SECRET` | Shared bearer secret used by the backend and Roblox package. The application requires at least 16 characters; use a randomly generated value of at least 32 characters. |
+| `ROBLOX_UNIVERSE_ID` | Positive universe ID accepted by the API. |
+| `ROBLOX_GROUP_ID` | Positive group ID used for rank validation. |
+| `ROBLOX_ALLOWED_PLACE_IDS` | One or more positive, comma-separated place IDs accepted by the API. |
+| `ROBLOX_MIN_RANK` | Lowest tracked group rank, from 0 to 255. |
+| `ROBLOX_MAX_RANK` | Highest accepted group rank, from 0 to 255. Must not be lower than the minimum. |
+
+A valid event with a rank below `ROBLOX_MIN_RANK` intentionally purges that player's stored identity, sessions, audit and processed-event records, and published Discord messages. A rank above `ROBLOX_MAX_RANK` is rejected without performing that purge.
+
+### Server and timing
+
+| Variable | Purpose |
+| --- | --- |
+| `API_HOST` / `API_PORT` | Address and port used by the Fastify server. Compose fixes the container listener to `0.0.0.0:3000`. |
+| `APP_BIND_IP` / `APP_PORT` | Host-side bind address and port used by Compose. Defaults to `127.0.0.1:3000`. |
+| `TRUST_PROXY` | `loopback` to trust local reverse proxies, or `false` to disable proxy trust. |
+| `REPORT_TIMEZONE` | IANA timezone used for report boundaries and manual local date input. |
+| `RECONNECT_GRACE_SECONDS` | Time allowed for a player to reconnect before a session ends. |
+| `HEARTBEAT_STALE_SECONDS` | Time without a heartbeat before a live session is treated as disconnected. |
+| `DISCORD_UPDATE_SECONDS` | Interval for refreshing live Discord messages. |
+| `MAX_BATCH_SIZE` | Maximum accepted events per request. Keep this at least as large as the Roblox sender's batch size, currently 100. |
+| `MAX_EVENT_AGE_SECONDS` | Maximum age accepted for incoming events. |
+| `PROCESSED_EVENT_RETENTION_DAYS` | Retention period for event IDs used for deduplication. |
+
+## Install and prepare the database
+
+Install exactly the dependency versions in [`package-lock.json`](package-lock.json), then generate the Prisma client:
+
+```powershell
+npm ci
+npm run prisma:generate
+```
+
+For a local development database, set `DATABASE_URL` to that database and create/apply a development migration:
+
+```powershell
+npm run prisma:migrate
+```
+
+For an existing deployment or production database, apply committed migrations without creating a new one:
+
+```powershell
+npm run prisma:deploy
+```
+
+The Docker image runs `prisma migrate deploy` automatically before starting the service. After changing [`prisma/schema.prisma`](prisma/schema.prisma), regenerate the client and create the appropriate migration. Do not rely only on the Prisma schema when recreating the database: committed migrations also contain the partial unique index that permits only one non-deleted live session per identity.
 
 ## Run locally
 
+With PostgreSQL running and `.env` configured, start the TypeScript development server:
+
 ```powershell
-docker compose up --build
+$env:NODE_OPTIONS = "--env-file=.env"
+npm run dev
+```
+
+The default API address is `http://127.0.0.1:3000`. Check it with:
+
+```powershell
 Invoke-WebRequest http://127.0.0.1:3000/health
 Invoke-WebRequest http://127.0.0.1:3000/ready
 ```
 
-The app runs on `127.0.0.1:3000`; PostgreSQL is not exposed to the host. `/health` is a liveness check, while `/ready` also verifies database readiness.
+`/health` is a process liveness check. `/ready` also runs a database query and returns HTTP 503 when PostgreSQL is unavailable.
 
-## Development
+To submit a complete test scenario to a running instance, load `.env` through Node and run the simulator:
 
 ```powershell
-npm run prisma:generate
+$env:NODE_OPTIONS = "--env-file=.env"
+npm run simulate
+```
+
+The simulator sends join, activity, inactivity, reconnection, and shutdown events. Optional overrides are `SIMULATOR_BASE_URL`, `SIMULATOR_RANK`, `SIMULATOR_USER_ID`, and `SIMULATOR_USERNAME`.
+
+## Docker deployment
+
+### Docker Compose
+
+After creating `.env`, build and start the application and database:
+
+```powershell
+docker compose up --build -d
+docker compose ps
+Invoke-WebRequest http://127.0.0.1:3000/ready
+```
+
+The default [`compose.yml`](compose.yml) configuration:
+
+- binds the application only to `127.0.0.1:3000` unless `APP_BIND_IP` or `APP_PORT` is changed;
+- does not publish PostgreSQL to the host;
+- stores PostgreSQL data in the `postgres_data` named volume;
+- waits for PostgreSQL readiness and runs Prisma deployment migrations during application startup.
+
+Place a TLS-terminating reverse proxy in front of the application for Roblox traffic. If the proxy runs on the same host, the default loopback binding and `TRUST_PROXY=loopback` are appropriate. Deliberately set `APP_BIND_IP=0.0.0.0` only when external host access is required and protected by network controls.
+
+### Portainer
+
+[`compose.portainer.yml`](compose.portainer.yml) is intended for a Portainer stack. It reads values from Portainer's stack environment rather than an `env_file` and marks the core Discord, Roblox, and PostgreSQL values as required. Add the variables from [`.env.example`](.env.example) to the stack environment, then deploy the stack from the repository.
+
+Unlike the default Compose file, the Portainer definition requires `DISCORD_SESSION_CHANNEL_ID`, `DISCORD_ADMIN_ROLE_IDS`, and `DISCORD_MANAGER_ROLE_IDS` to be non-empty at interpolation time.
+
+## Roblox setup
+
+Install the package in **every place** listed in `ROBLOX_ALLOWED_PLACE_IDS`:
+
+1. In Roblox Studio, enable **Game Settings → Security → Allow HTTP Requests**.
+2. Follow the instance hierarchy in [`roblox/README.md`](roblox/README.md).
+3. Copy [`roblox/server/Config.example.lua`](roblox/server/Config.example.lua) into a server-only `Config` ModuleScript.
+4. Set `IngestionBaseUrl` to the public HTTPS origin of this service, without the API path.
+5. Set `IngestionSecret` to exactly the same value as `ROBLOX_INGESTION_SECRET`.
+6. Set `GroupId`, `MinimumRank`, and `MaximumRank` consistently with the backend.
+7. Publish each place.
+
+Keep the configuration and secret under `ServerScriptService`; never place them in a LocalScript, ReplicatedStorage, source control, or client-visible object. The included LocalScript reports activity only and does not contain credentials.
+
+## Discord commands
+
+The service synchronizes guild commands when the bot becomes ready and `DISCORD_GUILD_ID` is configured. To deploy command definitions separately, run:
+
+```powershell
+npm run commands:deploy
+```
+
+This command requires `DISCORD_TOKEN`, `DISCORD_APPLICATION_ID`, and `DISCORD_GUILD_ID`. It removes legacy global commands and replaces the target guild's command definitions. Run it after changing command shapes when deployment is performed separately.
+
+Available commands and permissions:
+
+| Command | Access | Purpose |
+| --- | --- | --- |
+| `/leaderboard [period]` | Everyone | Shows the staff leaderboard for this week, month, year, or all time. |
+| `/session view user:<member>` | Staff | Shows a member's paginated session history. |
+| `/session add user:<member>` | Admin | Adds an audited completed session for a Bloxlink-mapped member. |
+| `/session manage sessionid:<id>` | Admin | Opens controls to edit or soft-delete a completed session. Live sessions cannot be managed manually. |
+| `/config` | Manager | Opens an ephemeral panel for the logs channel, tracking state, and role permission assignments. |
+
+Permission levels are cumulative: manager includes admin and staff access, and admin includes staff access. Manual session forms accept local values such as `11/07/2026 14:30` in `REPORT_TIMEZONE`; ISO timestamps are also accepted. Manual totals must equal the session's wall-clock duration.
+
+## Scripts and tests
+
+| Command | Description |
+| --- | --- |
+| `npm run dev` | Runs the service with `tsx` in watch mode. |
+| `npm run build` | Compiles TypeScript into `dist/`. |
+| `npm run typecheck` | Checks TypeScript without emitting files. |
+| `npm test` | Runs the Vitest suite once. |
+| `npm run test:watch` | Runs Vitest in watch mode. |
+| `npm run simulate` | Sends a representative presence lifecycle to a running API. |
+| `npm run commands:deploy` | Replaces Discord guild command definitions. |
+| `npm run prisma:generate` | Generates the Prisma client. |
+| `npm run prisma:migrate` | Runs Prisma's development migration workflow. |
+| `npm run prisma:deploy` | Applies committed migrations. |
+
+Run one test file or one named test with:
+
+```powershell
+npx vitest run tests/api.test.ts
+npx vitest run tests/api.test.ts -t "accepts an authenticated event"
+```
+
+The usual validation sequence is:
+
+```powershell
 npm test
 npm run typecheck
 npm run build
 ```
 
-## Releases
+## Troubleshooting
 
-Use semantic versions: `v1.0.0` for stable releases and `v1.1.0-beta.1` for beta releases. Update `CHANGELOG.md`, run `npm version <version>`, then push the commit and tag:
+- **Configuration fails at startup:** ensure the universe and group IDs are positive, at least one positive place ID is configured, the ingestion secret has at least 16 characters, the rank range is valid, and `REPORT_TIMEZONE` is a valid IANA timezone.
+- **`/ready` returns 503:** verify `DATABASE_URL`, PostgreSQL health, DNS/hostname selection, and that migrations have been applied. The hostname `db` works inside Compose but normally not from a native host process.
+- **Roblox requests return 401:** the Roblox `IngestionSecret` and backend `ROBLOX_INGESTION_SECRET` differ, or an intermediary removed the `Authorization: Bearer …` header.
+- **Events are rejected:** confirm the sender uses the configured universe and an allowed place, its clock is accurate, and its group rank is within the configured maximum. Also keep the sender's batch size compatible with `MAX_BATCH_SIZE`.
+- **Discord commands are absent or stale:** confirm the token, application ID, and guild ID, then run `npm run commands:deploy`. The bot also synchronizes commands after a successful Discord login.
+- **A Discord user cannot be mapped:** configure `BLOXLINK_API_KEY`, confirm the Bloxlink link exists in `DISCORD_GUILD_ID`, and check API warnings. Successful and empty mappings are cached for 24 hours after lookup.
+- **No session messages appear:** configure `DISCORD_SESSION_CHANNEL_ID` or select a logs channel through `/config`, and ensure the bot can view the channel and send messages and embeds there.
 
-```powershell
-git push origin main --follow-tags
-```
+## Security and operational notes
 
-Pushing a matching `v<package-version>` tag runs checks and creates the GitHub release automatically. Prerelease tags, including beta versions, are marked as prereleases.
-
-Keep the Roblox ingestion secret only in `.env` and `ServerScriptService.SessionTracker.Config`.
+- Treat `.env`, the Discord token, Bloxlink API key, database password, and Roblox ingestion secret as credentials. Do not commit or log them.
+- Use a strong, unique ingestion secret and expose ingestion only through HTTPS.
+- Keep PostgreSQL private. The supplied Compose files do not publish its port.
+- The API limits requests to 120 per minute and request bodies to 256 KiB, but these controls do not replace reverse-proxy and network-level protections.
+- Set `TRUST_PROXY` only for the documented deployment topology; accepting untrusted forwarded addresses can undermine IP-based rate limiting.
+- Back up the `postgres_data` volume before upgrades or destructive maintenance.
+- Session removal through Discord is a soft deletion with an audit entry. The below-minimum-rank purge is intentionally permanent and broader.
