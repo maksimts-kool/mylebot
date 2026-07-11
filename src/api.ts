@@ -17,6 +17,7 @@ export async function buildApi(
   config: Config,
   sessions: SessionService,
   onChanged: (ids: string[], removedMessages?: DiscordMessageReference[]) => Promise<void>,
+  readiness: () => Promise<void> = async () => undefined,
 ) {
   const app = Fastify({
     logger: true,
@@ -26,6 +27,15 @@ export async function buildApi(
   await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
 
   app.get("/health", async () => ({ status: "ok" }));
+  app.get("/ready", async (_request, reply) => {
+    try {
+      await readiness();
+      return { status: "ready" };
+    } catch (error) {
+      app.log.error(error, "Readiness check failed");
+      return reply.code(503).send({ status: "not_ready" });
+    }
+  });
   app.post("/v1/roblox/presence/batch", async (request, reply) => {
     if (!secretMatches(request.headers.authorization, config.ROBLOX_INGESTION_SECRET)) {
       return reply.code(401).send({ error: "invalid_authentication" });

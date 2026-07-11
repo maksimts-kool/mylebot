@@ -18,9 +18,7 @@ describe("Discord command permissions", () => {
 
   it("deploys the manager configuration command", () => {
     const config = commandData.find((command) => command.name === "config");
-    expect(config?.options?.map((option) => option.name)).toEqual([
-      "logs", "tracking", "permission-set", "permission-remove",
-    ]);
+    expect(config?.options).toEqual([]);
   });
 });
 

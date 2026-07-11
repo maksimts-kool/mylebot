@@ -9,4 +9,7 @@ return {
 	HeartbeatSeconds = 30,
 	InactiveSeconds = 300,
 	ClientReportMinimumInterval = 0.5,
+	MaximumPendingEvents = 1000,
+	RetryBaseSeconds = 2,
+	RetryMaximumSeconds = 60,
 }

@@ -108,6 +108,12 @@ export class DiscordPublisher {
     );
     const channel = await this.client.channels.fetch(settings.logsChannelId) as TextChannel;
     if (session.discordMessage) {
+      if (session.discordMessage.channelId !== channel.id) {
+        await this.removeMessages([{ channelId: session.discordMessage.channelId, messageId: session.discordMessage.messageId }]);
+        const replacement = await channel.send({ embeds: [embed], components: session.deletedAt ? [] : [buttons] });
+        await this.db.discordMessage.update({ where: { sessionId: session.id }, data: { channelId: channel.id, messageId: replacement.id } });
+        return;
+      }
       try {
         const message = await channel.messages.fetch(session.discordMessage.messageId);
         await message.edit({ embeds: [embed], components: session.deletedAt ? [] : [buttons] });

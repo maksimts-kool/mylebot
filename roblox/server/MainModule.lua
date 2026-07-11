@@ -34,8 +34,26 @@ function SessionTracker.start()
 	local pending = {}
 	local closing = false
 	local flushing = false
+	local retryAttempt = 0
+	local retryScheduled = false
+	local maximumPendingEvents = Config.MaximumPendingEvents or 1000
+	local retryBaseSeconds = Config.RetryBaseSeconds or 2
+	local retryMaximumSeconds = Config.RetryMaximumSeconds or 60
 
 	local function enqueue(kind, record)
+		if #pending >= maximumPendingEvents then
+			-- Preserve lifecycle events by dropping the oldest heartbeat first.
+			local dropIndex = nil
+			for index, event in pending do
+				if event.kind == "HEARTBEAT" then dropIndex = index break end
+			end
+			if dropIndex then
+				table.remove(pending, dropIndex)
+			else
+				warn("SessionTracker queue full; dropping event", kind)
+				return
+			end
+		end
 		table.insert(pending, {
 			eventId = HttpService:GenerateGUID(false),
 			kind = kind,
@@ -75,6 +93,7 @@ function SessionTracker.start()
 
 			if not ok or not response or not response.Success then
 				warn("SessionTracker delivery failed", ok and response and response.StatusCode or response)
+				retryAttempt += 1
 				flushing = false
 				return false
 			end
@@ -83,11 +102,19 @@ function SessionTracker.start()
 		end
 
 		flushing = false
+		retryAttempt = 0
 		return true
 	end
 
 	local function requestFlush()
-		if not flushing then task.spawn(flush) end
+		if flushing or retryScheduled then return end
+		retryScheduled = true
+		local delay = retryAttempt == 0 and 0 or math.min(retryMaximumSeconds, retryBaseSeconds * (2 ^ (retryAttempt - 1)))
+		delay += math.random() * math.min(1, delay * 0.25)
+		task.delay(delay, function()
+			retryScheduled = false
+			if flush() == false and not closing then requestFlush() end
+		end)
 	end
 
 	local function addPlayer(player)

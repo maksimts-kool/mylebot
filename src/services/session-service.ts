@@ -52,6 +52,19 @@ export class SessionService {
     this.validateRank(event);
   }
 
+  private async withSerializableRetry<T>(operation: () => Promise<T>, attempts = 3): Promise<T> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await operation();
+      } catch (error) {
+        const retryable = error instanceof Prisma.PrismaClientKnownRequestError
+          && (error.code === "P2034" || error.code === "P2002");
+        if (!retryable || attempt >= attempts) throw error;
+        await new Promise((resolve) => setTimeout(resolve, attempt * 25));
+      }
+    }
+  }
+
   async process(event: PresenceEvent): Promise<EventResult> {
     if (this.settings && !(await this.settings.get()).trackingEnabled) {
       return { eventId: event.eventId, status: "tracking_disabled", changed: false };
@@ -59,7 +72,7 @@ export class SessionService {
     this.validateSource(event);
     if (event.player.rankNumber < this.config.ROBLOX_MIN_RANK) return this.purgeLowRankPlayer(event);
     this.validateRank(event);
-    return this.db.$transaction(async (tx) => {
+    return this.withSerializableRetry(() => this.db.$transaction(async (tx) => {
       const prior = await tx.processedEvent.findUnique({ where: { eventId: event.eventId } });
       if (prior) return { eventId: event.eventId, status: "duplicate", sessionId: prior.sessionId ?? undefined, changed: false };
 
@@ -122,7 +135,7 @@ export class SessionService {
         data: { eventId: event.eventId, kind: event.kind, occurredAt, sessionId: session?.id ?? null },
       });
       return { eventId: event.eventId, status: "accepted", sessionId: session?.id, alsoChangedSessionId, changed: changed || Boolean(alsoChangedSessionId) };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
   }
 
   private async purgeLowRankPlayer(event: PresenceEvent): Promise<EventResult> {
@@ -177,22 +190,40 @@ export class SessionService {
     const staleBefore = new Date(now.getTime() - this.config.HEARTBEAT_STALE_SECONDS * 1000);
     const stale = await this.db.session.findMany({ where: { state: { in: ["ACTIVE", "INACTIVE"] }, lastEventAt: { lt: staleBefore }, deletedAt: null } });
     for (const session of stale) {
-      const transitionAt = new Date(session.lastEventAt.getTime() + this.config.HEARTBEAT_STALE_SECONDS * 1000);
-      await this.db.$transaction(async (tx) => { await this.transition(tx, session, "RECONNECTING", transitionAt); });
-      changed.push(session.id);
+      const didChange = await this.withSerializableRetry(() => this.db.$transaction(async (tx) => {
+        const current = await tx.session.findFirst({
+          where: { id: session.id, state: { in: ["ACTIVE", "INACTIVE"] }, lastEventAt: session.lastEventAt, deletedAt: null },
+        });
+        if (!current) return false;
+        const transitionAt = new Date(current.lastEventAt.getTime() + this.config.HEARTBEAT_STALE_SECONDS * 1000);
+        await this.transition(tx, current, "RECONNECTING", transitionAt);
+        return true;
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+      if (didChange) changed.push(session.id);
     }
     const expired = await this.db.session.findMany({ where: { state: "RECONNECTING", reconnectDeadline: { lte: now }, deletedAt: null } });
     for (const session of expired) {
-      const endedAt = session.reconnectDeadline ?? now;
-      await this.db.$transaction(async (tx) => {
+      const didChange = await this.withSerializableRetry(() => this.db.$transaction(async (tx) => {
+        const current = await tx.session.findFirst({
+          where: { id: session.id, state: "RECONNECTING", reconnectDeadline: session.reconnectDeadline, deletedAt: null },
+        });
+        if (!current) return false;
+        const endedAt = current.reconnectDeadline ?? now;
         await tx.timeSegment.updateMany({ where: { sessionId: session.id, endedAt: null }, data: { endedAt } });
         await tx.session.update({
           where: { id: session.id },
-          data: { ...counterUpdate("RECONNECTING", elapsed(session.lastStateAt, endedAt)), state: "ENDED", endedAt, lastStateAt: endedAt, reconnectDeadline: null },
+          data: { ...counterUpdate("RECONNECTING", elapsed(current.lastStateAt, endedAt)), state: "ENDED", endedAt, lastStateAt: endedAt, reconnectDeadline: null },
         });
-      });
-      changed.push(session.id);
+        return true;
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+      if (didChange) changed.push(session.id);
     }
     return changed;
+  }
+
+  async cleanupProcessedEvents(now = new Date()): Promise<number> {
+    const receivedBefore = new Date(now.getTime() - this.config.PROCESSED_EVENT_RETENTION_DAYS * 86_400_000);
+    const result = await this.db.processedEvent.deleteMany({ where: { receivedAt: { lt: receivedBefore } } });
+    return result.count;
   }
 }

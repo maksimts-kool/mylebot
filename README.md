@@ -35,9 +35,10 @@ When a valid Roblox event reports a rank below `ROBLOX_MIN_RANK`, the bot perman
 ```powershell
 docker compose up --build
 Invoke-WebRequest http://127.0.0.1:3000/health
+Invoke-WebRequest http://127.0.0.1:3000/ready
 ```
 
-The app runs on `127.0.0.1:3000`; PostgreSQL is not exposed to the host.
+The app runs on `127.0.0.1:3000`; PostgreSQL is not exposed to the host. `/health` is a liveness check, while `/ready` also verifies database readiness.
 
 ## Development
 

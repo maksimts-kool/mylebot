@@ -14,5 +14,6 @@ if (!config.DISCORD_TOKEN || !config.DISCORD_APPLICATION_ID || !config.DISCORD_G
   throw new Error("DISCORD_TOKEN, DISCORD_APPLICATION_ID, and DISCORD_GUILD_ID are required");
 }
 const rest = new REST({ version: "10" }).setToken(config.DISCORD_TOKEN);
+await rest.put(Routes.applicationCommands(config.DISCORD_APPLICATION_ID), { body: [] });
 await rest.put(Routes.applicationGuildCommands(config.DISCORD_APPLICATION_ID, config.DISCORD_GUILD_ID), { body: commandData });
-console.log(`Deployed ${commandData.length} guild commands`);
+console.log(`Removed legacy global commands and deployed ${commandData.length} guild commands`);

@@ -19,6 +19,16 @@ const apps: Array<Awaited<ReturnType<typeof buildApi>>> = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
 
 describe("ingestion API", () => {
+  it("reports liveness independently and readiness failures as unavailable", async () => {
+    const readiness = vi.fn().mockRejectedValue(new Error("database unavailable"));
+    const app = await buildApi(config, { process: vi.fn() } as never, async () => {}, readiness); apps.push(app);
+    const health = await app.inject({ method: "GET", url: "/health" });
+    const ready = await app.inject({ method: "GET", url: "/ready" });
+    expect(health.statusCode).toBe(200);
+    expect(ready.statusCode).toBe(503);
+    expect(readiness).toHaveBeenCalledOnce();
+  });
+
   it("rejects missing authentication before processing the body", async () => {
     const process = vi.fn(); const app = await buildApi(config, { process } as never, async () => {}); apps.push(app);
     const response = await app.inject({ method: "POST", url: "/v1/roblox/presence/batch", payload: { events: [validEvent] } });

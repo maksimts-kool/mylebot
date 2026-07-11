@@ -4,6 +4,13 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+## 0.9.2 - 2026-07-11
+
+- Replaced the Discord configuration subcommands with a single interactive `/config` interface that applies updates automatically.
+- Synchronized guild commands at startup and during command deployment, including removal of stale global commands.
+- Hardened session lifecycle concurrency, health/readiness handling, processed-event retention, and Roblox event delivery behavior.
+- Added coverage for the updated commands and runtime safeguards, plus repository-wide and mode-specific agent guidance.
+
 ## 0.9.1 - 2026-07-11
 
 - Added configurable permission levels, tracking controls, and a runtime session-log channel.
