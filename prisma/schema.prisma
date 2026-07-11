@@ -85,6 +85,21 @@ model DiscordMessage {
   updatedAt DateTime @updatedAt
 }
 
+model RuntimeSettings {
+  id              String   @id
+  logsChannelId   String?
+  trackingEnabled Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model PermissionRole {
+  roleId    String   @id
+  level     Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model ProcessedEvent {
   id          String    @id @default(cuid())
   eventId     String    @unique
@@ -110,4 +125,3 @@ model AuditEntry {
 
   @@index([sessionId, createdAt])
 }
-

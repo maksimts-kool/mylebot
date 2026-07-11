@@ -4,7 +4,7 @@ import Fastify from "fastify";
 import { ZodError } from "zod";
 import type { Config } from "./config.js";
 import { presenceBatchSchema } from "./domain/events.js";
-import type { SessionService } from "./services/session-service.js";
+import type { DiscordMessageReference, SessionService } from "./services/session-service.js";
 
 function secretMatches(header: string | undefined, expected: string): boolean {
   const supplied = header?.startsWith("Bearer ") ? header.slice(7) : "";
@@ -13,7 +13,11 @@ function secretMatches(header: string | undefined, expected: string): boolean {
   return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
-export async function buildApi(config: Config, sessions: SessionService, onChanged: (ids: string[]) => Promise<void>) {
+export async function buildApi(
+  config: Config,
+  sessions: SessionService,
+  onChanged: (ids: string[], removedMessages?: DiscordMessageReference[]) => Promise<void>,
+) {
   const app = Fastify({
     logger: true,
     bodyLimit: 256 * 1024,
@@ -30,13 +34,16 @@ export async function buildApi(config: Config, sessions: SessionService, onChang
     if (batch.events.length > config.MAX_BATCH_SIZE) return reply.code(413).send({ error: "batch_too_large" });
     const results = [];
     const changed = new Set<string>();
+    const removedMessages: DiscordMessageReference[] = [];
     for (const event of batch.events) {
       const result = await sessions.process(event);
       results.push(result);
       if (result.changed && result.sessionId) changed.add(result.sessionId);
       if (result.alsoChangedSessionId) changed.add(result.alsoChangedSessionId);
+      if (result.removedMessages) removedMessages.push(...result.removedMessages);
     }
-    await onChanged([...changed]);
+    if (removedMessages.length) await onChanged([...changed], removedMessages);
+    else await onChanged([...changed]);
     return reply.code(202).send({ results });
   });
 

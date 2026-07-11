@@ -6,14 +6,19 @@ import { CommandHandler } from "./discord/commands.js";
 import { DiscordPublisher } from "./discord/publisher.js";
 import { BloxlinkService } from "./services/bloxlink.js";
 import { SessionService } from "./services/session-service.js";
+import { RuntimeSettingsService } from "./services/runtime-settings.js";
 
 const config = loadConfig();
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const bloxlink = new BloxlinkService(prisma, config);
-const sessions = new SessionService(prisma, config);
-const publisher = new DiscordPublisher(client, prisma, config, bloxlink);
-new CommandHandler(client, prisma, config, publisher, bloxlink).register();
-const api = await buildApi(config, sessions, (ids) => publisher.refreshMany(ids));
+const settings = new RuntimeSettingsService(prisma, config);
+const sessions = new SessionService(prisma, config, settings);
+const publisher = new DiscordPublisher(client, prisma, config, bloxlink, settings);
+new CommandHandler(client, prisma, config, publisher, bloxlink, settings).register();
+const api = await buildApi(config, sessions, async (ids, removedMessages) => {
+  await publisher.refreshMany(ids);
+  if (removedMessages) await publisher.removeMessages(removedMessages);
+});
 
 client.once(Events.ClientReady, async () => {
   console.log(`Discord bot ready as ${client.user?.tag}`);

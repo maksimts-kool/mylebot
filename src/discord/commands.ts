@@ -1,6 +1,6 @@
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ChatInputCommandInteraction, EmbedBuilder,
-  GuildMember, ModalBuilder, PermissionFlagsBits, SlashCommandBuilder, StringSelectMenuBuilder,
+  ChannelType, GuildMember, ModalBuilder, PermissionFlagsBits, SlashCommandBuilder, StringSelectMenuBuilder,
   TextInputBuilder, TextInputStyle, MessageFlags, type ButtonInteraction, type Client, type Interaction,
   type ModalSubmitInteraction, type StringSelectMenuInteraction,
 } from "discord.js";
@@ -10,6 +10,7 @@ import type { prisma as database } from "../db.js";
 import { assertDurationInvariant, formatDuration, totalsForPeriod } from "../domain/accounting.js";
 import { buildLeaderboard, tallinnDateRange } from "../domain/reporting.js";
 import type { BloxlinkService } from "../services/bloxlink.js";
+import type { RuntimeSettingsService } from "../services/runtime-settings.js";
 import type { DiscordPublisher } from "./publisher.js";
 
 type Db = typeof database;
@@ -30,7 +31,36 @@ export const commandData = [
         { name: "This year", value: "year" },
         { name: "All time", value: "all" },
       )),
+  new SlashCommandBuilder().setName("config").setDescription("Configure session tracking")
+    .addSubcommand((s) => s.setName("logs").setDescription("Set the session logs channel")
+      .addChannelOption((o) => o.setName("channel").setDescription("Channel for session log embeds").setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)))
+    .addSubcommand((s) => s.setName("tracking").setDescription("Enable or disable Roblox session tracking")
+      .addBooleanOption((o) => o.setName("enabled").setDescription("Whether Roblox events are tracked").setRequired(true)))
+    .addSubcommand((s) => s.setName("permission-set").setDescription("Give a Discord role a permission level")
+      .addRoleOption((o) => o.setName("role").setDescription("Discord role").setRequired(true))
+      .addIntegerOption((o) => o.setName("level").setDescription("Permission level").setRequired(true).addChoices(
+        { name: "Staff (2)", value: 2 },
+        { name: "Admin (3)", value: 3 },
+        { name: "Manager (4)", value: 4 },
+      )))
+    .addSubcommand((s) => s.setName("permission-remove").setDescription("Remove a Discord role permission")
+      .addRoleOption((o) => o.setName("role").setDescription("Discord role").setRequired(true))),
 ].map((command) => command.toJSON());
+
+export const PermissionLevel = {
+  EVERYONE: 1,
+  STAFF: 2,
+  ADMIN: 3,
+  MANAGER: 4,
+} as const;
+
+export function requiredPermission(commandName: string, subcommand?: string): number {
+  if (commandName === "leaderboard") return PermissionLevel.EVERYONE;
+  if (commandName === "config") return PermissionLevel.MANAGER;
+  if (commandName === "session" && subcommand === "view") return PermissionLevel.STAFF;
+  if (commandName === "session" && ["add", "manage"].includes(subcommand ?? "")) return PermissionLevel.ADMIN;
+  return PermissionLevel.MANAGER;
+}
 
 function input(id: string, label: string, value = "", required = true): ActionRowBuilder<TextInputBuilder> {
   const field = new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(TextInputStyle.Short).setRequired(required);
@@ -38,13 +68,25 @@ function input(id: string, label: string, value = "", required = true): ActionRo
   return new ActionRowBuilder<TextInputBuilder>().addComponents(field);
 }
 
-function parseInstant(value: string): Date {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) throw new Error(`Invalid timestamp: ${value}`);
-  return date;
+export function parseSessionDateTime(value: string, timezone: string): Date {
+  const input = value.trim();
+  const iso = DateTime.fromISO(input, { setZone: true });
+  if (iso.isValid) return iso.toJSDate();
+
+  for (const format of ["d/M/yyyy H:mm", "d.M.yyyy H:mm", "d-M-yyyy H:mm", "yyyy-MM-dd H:mm"]) {
+    const local = DateTime.fromFormat(input, format, { zone: timezone });
+    if (local.isValid) return local.toJSDate();
+  }
+  throw new Error("Invalid date and time. Use 11/07/2026 14:30 (your reporting time zone).");
+}
+
+export function formatSessionDateTime(date: Date, timezone: string): string {
+  return DateTime.fromJSDate(date).setZone(timezone).toFormat("dd/LL/yyyy HH:mm");
 }
 
 function parseDuration(value: string): number {
+  const clock = value.trim().match(/^(\d+):([0-5]\d)(?::([0-5]\d))?$/);
+  if (clock) return ((Number(clock[1]) * 3600) + (Number(clock[2]) * 60) + Number(clock[3] ?? 0)) * 1000;
   const match = value.trim().match(/^(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+)s)?$/i);
   if (!match || !match[0].trim() || (!match[1] && !match[2] && !match[3])) throw new Error(`Invalid duration: ${value}`);
   return ((Number(match[1] ?? 0) * 3600) + (Number(match[2] ?? 0) * 60) + Number(match[3] ?? 0)) * 1000;
@@ -78,6 +120,7 @@ export class CommandHandler {
     private readonly config: Config,
     private readonly publisher: DiscordPublisher,
     private readonly bloxlink: BloxlinkService,
+    private readonly settings: RuntimeSettingsService,
   ) {}
 
   register(): void {
@@ -91,21 +134,36 @@ export class CommandHandler {
   }
 
   private memberRoles(interaction: Interaction): string[] {
-    return interaction.member instanceof GuildMember ? [...interaction.member.roles.cache.keys()] : [];
+    if (!interaction.member) return [];
+    return interaction.member instanceof GuildMember ? [...interaction.member.roles.cache.keys()] : interaction.member.roles;
   }
 
-  private isAdmin(interaction: Interaction): boolean {
-    if (interaction.member instanceof GuildMember && interaction.member.permissions.has(PermissionFlagsBits.Administrator)) return true;
-    return this.memberRoles(interaction).some((id) => this.config.DISCORD_ADMIN_ROLE_IDS.includes(id));
+  private hasDiscordAdministrator(interaction: Interaction): boolean {
+    if (!interaction.member) return false;
+    if (interaction.member instanceof GuildMember) return interaction.member.permissions.has(PermissionFlagsBits.Administrator);
+    return (BigInt(interaction.member.permissions) & PermissionFlagsBits.Administrator) === PermissionFlagsBits.Administrator;
   }
 
-  private async canReport(interaction: Interaction): Promise<boolean> {
-    if (this.isAdmin(interaction) || this.memberRoles(interaction).some((id) => this.config.DISCORD_STAFF_ROLE_IDS.includes(id))) return true;
-    const discordId = interaction.user.id;
-    const identity = await this.db.identity.findFirst({ where: { discordUserId: discordId } });
-    if (!identity) return false;
-    const latest = await this.db.session.findFirst({ where: { identityId: identity.id, deletedAt: null }, orderBy: { startedAt: "desc" } });
-    return Boolean(latest && latest.rankNumber >= this.config.ROBLOX_MIN_RANK && latest.rankNumber <= this.config.ROBLOX_MAX_RANK);
+  private async permissionLevel(interaction: Interaction): Promise<number> {
+    if (this.hasDiscordAdministrator(interaction)) {
+      return PermissionLevel.MANAGER;
+    }
+    const roleIds = this.memberRoles(interaction);
+    const configured = roleIds.length
+      ? await this.db.permissionRole.findMany({ where: { roleId: { in: roleIds } }, select: { level: true } })
+      : [];
+    const legacyLevel = this.config.DISCORD_MANAGER_ROLE_IDS.some((id) => roleIds.includes(id))
+      ? PermissionLevel.MANAGER
+      : this.config.DISCORD_ADMIN_ROLE_IDS.some((id) => roleIds.includes(id))
+        ? PermissionLevel.ADMIN
+        : this.config.DISCORD_STAFF_ROLE_IDS.some((id) => roleIds.includes(id))
+          ? PermissionLevel.STAFF
+          : PermissionLevel.EVERYONE;
+    return Math.max(legacyLevel, ...configured.map(({ level }) => level));
+  }
+
+  private async hasPermission(interaction: Interaction, required: number): Promise<boolean> {
+    return (await this.permissionLevel(interaction)) >= required;
   }
 
   private async handle(interaction: Interaction): Promise<void> {
@@ -117,17 +175,52 @@ export class CommandHandler {
 
   private async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     if (interaction.commandName === "leaderboard") {
-      if (!await this.canReport(interaction)) throw new Error("You do not have permission to view leaderboards");
       const period = interaction.options.getString("period") ?? "month";
       const { startDate, endDate } = this.presetDates(period);
       await this.renderLeaderboard(interaction, startDate, endDate, 0, 0); return;
     }
     const action = interaction.options.getSubcommand();
-    if (["add", "manage"].includes(action) && !this.isAdmin(interaction)) throw new Error("Administrator role required");
-    if (action === "view" && !await this.canReport(interaction)) throw new Error("You do not have permission to view history");
+    const required = requiredPermission(interaction.commandName, action);
+    if (!await this.hasPermission(interaction, required)) {
+      const label = required === PermissionLevel.MANAGER ? "Manager" : required === PermissionLevel.ADMIN ? "Admin" : "Staff";
+      throw new Error(`${label} role required`);
+    }
+    if (interaction.commandName === "config") {
+      await this.handleConfig(interaction); return;
+    }
     if (action === "add") await this.showAdd(interaction);
     if (action === "manage") await this.showManage(interaction);
     if (action === "view") await this.showView(interaction);
+  }
+
+  private async handleConfig(interaction: ChatInputCommandInteraction): Promise<void> {
+    const action = interaction.options.getSubcommand();
+    if (action === "logs") {
+      const channel = interaction.options.getChannel("channel", true);
+      if (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement) {
+        throw new Error("Choose a text channel for session logs");
+      }
+      await this.settings.setLogsChannel(channel.id);
+      await interaction.reply({ content: `Session logs will be posted in <#${channel.id}>.`, flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (action === "tracking") {
+      const enabled = interaction.options.getBoolean("enabled", true);
+      await this.settings.setTrackingEnabled(enabled);
+      await interaction.reply({ content: `Roblox session tracking is now ${enabled ? "enabled" : "disabled"}.`, flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const role = interaction.options.getRole("role", true);
+    if (action === "permission-set") {
+      const level = interaction.options.getInteger("level", true);
+      await this.db.permissionRole.upsert({ where: { roleId: role.id }, create: { roleId: role.id, level }, update: { level } });
+      await interaction.reply({ content: `${role} now has permission level ${level}.`, flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (action === "permission-remove") {
+      await this.db.permissionRole.deleteMany({ where: { roleId: role.id } });
+      await interaction.reply({ content: `Removed the configured permission for ${role}.`, flags: MessageFlags.Ephemeral });
+    }
   }
 
   private async showAdd(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -135,7 +228,7 @@ export class CommandHandler {
     const mapped = await this.bloxlink.robloxForDiscord(user.id);
     if (!mapped) throw new Error("That Discord user has no Bloxlink mapping");
     const modal = new ModalBuilder().setCustomId(`add:${user.id}`).setTitle("➕ Add completed session").addComponents(
-      input("start", "Start (ISO date and time)"), input("end", "End (ISO date and time)"),
+      input("start", "Start (example: 11/07/2026 14:30)"), input("end", "End (example: 11/07/2026 16:45)"),
       input("active", "Active time (example: 2h 15m)"), input("inactive", "Inactive time (example: 10m)"),
       input("note", "Reason for adding this session"),
     );
@@ -170,7 +263,7 @@ export class CommandHandler {
       if (mapped) identity = await this.db.identity.findUnique({ where: { robloxUserId: mapped.userId } });
     }
     if (!identity) throw new Error("Identity not found");
-    await this.replyHistory(interaction, identity.id, 0);
+    await this.replyHistory(interaction, identity.id, 0, "reply");
   }
 
   private async handleModal(interaction: ModalSubmitInteraction): Promise<void> {
@@ -179,9 +272,9 @@ export class CommandHandler {
   }
 
   private async addSession(interaction: ModalSubmitInteraction): Promise<void> {
-    if (!this.isAdmin(interaction)) throw new Error("Administrator role required");
-    const start = parseInstant(interaction.fields.getTextInputValue("start"));
-    const end = parseInstant(interaction.fields.getTextInputValue("end"));
+    if (!await this.hasPermission(interaction, PermissionLevel.ADMIN)) throw new Error("Admin role required");
+    const start = parseSessionDateTime(interaction.fields.getTextInputValue("start"), this.config.REPORT_TIMEZONE);
+    const end = parseSessionDateTime(interaction.fields.getTextInputValue("end"), this.config.REPORT_TIMEZONE);
     const active = parseDuration(interaction.fields.getTextInputValue("active"));
     const inactive = parseDuration(interaction.fields.getTextInputValue("inactive"));
     assertDurationInvariant(start, end, active, inactive);
@@ -218,9 +311,10 @@ export class CommandHandler {
   }
 
   private async editEnded(interaction: ModalSubmitInteraction): Promise<void> {
-    if (!this.isAdmin(interaction)) throw new Error("Administrator role required");
+    if (!await this.hasPermission(interaction, PermissionLevel.ADMIN)) throw new Error("Admin role required");
     const id = interaction.customId.slice("editended:".length);
-    const start = parseInstant(interaction.fields.getTextInputValue("start")); const end = parseInstant(interaction.fields.getTextInputValue("end"));
+    const start = parseSessionDateTime(interaction.fields.getTextInputValue("start"), this.config.REPORT_TIMEZONE);
+    const end = parseSessionDateTime(interaction.fields.getTextInputValue("end"), this.config.REPORT_TIMEZONE);
     const active = parseDuration(interaction.fields.getTextInputValue("active")); const inactive = parseDuration(interaction.fields.getTextInputValue("inactive"));
     const current = await this.db.session.findUnique({ where: { id } }); if (!current || current.state !== "ENDED" || current.deletedAt) throw new Error("Completed session not found");
     const reconnect = Number(current.reconnectMilliseconds);
@@ -242,13 +336,13 @@ export class CommandHandler {
   }
 
   private async showEditEndedModal(interaction: ButtonInteraction, id: string): Promise<void> {
-    if (!this.isAdmin(interaction)) throw new Error("Administrator role required");
+    if (!await this.hasPermission(interaction, PermissionLevel.ADMIN)) throw new Error("Admin role required");
     const session = await this.db.session.findUnique({ where: { id } });
     if (!session || session.deletedAt) throw new Error("Session not found");
     if (session.state !== "ENDED") throw new Error("Live sessions cannot be managed");
     const modal = new ModalBuilder().setCustomId(`editended:${id}`).setTitle("✏️ Edit completed session").addComponents(
-      input("start", "Start (ISO date and time)", session.startedAt.toISOString()),
-      input("end", "End (ISO date and time)", session.endedAt!.toISOString()),
+      input("start", "Start (example: 11/07/2026 14:30)", formatSessionDateTime(session.startedAt, this.config.REPORT_TIMEZONE)),
+      input("end", "End (example: 11/07/2026 16:45)", formatSessionDateTime(session.endedAt!, this.config.REPORT_TIMEZONE)),
       input("active", "Active time (example: 2h 15m)", formatDuration(session.activeMilliseconds)),
       input("inactive", "Inactive time (example: 10m)", formatDuration(session.inactiveMilliseconds)),
       input("note", "Reason for this edit"),
@@ -257,12 +351,28 @@ export class CommandHandler {
   }
 
   private async handleButton(interaction: ButtonInteraction): Promise<void> {
-    if (interaction.customId === "cancel") { await interaction.update({ content: "Cancelled.", components: [] }); return; }
-    if (interaction.customId.startsWith("refresh:")) { const id = interaction.customId.slice(8); await this.publisher.refresh(id); await interaction.reply({ content: "Refreshed.", flags: MessageFlags.Ephemeral }); return; }
-    if (interaction.customId.startsWith("history:")) { if (!await this.canReport(interaction)) throw new Error("Permission denied"); await this.replyHistory(interaction, interaction.customId.slice(8), 0); return; }
-    if (interaction.customId.startsWith("historypage:")) { const [, identityId, page] = interaction.customId.split(":"); await this.replyHistory(interaction, identityId!, Number(page)); return; }
+    if (interaction.customId === "cancel" || interaction.customId === "historyclose") {
+      await interaction.deferUpdate();
+      await interaction.deleteReply(interaction.message.id);
+      return;
+    }
+    if (interaction.customId.startsWith("refresh:")) {
+      await interaction.deferUpdate();
+      await this.publisher.refresh(interaction.customId.slice(8));
+      return;
+    }
+    if (interaction.customId.startsWith("history:")) {
+      if (!await this.hasPermission(interaction, PermissionLevel.STAFF)) throw new Error("Staff role required");
+      await this.replyHistory(interaction, interaction.customId.slice(8), 0, "reply");
+      return;
+    }
+    if (interaction.customId.startsWith("historypage:")) {
+      if (!await this.hasPermission(interaction, PermissionLevel.STAFF)) throw new Error("Staff role required");
+      const [, identityId, page] = interaction.customId.split(":");
+      await this.replyHistory(interaction, identityId!, Number(page), "update");
+      return;
+    }
     if (interaction.customId.startsWith("leaderboard:")) {
-      if (!await this.canReport(interaction)) throw new Error("Permission denied");
       const [, startDate, endDate, minimum, page] = interaction.customId.split(":");
       await this.renderLeaderboard(interaction, startDate!, endDate!, Number(minimum), Number(page)); return;
     }
@@ -270,7 +380,7 @@ export class CommandHandler {
       await this.showEditEndedModal(interaction, interaction.customId.slice("editended:".length)); return;
     }
     if (interaction.customId.startsWith("remove:")) {
-      if (!this.isAdmin(interaction)) throw new Error("Administrator role required"); const id = interaction.customId.slice(7);
+      if (!await this.hasPermission(interaction, PermissionLevel.ADMIN)) throw new Error("Admin role required"); const id = interaction.customId.slice(7);
       const current = await this.db.session.findUnique({ where: { id } }); if (!current || current.deletedAt) throw new Error("Session not found");
       if (current.state !== "ENDED") throw new Error("Live sessions cannot be managed");
       const now = new Date();
@@ -283,7 +393,12 @@ export class CommandHandler {
     }
   }
 
-  private async replyHistory(interaction: ChatInputCommandInteraction | ButtonInteraction, identityId: string, page: number): Promise<void> {
+  private async replyHistory(
+    interaction: ChatInputCommandInteraction | ButtonInteraction | StringSelectMenuInteraction,
+    identityId: string,
+    page: number,
+    responseMode: "reply" | "update",
+  ): Promise<void> {
     const pageSize = 10; const count = await this.db.session.count({ where: { identityId, deletedAt: null } });
     const sessions = await this.db.session.findMany({ where: { identityId, deletedAt: null }, include: { identity: true, segments: true }, orderBy: { startedAt: "desc" }, skip: page * pageSize, take: pageSize });
     if (!sessions.length) throw new Error("No sessions found");
@@ -302,12 +417,13 @@ export class CommandHandler {
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId(`historypage:${identityId}:${page-1}`).setLabel("Previous").setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
       new ButtonBuilder().setCustomId(`historypage:${identityId}:${page+1}`).setLabel("Next").setStyle(ButtonStyle.Secondary).setDisabled((page+1)*pageSize >= count),
+      new ButtonBuilder().setCustomId("historyclose").setLabel("Close").setEmoji("✖️").setStyle(ButtonStyle.Secondary),
     );
     const response = {
       embeds: [new EmbedBuilder().setTitle("📚 Session history").setDescription(`👤 ${owner}\n\n${description}`).setFooter({ text: `Page ${page+1} of ${Math.max(1, Math.ceil(count/pageSize))}` })],
       components: [row],
     };
-    if (interaction.isButton()) await interaction.update(response);
+    if (responseMode === "update" && interaction.isButton()) await interaction.update(response);
     else await interaction.reply({ ...response, flags: MessageFlags.Ephemeral });
   }
 
@@ -358,6 +474,9 @@ export class CommandHandler {
   }
 
   private async handleSelect(interaction: StringSelectMenuInteraction): Promise<void> {
-    if (interaction.customId === "leaderboard-user") await this.replyHistory(interaction as unknown as ButtonInteraction, interaction.values[0]!, 0);
+    if (interaction.customId === "leaderboard-user") {
+      if (!await this.hasPermission(interaction, PermissionLevel.STAFF)) throw new Error("Staff role required");
+      await this.replyHistory(interaction, interaction.values[0]!, 0, "reply");
+    }
   }
 }

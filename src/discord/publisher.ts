@@ -7,6 +7,8 @@ import type { prisma as database } from "../db.js";
 import { totalsForPeriod } from "../domain/accounting.js";
 import { calendarYearRange } from "../domain/reporting.js";
 import type { BloxlinkService } from "../services/bloxlink.js";
+import type { RuntimeSettingsService } from "../services/runtime-settings.js";
+import type { DiscordMessageReference } from "../services/session-service.js";
 
 type Db = typeof database;
 const statusName: Record<SessionState, string> = { ACTIVE: "Active", INACTIVE: "Inactive", RECONNECTING: "Reconnecting", ENDED: "Ended" };
@@ -22,19 +24,40 @@ function formatClock(milliseconds: number): string {
 }
 
 export class DiscordPublisher {
+  private readonly pendingMessageRemovals: DiscordMessageReference[] = [];
+
   constructor(
     private readonly client: Client,
     private readonly db: Db,
     private readonly config: Config,
     private readonly bloxlink: BloxlinkService,
+    private readonly settings?: RuntimeSettingsService,
   ) {}
 
   async refreshMany(ids: string[]): Promise<void> {
     for (const id of ids) await this.refresh(id).catch((error) => console.error(`Discord refresh failed for ${id}`, error));
   }
 
+  async removeMessages(messages: DiscordMessageReference[]): Promise<void> {
+    if (!messages.length) return;
+    if (!this.client.isReady()) {
+      this.pendingMessageRemovals.push(...messages);
+      return;
+    }
+    for (const { channelId, messageId } of messages) {
+      try {
+        const channel = await this.client.channels.fetch(channelId) as TextChannel;
+        await channel.messages.delete(messageId);
+      } catch (error) {
+        if (error instanceof DiscordAPIError && error.code === 10008) continue;
+        console.error(`Discord message deletion failed for ${messageId}`, error);
+      }
+    }
+  }
+
   async refresh(sessionId: string, includeDeleted = false): Promise<void> {
-    if (!this.client.isReady() || !this.config.DISCORD_SESSION_CHANNEL_ID) return;
+    const settings = this.settings ? await this.settings.get() : { logsChannelId: this.config.DISCORD_SESSION_CHANNEL_ID };
+    if (!this.client.isReady() || !settings.logsChannelId) return;
     const session = await this.db.session.findUnique({
       where: { id: sessionId }, include: { identity: true, segments: true, discordMessage: true },
     });
@@ -83,7 +106,7 @@ export class DiscordPublisher {
       new ButtonBuilder().setCustomId(`history:${session.identityId}`).setStyle(ButtonStyle.Secondary).setLabel("View History"),
       new ButtonBuilder().setCustomId(`refresh:${session.id}`).setStyle(ButtonStyle.Primary).setLabel("Refresh"),
     );
-    const channel = await this.client.channels.fetch(this.config.DISCORD_SESSION_CHANNEL_ID) as TextChannel;
+    const channel = await this.client.channels.fetch(settings.logsChannelId) as TextChannel;
     if (session.discordMessage) {
       try {
         const message = await channel.messages.fetch(session.discordMessage.messageId);
@@ -100,6 +123,8 @@ export class DiscordPublisher {
   }
 
   async restore(): Promise<void> {
+    const pending = this.pendingMessageRemovals.splice(0);
+    await this.removeMessages(pending);
     const sessions = await this.db.session.findMany({
       where: { deletedAt: null, OR: [{ state: { not: "ENDED" } }, { discordMessage: { isNot: null } }] },
       select: { id: true },

@@ -2,13 +2,17 @@ import { Prisma, type Session, type SessionState } from "@prisma/client";
 import type { Config } from "../config.js";
 import type { PresenceEvent } from "../domain/events.js";
 import type { prisma as database } from "../db.js";
+import type { RuntimeSettingsService } from "./runtime-settings.js";
 
 type Db = typeof database;
+export type DiscordMessageReference = { channelId: string; messageId: string };
+
 export type EventResult = {
   eventId: string;
-  status: "accepted" | "duplicate" | "out_of_order";
+  status: "accepted" | "duplicate" | "out_of_order" | "tracking_disabled" | "removed_low_rank";
   sessionId?: string | undefined;
   alsoChangedSessionId?: string | undefined;
+  removedMessages?: DiscordMessageReference[] | undefined;
   changed: boolean;
 };
 
@@ -24,20 +28,37 @@ function counterUpdate(state: SessionState, amount: bigint): Prisma.SessionUpdat
 }
 
 export class SessionService {
-  constructor(private readonly db: Db, private readonly config: Config) {}
+  constructor(
+    private readonly db: Db,
+    private readonly config: Config,
+    private readonly settings?: RuntimeSettingsService,
+  ) {}
 
-  validate(event: PresenceEvent, now = new Date()): void {
+  private validateSource(event: PresenceEvent, now = new Date()): void {
     if (event.universeId !== this.config.ROBLOX_UNIVERSE_ID) throw new Error("Unknown universe ID");
     if (!this.config.ROBLOX_ALLOWED_PLACE_IDS.includes(event.placeId)) throw new Error("Unknown place ID");
-    if (event.player.rankNumber < this.config.ROBLOX_MIN_RANK || event.player.rankNumber > this.config.ROBLOX_MAX_RANK) {
-      throw new Error("Player rank is not eligible");
-    }
     const drift = Math.abs(now.getTime() - new Date(event.occurredAt).getTime());
     if (drift > this.config.MAX_EVENT_AGE_SECONDS * 1000) throw new Error("Event timestamp is stale or too far in the future");
   }
 
+  private validateRank(event: PresenceEvent): void {
+    if (event.player.rankNumber < this.config.ROBLOX_MIN_RANK || event.player.rankNumber > this.config.ROBLOX_MAX_RANK) {
+      throw new Error("Player rank is not eligible");
+    }
+  }
+
+  validate(event: PresenceEvent, now = new Date()): void {
+    this.validateSource(event, now);
+    this.validateRank(event);
+  }
+
   async process(event: PresenceEvent): Promise<EventResult> {
-    this.validate(event);
+    if (this.settings && !(await this.settings.get()).trackingEnabled) {
+      return { eventId: event.eventId, status: "tracking_disabled", changed: false };
+    }
+    this.validateSource(event);
+    if (event.player.rankNumber < this.config.ROBLOX_MIN_RANK) return this.purgeLowRankPlayer(event);
+    this.validateRank(event);
     return this.db.$transaction(async (tx) => {
       const prior = await tx.processedEvent.findUnique({ where: { eventId: event.eventId } });
       if (prior) return { eventId: event.eventId, status: "duplicate", sessionId: prior.sessionId ?? undefined, changed: false };
@@ -104,6 +125,30 @@ export class SessionService {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
+  private async purgeLowRankPlayer(event: PresenceEvent): Promise<EventResult> {
+    const removedMessages = await this.db.$transaction(async (tx) => {
+      const identity = await tx.identity.findUnique({
+        where: { robloxUserId: event.player.userId },
+        include: { sessions: { include: { discordMessage: true } } },
+      });
+      if (!identity) return [];
+
+      const sessionIds = identity.sessions.map(({ id }) => id);
+      const messages = identity.sessions.flatMap(({ discordMessage }) => discordMessage ? [{
+        channelId: discordMessage.channelId,
+        messageId: discordMessage.messageId,
+      }] : []);
+      if (sessionIds.length) {
+        await tx.auditEntry.deleteMany({ where: { sessionId: { in: sessionIds } } });
+        await tx.processedEvent.deleteMany({ where: { sessionId: { in: sessionIds } } });
+        await tx.session.deleteMany({ where: { identityId: identity.id } });
+      }
+      await tx.identity.delete({ where: { id: identity.id } });
+      return messages;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    return { eventId: event.eventId, status: "removed_low_rank", removedMessages, changed: false };
+  }
+
   private async transition(
     tx: Prisma.TransactionClient,
     session: Session,
@@ -127,6 +172,7 @@ export class SessionService {
   }
 
   async sweep(now = new Date()): Promise<string[]> {
+    if (this.settings && !(await this.settings.get()).trackingEnabled) return [];
     const changed: string[] = [];
     const staleBefore = new Date(now.getTime() - this.config.HEARTBEAT_STALE_SECONDS * 1000);
     const stale = await this.db.session.findMany({ where: { state: { in: ["ACTIVE", "INACTIVE"] }, lastEventAt: { lt: staleBefore }, deletedAt: null } });

@@ -32,6 +32,19 @@ describe("ingestion API", () => {
     expect(response.statusCode).toBe(202); expect(process).toHaveBeenCalledOnce(); expect(changed).toHaveBeenCalledWith(["session-1"]);
   });
 
+  it("passes low-rank Discord messages to the publisher for deletion", async () => {
+    const process = vi.fn().mockResolvedValue({
+      eventId: validEvent.eventId,
+      status: "removed_low_rank",
+      changed: false,
+      removedMessages: [{ channelId: "channel-1", messageId: "message-1" }],
+    });
+    const changed = vi.fn(); const app = await buildApi(config, { process } as never, changed); apps.push(app);
+    const response = await app.inject({ method: "POST", url: "/v1/roblox/presence/batch", headers: { authorization: `Bearer ${config.ROBLOX_INGESTION_SECRET}` }, payload: { events: [validEvent] } });
+    expect(response.statusCode).toBe(202);
+    expect(changed).toHaveBeenCalledWith([], [{ channelId: "channel-1", messageId: "message-1" }]);
+  });
+
   it("enforces the configured batch limit", async () => {
     const app = await buildApi(config, { process: vi.fn() } as never, async () => {}); apps.push(app);
     const response = await app.inject({ method: "POST", url: "/v1/roblox/presence/batch", headers: { authorization: `Bearer ${config.ROBLOX_INGESTION_SECRET}` }, payload: { events: [validEvent, { ...validEvent, eventId: "6bad52ed-746f-4e7c-b6c1-544065466ddf" }] } });

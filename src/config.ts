@@ -12,6 +12,7 @@ const schema = z.object({
   DISCORD_SESSION_CHANNEL_ID: z.string().default(""),
   DISCORD_STAFF_ROLE_IDS: csv,
   DISCORD_ADMIN_ROLE_IDS: csv,
+  DISCORD_MANAGER_ROLE_IDS: csv,
   BLOXLINK_API_KEY: z.string().default(""),
   BLOXLINK_BASE_URL: z.string().url().default("https://api.blox.link/v4/public"),
   ROBLOX_INGESTION_SECRET: z.string().min(16),
