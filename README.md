@@ -32,4 +32,14 @@ npm run typecheck
 npm run build
 ```
 
+## Releases
+
+Use semantic versions: `v1.0.0` for stable releases and `v1.1.0-beta.1` for beta releases. Update `CHANGELOG.md`, run `npm version <version>`, then push the commit and tag:
+
+```powershell
+git push origin main --follow-tags
+```
+
+Pushing a matching `v<package-version>` tag runs checks and creates the GitHub release automatically. Prerelease tags, including beta versions, are marked as prereleases.
+
 Keep the Roblox ingestion secret only in `.env` and `ServerScriptService.SessionTracker.Config`.
