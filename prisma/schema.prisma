@@ -1,0 +1,113 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SessionState {
+  ACTIVE
+  INACTIVE
+  RECONNECTING
+  ENDED
+}
+
+enum EventKind {
+  JOIN
+  HEARTBEAT
+  LEAVE
+  SHUTDOWN
+}
+
+model Identity {
+  id            String    @id @default(cuid())
+  robloxUserId  BigInt    @unique
+  robloxUsername String
+  discordUserId String?
+  mappingCheckedAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  sessions      Session[]
+
+  @@index([discordUserId])
+}
+
+model Session {
+  id                    String       @id @default(cuid())
+  identityId            String
+  identity              Identity     @relation(fields: [identityId], references: [id])
+  state                 SessionState
+  startedAt             DateTime
+  endedAt               DateTime?
+  lastEventAt           DateTime
+  lastStateAt           DateTime
+  reconnectDeadline     DateTime?
+  activeMilliseconds    BigInt       @default(0)
+  inactiveMilliseconds  BigInt       @default(0)
+  reconnectMilliseconds BigInt       @default(0)
+  rankNumber            Int
+  rankName              String
+  universeId            BigInt
+  placeId               BigInt
+  jobId                 String
+  deletedAt             DateTime?
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+  segments              TimeSegment[]
+  discordMessage        DiscordMessage?
+  auditEntries          AuditEntry[]
+
+  @@index([identityId, startedAt])
+  @@index([state, reconnectDeadline])
+  @@index([deletedAt, startedAt])
+}
+
+model TimeSegment {
+  id        String       @id @default(cuid())
+  sessionId String
+  session   Session      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  state     SessionState
+  startedAt DateTime
+  endedAt   DateTime?
+
+  @@index([sessionId, startedAt])
+}
+
+model DiscordMessage {
+  id        String   @id @default(cuid())
+  sessionId String   @unique
+  session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  channelId String
+  messageId String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ProcessedEvent {
+  id          String    @id @default(cuid())
+  eventId     String    @unique
+  kind        EventKind
+  occurredAt  DateTime
+  receivedAt  DateTime  @default(now())
+  sessionId   String?
+
+  @@index([receivedAt])
+}
+
+model AuditEntry {
+  id          String   @id @default(cuid())
+  sessionId   String?
+  session     Session? @relation(fields: [sessionId], references: [id])
+  actorType   String
+  actorId     String
+  action      String
+  note        String?
+  before      Json?
+  after       Json?
+  createdAt   DateTime @default(now())
+
+  @@index([sessionId, createdAt])
+}
+

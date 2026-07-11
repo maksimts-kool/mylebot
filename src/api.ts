@@ -1,0 +1,53 @@
+import { timingSafeEqual } from "node:crypto";
+import rateLimit from "@fastify/rate-limit";
+import Fastify from "fastify";
+import { ZodError } from "zod";
+import type { Config } from "./config.js";
+import { presenceBatchSchema } from "./domain/events.js";
+import type { SessionService } from "./services/session-service.js";
+
+function secretMatches(header: string | undefined, expected: string): boolean {
+  const supplied = header?.startsWith("Bearer ") ? header.slice(7) : "";
+  const actualBuffer = Buffer.from(supplied);
+  const expectedBuffer = Buffer.from(expected);
+  return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
+export async function buildApi(config: Config, sessions: SessionService, onChanged: (ids: string[]) => Promise<void>) {
+  const app = Fastify({
+    logger: true,
+    bodyLimit: 256 * 1024,
+    trustProxy: config.TRUST_PROXY === "loopback" ? "127.0.0.1/8" : false,
+  });
+  await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
+
+  app.get("/health", async () => ({ status: "ok" }));
+  app.post("/v1/roblox/presence/batch", async (request, reply) => {
+    if (!secretMatches(request.headers.authorization, config.ROBLOX_INGESTION_SECRET)) {
+      return reply.code(401).send({ error: "invalid_authentication" });
+    }
+    const batch = presenceBatchSchema.parse(request.body);
+    if (batch.events.length > config.MAX_BATCH_SIZE) return reply.code(413).send({ error: "batch_too_large" });
+    const results = [];
+    const changed = new Set<string>();
+    for (const event of batch.events) {
+      const result = await sessions.process(event);
+      results.push(result);
+      if (result.changed && result.sessionId) changed.add(result.sessionId);
+      if (result.alsoChangedSessionId) changed.add(result.alsoChangedSessionId);
+    }
+    await onChanged([...changed]);
+    return reply.code(202).send({ results });
+  });
+
+  app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof ZodError) return reply.code(400).send({ error: "invalid_payload", details: error.flatten() });
+    const message = error instanceof Error ? error.message : "Unknown error";
+    if (message.includes("universe") || message.includes("place") || message.includes("rank") || message.includes("timestamp")) {
+      return reply.code(400).send({ error: "rejected_event", message });
+    }
+    app.log.error(error);
+    return reply.code(500).send({ error: "internal_error" });
+  });
+  return app;
+}

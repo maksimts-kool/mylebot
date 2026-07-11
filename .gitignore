@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+coverage/
+*.log
+roblox/SessionTrackerConfig.lua
+.idea/
+.vscode/
