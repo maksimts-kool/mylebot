@@ -30,7 +30,7 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          test "$TAG" = "v$(node -p \"require('./package.json').version\")"
+          test "$TAG" = "v$(node -p "require('./package.json').version")"
 
       - name: Create GitHub release
         env:
