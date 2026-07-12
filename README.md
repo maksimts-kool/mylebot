@@ -224,6 +224,7 @@ Permission levels are cumulative: manager includes admin and staff access, and a
 | `npm test` | Runs the Vitest suite once. |
 | `npm run test:watch` | Runs Vitest in watch mode. |
 | `npm run simulate` | Sends a representative presence lifecycle to a running API. |
+| `npm run release -- <M\|R\|B>` | Increments the major, release, or beta version, creates a commit and tag, and pushes both to GitHub. |
 | `npm run commands:deploy` | Replaces Discord guild command definitions. |
 | `npm run prisma:generate` | Generates the Prisma client. |
 | `npm run prisma:migrate` | Runs Prisma's development migration workflow. |
@@ -243,6 +244,16 @@ npm test
 npm run typecheck
 npm run build
 ```
+
+### Create a release
+
+Run the release helper from a clean Git working tree. `M` increments the first version number (`1.2.3` → `2.0.0`), `R` increments the second (`1.2.3` → `1.3.0`), and `B` increments the third (`1.2.3` → `1.2.4`):
+
+```powershell
+npm run release -- B
+```
+
+The helper updates [`package.json`](package.json) and [`package-lock.json`](package-lock.json), creates a `chore(release): vX.Y.Z` commit and matching `vX.Y.Z` Git tag, then pushes the current branch and tag to the GitHub `origin` remote. The push is not attempted if the worktree is dirty or `origin` is not hosted on GitHub.
 
 ## Troubleshooting
 

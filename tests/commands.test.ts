@@ -3,6 +3,7 @@ import {
   PermissionLevel,
   commandData,
   formatSessionDateTime,
+  parsePermissionRoleChoice,
   parseSessionDateTime,
   requiredPermission,
 } from "../src/discord/commands.js";
@@ -19,6 +20,17 @@ describe("Discord command permissions", () => {
   it("deploys the manager configuration command", () => {
     const config = commandData.find((command) => command.name === "config");
     expect(config?.options).toEqual([]);
+  });
+
+  it("parses role permission button choices", () => {
+    expect(parsePermissionRoleChoice("config-role-level:123456789012345678:4")).toEqual({
+      roleId: "123456789012345678",
+      choice: "4",
+    });
+    expect(parsePermissionRoleChoice("config-role-level:123456789012345678:remove")).toEqual({
+      roleId: "123456789012345678",
+      choice: "remove",
+    });
   });
 });
 

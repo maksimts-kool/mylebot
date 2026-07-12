@@ -4,6 +4,10 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+## 0.9.4 - 2026-07-12
+
+- Fixed "Error: Invalid permission level"
+
 ## 0.9.3 - 2026-07-12
 
 - Removed environment-based Discord session-channel and permission-role configuration.

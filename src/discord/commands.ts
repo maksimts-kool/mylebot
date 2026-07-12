@@ -56,6 +56,13 @@ export function requiredPermission(commandName: string, subcommand?: string): nu
   return PermissionLevel.MANAGER;
 }
 
+export function parsePermissionRoleChoice(customId: string): { roleId: string; choice: string } | null {
+  const prefix = "config-role-level:";
+  if (!customId.startsWith(prefix)) return null;
+  const [roleId, choice] = customId.slice(prefix.length).split(":");
+  return roleId && choice ? { roleId, choice } : null;
+}
+
 function input(id: string, label: string, value = "", required = true): ActionRowBuilder<TextInputBuilder> {
   const field = new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(TextInputStyle.Short).setRequired(required);
   if (value) field.setValue(value);
@@ -379,8 +386,9 @@ export class CommandHandler {
     }
     if (interaction.customId.startsWith("config-role-level:")) {
       if (!await this.hasPermission(interaction, PermissionLevel.MANAGER)) userError("Manager role required");
-      const [, , roleId, choice] = interaction.customId.split(":");
-      if (!roleId) userError("Role not found");
+      const selection = parsePermissionRoleChoice(interaction.customId);
+      if (!selection) userError("Role or permission level not found");
+      const { roleId, choice } = selection;
       if (choice === "remove") {
         await this.db.permissionRole.deleteMany({ where: { roleId } });
         await interaction.update(await this.configPanel());
