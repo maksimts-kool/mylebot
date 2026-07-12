@@ -1,9 +1,9 @@
 # Architect-mode guidance
 
-- Keep `SessionService` as the sole owner of lifecycle transitions; API, timers, Discord publishing, and commands should orchestrate rather than duplicate state-machine logic.
-- PostgreSQL invariants complement Prisma: the partial unique index guarantees one non-deleted live session per identity and must be preserved through migration design.
-- Model delivery as at-least-once and potentially out-of-order. Event UUID deduplication, `lastEventAt` ordering, serializable transactions, and retry handling are architectural safeguards, not incidental implementation.
-- Timing has coupled historical segments and denormalized bigint counters; any redesign must preserve exact wall-clock accounting, including reconnect grace time and currently open segments.
-- Rank loss below the minimum is a privacy/data-lifecycle boundary requiring hard deletion across identities, sessions, audits, processed events, and Discord projections.
-- Runtime settings and permission roles live in PostgreSQL; environment role/channel values are bootstrap or legacy fallbacks, not the only configuration source.
-- Roblox producers run independently in every universe place, buffer transient failures, favor lifecycle events over heartbeats under pressure, and must remain batch-compatible with the API limit.
+- Keep [`SessionService`](../../src/services/session-service.ts:37) the sole owner of lifecycle transitions; API, timers, and Discord only orchestrate or project.
+- Treat database constraints as mandatory architecture: preserve the PostgreSQL partial index that permits one non-deleted live session per identity.
+- Design for at-least-once, out-of-order delivery with UUID idempotency, `lastEventAt` ordering, serializable transactions, and conflict retries.
+- Preserve reconnect as a distinct state and duration across segments, counters, reports, and manual edits; accounting must equal wall-clock duration.
+- Treat below-minimum rank as a hard purge boundary spanning identities, sessions, audits, processed events, and Discord references.
+- PostgreSQL runtime settings are authoritative over environment fallbacks.
+- Each Roblox place is an independent buffered, retrying producer; under pressure, lifecycle events outrank heartbeats and batches remain API-compatible.

@@ -1,9 +1,9 @@
 # Code-mode guidance
 
-- Use NodeNext ESM `.js` suffixes for local TypeScript imports; strict options include `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`.
-- Keep session state changes atomic: close the current `TimeSegment`, increment the prior state's counter, open the next segment, and update state timestamps in one serializable transaction.
-- Preserve ingestion distinctions: below-minimum rank hard-purges all player data/messages, above-maximum rank rejects, duplicate UUIDs are no-ops, and out-of-order events are recorded without changing state.
-- The one-live-session rule is enforced by the partial index in `prisma/migrations/20260711000200_live_session_invariant/migration.sql`; Prisma schema edits alone cannot represent it.
-- Manual completed-session mutations must retain audit entries and satisfy active + inactive + reconnect = end - start; live sessions remain immutable through Discord controls.
-- Treat Roblox IDs as `bigint` internally and decimal strings over JSON. Keep the Lua sender's hard-coded batch of 100 no larger than backend `MAX_BATCH_SIZE`.
-- If slash-command definitions change, keep runtime guild synchronization and `scripts/deploy-commands.ts` behavior aligned.
+- Preserve NodeNext emitted `.js` suffixes on local imports and the exact-optional/unchecked-index constraints in [`tsconfig.json`](../../tsconfig.json).
+- Keep [`SessionService`](../../src/services/session-service.ts:37) transitions atomic: close the segment, account the prior state, open the next, and update timestamps in one serializable transaction.
+- Preserve ingestion outcomes: tracking-disabled short-circuits; below-minimum rank hard-purges; above-maximum rejects; duplicate UUIDs are no-ops; older events do not mutate current state.
+- The one-live-session invariant comes from the PostgreSQL partial index in [`migration.sql`](../../prisma/migrations/20260711000200_live_session_invariant/migration.sql), not [`prisma/schema.prisma`](../../prisma/schema.prisma).
+- Completed-session edits retain reconnect duration, audits, and wall-clock equality. Producers emit Roblox IDs as decimal strings; the [`src/api.ts`](../../src/api.ts) schema currently accepts decimal strings or JSON numbers and converts them to `bigint`. Never serialize native bigints.
+- Keep the Lua batch of 100 within the API limit and preserve lifecycle events over heartbeats under queue pressure.
+- Keep slash-command definitions, startup synchronization, and [`scripts/deploy-commands.ts`](../../scripts/deploy-commands.ts) aligned when command shape changes.
