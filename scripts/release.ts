@@ -12,7 +12,16 @@ const versionPartAliases: Readonly<Record<string, VersionPart>> = {
 };
 
 function run(command: string, args: readonly string[], captureOutput = false): string {
-    const result = spawnSync(command, args, {
+    const useNpmCli = process.platform === "win32" && command === "npm";
+    const npmCliPath = process.env.npm_execpath;
+
+    if (useNpmCli && npmCliPath === undefined) {
+        throw new Error("npm_execpath is unavailable; run this script through npm.");
+    }
+
+    const executable = useNpmCli ? process.execPath : command;
+    const executableArgs: readonly string[] = useNpmCli ? [npmCliPath!, ...args] : args;
+    const result = spawnSync(executable, executableArgs, {
         encoding: "utf8",
         stdio: captureOutput ? "pipe" : "inherit",
     });
