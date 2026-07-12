@@ -153,14 +153,7 @@ export class CommandHandler {
     const configured = roleIds.length
       ? await this.db.permissionRole.findMany({ where: { roleId: { in: roleIds } }, select: { level: true } })
       : [];
-    const legacyLevel = this.config.DISCORD_MANAGER_ROLE_IDS.some((id) => roleIds.includes(id))
-      ? PermissionLevel.MANAGER
-      : this.config.DISCORD_ADMIN_ROLE_IDS.some((id) => roleIds.includes(id))
-        ? PermissionLevel.ADMIN
-        : this.config.DISCORD_STAFF_ROLE_IDS.some((id) => roleIds.includes(id))
-          ? PermissionLevel.STAFF
-          : PermissionLevel.EVERYONE;
-    return Math.max(legacyLevel, ...configured.map(({ level }) => level));
+    return Math.max(PermissionLevel.EVERYONE, ...configured.map(({ level }) => level));
   }
 
   private async hasPermission(interaction: Interaction, required: number): Promise<boolean> {

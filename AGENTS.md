@@ -76,8 +76,8 @@ Useful entry points:
 
 ### Runtime settings and Discord
 
-- PostgreSQL runtime settings override environment fallbacks after a manager saves them.
-- Discord access is cumulative. Guild administrators have manager access; otherwise take the maximum permission level from database roles and legacy environment role IDs.
+- Discord logs-channel and role settings are configured through `/config` and stored in PostgreSQL; they do not have environment fallbacks.
+- Discord access is cumulative. Guild administrators have manager access; otherwise take the maximum permission level from database roles.
 - Slash-command definitions synchronize at startup. When command shapes change, keep startup synchronization, [`scripts/deploy-commands.ts`](scripts/deploy-commands.ts), tests, and README documentation aligned.
 - Discord publication failures must not become session state authority or corrupt persisted lifecycle state.
 

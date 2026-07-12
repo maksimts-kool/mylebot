@@ -4,6 +4,11 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+## 0.9.3 - 2026-07-12
+
+- Removed environment-based Discord session-channel and permission-role configuration.
+- Made Discord server administrators responsible for initial logs-channel and role setup through `/config`, with settings stored in PostgreSQL.
+
 ## 0.9.2 - 2026-07-11
 
 - Replaced the Discord configuration subcommands with a single interactive `/config` interface that applies updates automatically.

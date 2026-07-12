@@ -31,7 +31,7 @@ export class DiscordPublisher {
     private readonly db: Db,
     private readonly config: Config,
     private readonly bloxlink: BloxlinkService,
-    private readonly settings?: RuntimeSettingsService,
+    private readonly settings: RuntimeSettingsService,
   ) {}
 
   async refreshMany(ids: string[]): Promise<void> {
@@ -56,7 +56,7 @@ export class DiscordPublisher {
   }
 
   async refresh(sessionId: string, includeDeleted = false): Promise<void> {
-    const settings = this.settings ? await this.settings.get() : { logsChannelId: this.config.DISCORD_SESSION_CHANNEL_ID };
+    const settings = await this.settings.get();
     if (!this.client.isReady() || !settings.logsChannelId) return;
     const session = await this.db.session.findUnique({
       where: { id: sessionId }, include: { identity: true, segments: true, discordMessage: true },

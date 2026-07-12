@@ -70,14 +70,10 @@ Comma-separated ID settings must not contain surrounding quotes. Roblox IDs are 
 | `DISCORD_TOKEN` | Discord bot token. If empty, the service starts in API-only mode. |
 | `DISCORD_APPLICATION_ID` | Discord application ID, required for command deployment. |
 | `DISCORD_GUILD_ID` | Guild where commands are installed and Bloxlink mappings are resolved. |
-| `DISCORD_SESSION_CHANNEL_ID` | Initial/fallback channel for session-log messages. Managers can change it through `/config`. |
-| `DISCORD_STAFF_ROLE_IDS` | Optional comma-separated bootstrap role IDs for staff access. |
-| `DISCORD_ADMIN_ROLE_IDS` | Optional comma-separated bootstrap role IDs for admin access. |
-| `DISCORD_MANAGER_ROLE_IDS` | Comma-separated bootstrap role IDs for manager access. Configure at least one unless guild administrators will perform initial setup. |
 | `BLOXLINK_API_KEY` | Optional Bloxlink API key. Without it, uncached Discord↔Roblox mappings cannot be resolved. |
 | `BLOXLINK_BASE_URL` | Bloxlink API base URL; normally leave the default unchanged. |
 
-Guild members with Discord's Administrator permission always receive manager access. Role assignments made later through `/config` are stored in PostgreSQL; the three role-ID variables remain bootstrap and fallback assignments.
+The Discord server owner or another member with Discord's Administrator permission performs initial setup through `/config`. Select the session logs channel and assign staff, admin, and manager access to Discord roles there. These settings are stored in PostgreSQL; the logs channel and role assignments are not configured through environment variables.
 
 ### Roblox ingestion
 
@@ -182,8 +178,6 @@ Place a TLS-terminating reverse proxy in front of the application for Roblox tra
 
 [`compose.portainer.yml`](compose.portainer.yml) is intended for a Portainer stack. It reads values from Portainer's stack environment rather than an `env_file` and marks the core Discord, Roblox, and PostgreSQL values as required. Add the variables from [`.env.example`](.env.example) to the stack environment, then deploy the stack from the repository.
 
-Unlike the default Compose file, the Portainer definition requires `DISCORD_SESSION_CHANNEL_ID`, `DISCORD_ADMIN_ROLE_IDS`, and `DISCORD_MANAGER_ROLE_IDS` to be non-empty at interpolation time.
-
 ## Roblox setup
 
 Install the package in **every place** listed in `ROBLOX_ALLOWED_PLACE_IDS`:
@@ -258,7 +252,7 @@ npm run build
 - **Events are rejected:** confirm the sender uses the configured universe and an allowed place, its clock is accurate, and its group rank is within the configured maximum. Also keep the sender's batch size compatible with `MAX_BATCH_SIZE`.
 - **Discord commands are absent or stale:** confirm the token, application ID, and guild ID, then run `npm run commands:deploy`. The bot also synchronizes commands after a successful Discord login.
 - **A Discord user cannot be mapped:** configure `BLOXLINK_API_KEY`, confirm the Bloxlink link exists in `DISCORD_GUILD_ID`, and check API warnings. Successful and empty mappings are cached for 24 hours after lookup.
-- **No session messages appear:** configure `DISCORD_SESSION_CHANNEL_ID` or select a logs channel through `/config`, and ensure the bot can view the channel and send messages and embeds there.
+- **No session messages appear:** have the Discord server owner or an administrator select a logs channel through `/config`, and ensure the bot can view the channel and send messages and embeds there.
 
 ## Security and operational notes
 

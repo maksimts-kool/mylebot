@@ -11,7 +11,7 @@ import { RuntimeSettingsService } from "./services/runtime-settings.js";
 const config = loadConfig();
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const bloxlink = new BloxlinkService(prisma, config);
-const settings = new RuntimeSettingsService(prisma, config);
+const settings = new RuntimeSettingsService(prisma);
 const sessions = new SessionService(prisma, config, settings);
 const publisher = new DiscordPublisher(client, prisma, config, bloxlink, settings);
 new CommandHandler(client, prisma, config, publisher, bloxlink, settings).register();
