@@ -8,6 +8,10 @@ import { BloxlinkService } from "./services/bloxlink.js";
 import { SessionService } from "./services/session-service.js";
 import { RuntimeSettingsService } from "./services/runtime-settings.js";
 
+function errorType(error: unknown): string {
+  return error instanceof Error ? error.name : "UnknownError";
+}
+
 const config = loadConfig();
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const bloxlink = new BloxlinkService(prisma, config);
@@ -20,23 +24,52 @@ const api = await buildApi(config, sessions, async (ids, removedMessages) => {
   if (removedMessages) await publisher.removeMessages(removedMessages);
 }, async () => { await prisma.$queryRaw`SELECT 1`; });
 
-client.once(Events.ClientReady, async () => {
-  console.log(`Discord bot ready as ${client.user?.tag}`);
-  if (config.DISCORD_GUILD_ID) {
-    // Guild command replacement is immediate and removes stale command definitions.
-    // Clear legacy global commands as well so Discord does not display duplicates.
-    await client.application!.commands.set([]);
-    const guild = await client.guilds.fetch(config.DISCORD_GUILD_ID);
-    await guild.commands.set(commandData);
-    console.log(`Synchronized ${commandData.length} Discord guild commands`);
+async function bootstrapDiscord(): Promise<void> {
+  api.log.info({ phase: "discord_bootstrap" }, "Discord bootstrap started");
+  try {
+    if (config.DISCORD_GUILD_ID) {
+      // Guild command replacement is immediate and removes stale command definitions.
+      // Clear legacy global commands as well so Discord does not display duplicates.
+      await client.application!.commands.set([]);
+      const guild = await client.guilds.fetch(config.DISCORD_GUILD_ID);
+      await guild.commands.set(commandData);
+      api.log.info({ phase: "discord_command_sync", commandCount: commandData.length }, "Discord guild commands synchronized");
+    }
+    await publisher.restore();
+    api.log.info({ phase: "discord_bootstrap" }, "Discord bootstrap completed");
+  } catch (error) {
+    api.log.error({ phase: "discord_bootstrap", errorType: errorType(error) }, "Discord bootstrap failed");
   }
-  await publisher.restore();
+}
+
+client.once(Events.ClientReady, () => {
+  void bootstrapDiscord();
 });
 
-await sessions.sweep().then((ids) => publisher.refreshMany(ids));
+api.log.info({ phase: "startup" }, "Application startup initialized");
+api.log.info({ phase: "initial_session_sweep" }, "Initial session sweep started");
+try {
+  const ids = await sessions.sweep();
+  await publisher.refreshMany(ids);
+  api.log.info({ phase: "initial_session_sweep", affectedSessionCount: ids.length }, "Initial session sweep completed");
+} catch (error) {
+  api.log.error({ phase: "initial_session_sweep", errorType: errorType(error) }, "Initial session sweep failed");
+  throw error;
+}
 await api.listen({ host: config.API_HOST, port: config.API_PORT });
-if (config.DISCORD_TOKEN) await client.login(config.DISCORD_TOKEN);
-else console.warn("DISCORD_TOKEN is empty; API-only mode is active");
+api.log.info({ phase: "http_listening", host: config.API_HOST, port: config.API_PORT }, "HTTP server listening");
+if (config.DISCORD_TOKEN) {
+  api.log.info({ phase: "discord_login" }, "Discord login started");
+  try {
+    await client.login(config.DISCORD_TOKEN);
+    api.log.info({ phase: "discord_login" }, "Discord login completed");
+  } catch (error) {
+    api.log.error({ phase: "discord_login", errorType: errorType(error) }, "Discord login failed");
+    throw error;
+  }
+} else {
+  api.log.info({ phase: "discord_login", mode: "api_only" }, "API-only mode is active");
+}
 
 let stopping = false;
 function schedule(name: string, intervalMs: number, operation: () => Promise<void>): NodeJS.Timeout {
@@ -45,14 +78,16 @@ function schedule(name: string, intervalMs: number, operation: () => Promise<voi
     const startedAt = Date.now();
     try {
       await operation();
+      api.log.info({ job: name, durationMs: Date.now() - startedAt }, "Scheduled job completed");
     } catch (error) {
-      console.error(`${name} failed`, error);
+      api.log.error({ job: name, errorType: errorType(error), durationMs: Date.now() - startedAt }, "Scheduled job failed");
     } finally {
       if (!stopping) timer.refresh();
       const duration = Date.now() - startedAt;
-      if (duration > intervalMs) console.warn(`${name} took ${duration}ms (interval ${intervalMs}ms)`);
+      if (duration > intervalMs) api.log.warn({ job: name, durationMs: duration, intervalMs }, "Scheduled job exceeded its interval");
     }
   }, intervalMs);
+  api.log.info({ job: name, intervalMs }, "Scheduled job registered");
   return timer;
 }
 
@@ -66,14 +101,15 @@ const refreshTimer = schedule("Discord refresh", config.DISCORD_UPDATE_SECONDS *
 });
 const cleanupTimer = schedule("processed-event cleanup", 24 * 60 * 60 * 1000, async () => {
   const count = await sessions.cleanupProcessedEvents();
-  if (count) console.log(`Removed ${count} expired processed events`);
+  if (count) api.log.info({ job: "processed-event cleanup", removedEventCount: count }, "Expired processed events removed");
 });
 
 async function shutdown(signal: string) {
-  console.log(`Received ${signal}; shutting down`);
+  api.log.info({ phase: "shutdown", signal }, "Application shutdown started");
   stopping = true;
   clearTimeout(sweepTimer); clearTimeout(refreshTimer); clearTimeout(cleanupTimer);
   await api.close(); client.destroy(); await prisma.$disconnect();
+  api.log.info({ phase: "shutdown", signal }, "Application shutdown completed");
 }
 process.once("SIGINT", () => void shutdown("SIGINT"));
 process.once("SIGTERM", () => void shutdown("SIGTERM"));

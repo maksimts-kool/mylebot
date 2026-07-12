@@ -178,6 +178,12 @@ Place a TLS-terminating reverse proxy in front of the application for Roblox tra
 
 [`compose.portainer.yml`](compose.portainer.yml) is intended for a Portainer stack. It reads values from Portainer's stack environment rather than an `env_file` and marks the core Discord, Roblox, and PostgreSQL values as required. Add the variables from [`.env.example`](.env.example) to the stack environment, then deploy the stack from the repository.
 
+### Operational logs
+
+The application writes structured JSON logs to standard output. Startup, initial session sweeping, Discord bootstrap, and scheduled-job registration, completion, and failure are logged with phase, job, duration, or aggregate-count fields as applicable. Successful authenticated ingestion batches log only aggregate event outcomes and changed-session/message counts.
+
+Fastify request logging redacts authorization, cookie, API-key, and response-cookie values. Batch payloads, player identifiers, and credentials are not included in the application completion logs. View container logs with `docker compose logs --follow app`. If the app health check cannot reach `/ready`, Docker records a concise `readiness check failed` diagnostic in the container health-check output; the check continues to depend only on API readiness and PostgreSQL, not Discord.
+
 ## Roblox setup
 
 Install the package in **every place** listed in `ROBLOX_ALLOWED_PLACE_IDS`:

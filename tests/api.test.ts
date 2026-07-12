@@ -13,7 +13,7 @@ const config = loadConfig({
 const validEvent = {
   eventId: "650daf2b-79b0-4d70-9c19-2a280fa3ac39",
   kind: "JOIN", occurredAt: new Date().toISOString(), universeId: "100", placeId: "300", jobId: "job",
-  player: { userId: "1", username: "Tester", rankNumber: 1, rankName: "Staff", active: true },
+  player: { userId: "999999999999999999", username: "Tester", rankNumber: 1, rankName: "Staff", active: true },
 };
 const apps: Array<Awaited<ReturnType<typeof buildApi>>> = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
@@ -38,8 +38,18 @@ describe("ingestion API", () => {
   it("accepts an authenticated event and reports changed sessions", async () => {
     const process = vi.fn().mockResolvedValue({ eventId: validEvent.eventId, status: "accepted", sessionId: "session-1", changed: true });
     const changed = vi.fn(); const app = await buildApi(config, { process } as never, changed); apps.push(app);
+    const info = vi.spyOn(app.log, "info");
     const response = await app.inject({ method: "POST", url: "/v1/roblox/presence/batch", headers: { authorization: `Bearer ${config.ROBLOX_INGESTION_SECRET}` }, payload: { events: [validEvent] } });
     expect(response.statusCode).toBe(202); expect(process).toHaveBeenCalledOnce(); expect(changed).toHaveBeenCalledWith(["session-1"]);
+    expect(info).toHaveBeenCalledWith({
+      eventCount: 1,
+      changedSessionCount: 1,
+      removedMessageCount: 0,
+      outcomes: { accepted: 1 },
+    }, "Authenticated presence batch completed");
+    const completion = info.mock.calls.find(([, message]) => message === "Authenticated presence batch completed");
+    expect(JSON.stringify(completion)).not.toContain(config.ROBLOX_INGESTION_SECRET);
+    expect(JSON.stringify(completion)).not.toContain(validEvent.player.userId);
   });
 
   it("passes low-rank Discord messages to the publisher for deletion", async () => {

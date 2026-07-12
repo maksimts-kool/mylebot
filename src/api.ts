@@ -6,6 +6,10 @@ import type { Config } from "./config.js";
 import { presenceBatchSchema } from "./domain/events.js";
 import type { DiscordMessageReference, SessionService } from "./services/session-service.js";
 
+function errorType(error: unknown): string {
+  return error instanceof Error ? error.name : "UnknownError";
+}
+
 function secretMatches(header: string | undefined, expected: string): boolean {
   const supplied = header?.startsWith("Bearer ") ? header.slice(7) : "";
   const actualBuffer = Buffer.from(supplied);
@@ -20,7 +24,13 @@ export async function buildApi(
   readiness: () => Promise<void> = async () => undefined,
 ) {
   const app = Fastify({
-    logger: true,
+    logger: {
+      level: "info",
+      redact: {
+        paths: ["req.headers", "res.headers['set-cookie']"],
+        censor: "[REDACTED]",
+      },
+    },
     bodyLimit: 256 * 1024,
     trustProxy: config.TRUST_PROXY === "loopback" ? "127.0.0.1/8" : false,
   });
@@ -32,7 +42,7 @@ export async function buildApi(
       await readiness();
       return { status: "ready" };
     } catch (error) {
-      app.log.error(error, "Readiness check failed");
+      app.log.error({ operation: "readiness_check", errorType: errorType(error) }, "Readiness check failed");
       return reply.code(503).send({ status: "not_ready" });
     }
   });
@@ -54,6 +64,11 @@ export async function buildApi(
     }
     if (removedMessages.length) await onChanged([...changed], removedMessages);
     else await onChanged([...changed]);
+    const outcomes = results.reduce<Record<string, number>>((counts, result) => {
+      counts[result.status] = (counts[result.status] ?? 0) + 1;
+      return counts;
+    }, {});
+    app.log.info({ eventCount: batch.events.length, changedSessionCount: changed.size, removedMessageCount: removedMessages.length, outcomes }, "Authenticated presence batch completed");
     return reply.code(202).send({ results });
   });
 
@@ -63,7 +78,7 @@ export async function buildApi(
     if (message.includes("universe") || message.includes("place") || message.includes("rank") || message.includes("timestamp")) {
       return reply.code(400).send({ error: "rejected_event", message });
     }
-    app.log.error(error);
+    app.log.error({ operation: "request_handling", errorType: errorType(error) }, "Unhandled request error");
     return reply.code(500).send({ error: "internal_error" });
   });
   return app;
