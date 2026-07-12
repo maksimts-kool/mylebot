@@ -106,10 +106,11 @@ function friendlyDuration(milliseconds: number): string {
   return parts.join(" ");
 }
 
-function friendlyPeriod(startDate: string, endDate: string, timezone: string): string {
+export function friendlyPeriod(startDate: string, endDate: string, timezone: string): string {
   const start = DateTime.fromISO(startDate, { zone: timezone });
   const end = DateTime.fromISO(endDate, { zone: timezone });
-  if (start.year === end.year && start.month === end.month) return start.toFormat("LLLL yyyy");
+  const coversFullMonth = start.hasSame(end, "month") && start.day === 1 && end.day === end.daysInMonth;
+  if (coversFullMonth) return start.toFormat("LLLL yyyy");
   if (start.year === end.year) return `${start.toFormat("LLL d")} – ${end.toFormat("LLL d, yyyy")}`;
   return `${start.toFormat("LLL d, yyyy")} – ${end.toFormat("LLL d, yyyy")}`;
 }

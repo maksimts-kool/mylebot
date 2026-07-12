@@ -3,6 +3,7 @@ import {
   PermissionLevel,
   commandData,
   formatSessionDateTime,
+  friendlyPeriod,
   parsePermissionRoleChoice,
   parseSessionDateTime,
   requiredPermission,
@@ -44,5 +45,24 @@ describe("manual session date input", () => {
   it("keeps accepting ISO timestamps and gives a useful error for invalid input", () => {
     expect(parseSessionDateTime("2026-07-11T14:30:00Z", "Europe/Tallinn").toISOString()).toBe("2026-07-11T14:30:00.000Z");
     expect(() => parseSessionDateTime("tomorrow afternoon", "Europe/Tallinn")).toThrow(/11\/07\/2026 14:30/);
+  });
+});
+
+describe("leaderboard period labels", () => {
+  it("names a full calendar month", () => {
+    expect(friendlyPeriod("2026-07-01", "2026-07-31", "Europe/Tallinn")).toBe("July 2026");
+    expect(friendlyPeriod("2026-02-01", "2026-02-28", "Europe/Tallinn")).toBe("February 2026");
+  });
+
+  it("shows a day range for a week that sits inside one month", () => {
+    expect(friendlyPeriod("2026-07-13", "2026-07-19", "Europe/Tallinn")).toBe("Jul 13 – Jul 19, 2026");
+  });
+
+  it("shows a day range for a week that straddles two months", () => {
+    expect(friendlyPeriod("2026-06-29", "2026-07-05", "Europe/Tallinn")).toBe("Jun 29 – Jul 5, 2026");
+  });
+
+  it("shows full dates for a span that crosses years", () => {
+    expect(friendlyPeriod("2006-01-01", "2026-07-13", "Europe/Tallinn")).toBe("Jan 1, 2006 – Jul 13, 2026");
   });
 });

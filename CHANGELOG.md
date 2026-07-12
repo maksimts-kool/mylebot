@@ -4,6 +4,10 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+## 0.9.5 - 2026-07-13
+
+- Fixed the weekly leaderboard being labeled with the full month name (for example "July 2026") instead of the actual date range.
+
 ## 0.9.4 - 2026-07-12
 
 - Fixed "Error: Invalid permission level"
