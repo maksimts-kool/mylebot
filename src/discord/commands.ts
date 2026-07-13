@@ -138,8 +138,15 @@ export class CommandHandler {
         userId: interaction.user.id,
       });
       if (interaction.isRepliable()) {
-        if (interaction.replied || interaction.deferred) await interaction.followUp({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
-        else await interaction.reply({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
+        // Delivering the error can itself fail (e.g. the interaction already
+        // expired with a 10062). Swallow that so it never crashes the process.
+        try {
+          if (interaction.deferred && !interaction.replied) await interaction.editReply({ content: `Error: ${message}` });
+          else if (interaction.replied) await interaction.followUp({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
+          else await interaction.reply({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
+        } catch (replyError) {
+          console.error("Failed to deliver interaction error message", { replyError, userId: interaction.user.id });
+        }
       }
     }));
   }
@@ -184,6 +191,7 @@ export class CommandHandler {
 
   private async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     if (interaction.commandName === "leaderboard") {
+      await interaction.deferReply();
       const period = interaction.options.getString("period") ?? "month";
       const { startDate, endDate } = this.presetDates(period);
       await this.renderLeaderboard(interaction, startDate, endDate, 0, 0); return;
@@ -272,6 +280,7 @@ export class CommandHandler {
   }
 
   private async showView(interaction: ChatInputCommandInteraction): Promise<void> {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const user = interaction.options.getUser("user", true);
     let identity = await this.db.identity.findFirst({ where: { discordUserId: user.id } });
     if (!identity) {
@@ -283,6 +292,7 @@ export class CommandHandler {
   }
 
   private async showActive(interaction: ChatInputCommandInteraction): Promise<void> {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const target = interaction.options.getUser("user") ?? interaction.user;
     const isSelf = target.id === interaction.user.id;
     if (!isSelf && !await this.hasPermission(interaction, PermissionLevel.ADMIN)) {
@@ -314,7 +324,7 @@ export class CommandHandler {
         { name: "⏱️ Time so far", value: `${friendlyDuration(totals.totalMs)} total · ${friendlyDuration(totals.activeMs)} active · ${friendlyDuration(totals.inactiveMs)} inactive`, inline: false },
         { name: "🆔 Session ID", value: `\`${session.id}\``, inline: false },
       );
-    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    await interaction.editReply({ embeds: [embed] });
   }
 
   private async handleModal(interaction: ModalSubmitInteraction): Promise<void> {
@@ -528,6 +538,7 @@ export class CommandHandler {
       components: [row],
     };
     if (responseMode === "update" && interaction.isButton()) await interaction.update(response);
+    else if (interaction.deferred || interaction.replied) await interaction.editReply(response);
     else await interaction.reply({ ...response, flags: MessageFlags.Ephemeral });
   }
 
@@ -574,6 +585,7 @@ export class CommandHandler {
       components,
     };
     if (interaction.isButton()) await interaction.update(response);
+    else if (interaction.deferred || interaction.replied) await interaction.editReply(response);
     else await interaction.reply(response);
   }
 
