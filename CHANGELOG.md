@@ -9,6 +9,8 @@ All notable changes are recorded here.
 - Added `/session active [user]` so staff can see their own live session; viewing another member's still requires Admin.
 - Kept a shift running when a player hops to another server, updating the tracked server id instead of ending the session on the old server's leave/shutdown.
 - Stopped tracking Studio playtests and private (VIP or reserved) servers entirely.
+- Deferred slow commands (`/session active`, `/session view`, `/leaderboard`) so Bloxlink and reporting lookups no longer blow past Discord's reply window, and hardened the interaction error handler so a failed error reply can't crash the bot.
+- Clarified the `/session active` messaging so a Bloxlink-verified member who simply has no tracked session no longer sees a misleading "no linked Roblox identity" error.
 
 ## 0.9.5 - 2026-07-13
 

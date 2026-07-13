@@ -300,10 +300,14 @@ export class CommandHandler {
     }
     let identity = await this.db.identity.findFirst({ where: { discordUserId: target.id } });
     if (!identity) {
+      // No local record yet — that only exists once we've tracked a session for
+      // them. Resolve via Bloxlink so we can tell "never verified" apart from
+      // "verified but never tracked / not in game right now".
       const mapped = await this.bloxlink.robloxForDiscord(target.id);
-      if (mapped) identity = await this.db.identity.findUnique({ where: { robloxUserId: mapped.userId } });
+      if (!mapped) userError(isSelf ? "You haven't linked a Roblox account with Bloxlink yet" : "That member hasn't linked a Roblox account with Bloxlink yet");
+      identity = await this.db.identity.findUnique({ where: { robloxUserId: mapped.userId } });
     }
-    if (!identity) userError(isSelf ? "You have no linked Roblox identity yet" : "That member has no linked Roblox identity yet");
+    if (!identity) userError(isSelf ? "You have no active session right now" : "That member has no active session right now");
     const session = await this.db.session.findFirst({
       where: { identityId: identity.id, state: { not: "ENDED" }, deletedAt: null },
       include: { segments: true },
