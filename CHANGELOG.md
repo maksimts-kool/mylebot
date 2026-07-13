@@ -4,6 +4,12 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+## 0.9.6 - 2026-07-13
+
+- Added `/session active [user]` so staff can see their own live session; viewing another member's still requires Admin.
+- Kept a shift running when a player hops to another server, updating the tracked server id instead of ending the session on the old server's leave/shutdown.
+- Stopped tracking Studio playtests and private (VIP or reserved) servers entirely.
+
 ## 0.9.5 - 2026-07-13
 
 - Fixed the weekly leaderboard being labeled with the full month name (for example "July 2026") instead of the actual date range.
