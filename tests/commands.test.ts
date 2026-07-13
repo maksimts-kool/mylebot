@@ -13,9 +13,21 @@ describe("Discord command permissions", () => {
   it("uses the requested access levels", () => {
     expect(requiredPermission("leaderboard")).toBe(PermissionLevel.EVERYONE);
     expect(requiredPermission("session", "view")).toBe(PermissionLevel.STAFF);
+    expect(requiredPermission("session", "active")).toBe(PermissionLevel.STAFF);
     expect(requiredPermission("session", "add")).toBe(PermissionLevel.ADMIN);
     expect(requiredPermission("session", "manage")).toBe(PermissionLevel.ADMIN);
     expect(requiredPermission("config", "tracking")).toBe(PermissionLevel.MANAGER);
+  });
+
+  it("deploys /session active with an optional user option", () => {
+    const session = commandData.find((command) => command.name === "session");
+    const active = session?.options?.find((option) => option.name === "active") as
+      | { options?: Array<{ name: string; required?: boolean }> }
+      | undefined;
+    expect(active).toBeDefined();
+    const user = active?.options?.find((option) => option.name === "user");
+    expect(user).toBeDefined();
+    expect(user?.required ?? false).toBe(false);
   });
 
   it("deploys the manager configuration command", () => {

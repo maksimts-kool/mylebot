@@ -25,4 +25,6 @@ StarterPlayer
 
 `MainModule` owns the server code; `Bootstrap` starts it. Add this package to every place in the universe.
 
+Studio playtests and private servers (VIP or reserved) are never tracked — `MainModule` skips them, so those sessions are ignored entirely.
+
 `server/Config.lua` is a local, gitignored configuration file. Copy `server/Config.example.lua` to it when maintaining a local configuration; never commit the secret.

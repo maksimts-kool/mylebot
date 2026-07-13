@@ -114,7 +114,15 @@ export class SessionService {
         });
         changed = true;
       } else if (session) {
-        const desired: SessionState = event.kind === "LEAVE" || event.kind === "SHUTDOWN"
+        const teardown = event.kind === "LEAVE" || event.kind === "SHUTDOWN";
+        if (teardown && session.jobId !== event.jobId) {
+          // The player already moved to a newer server and this teardown is from
+          // the old one they left. Ignore it so their shift keeps running (and its
+          // server id keeps tracking the newest server) instead of ending early.
+          await tx.processedEvent.create({ data: { eventId: event.eventId, kind: event.kind, occurredAt, sessionId: session.id } });
+          return { eventId: event.eventId, status: "out_of_order", sessionId: session.id, changed: false };
+        }
+        const desired: SessionState = teardown
           ? "RECONNECTING"
           : event.player.active ? "ACTIVE" : "INACTIVE";
         if (session.state !== desired) {

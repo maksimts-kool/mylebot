@@ -5,6 +5,7 @@
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local Config = require(script.Parent:WaitForChild("Config"))
 
@@ -24,11 +25,21 @@ local function createActivityEvent()
 	return event
 end
 
+local function shouldTrack()
+	-- Studio playtests and private servers (VIP or reserved) are not real shifts,
+	-- so we never track them. In Studio game.JobId is empty; private and reserved
+	-- servers expose a non-empty game.PrivateServerId.
+	if RunService:IsStudio() then return false end
+	if game.PrivateServerId ~= "" then return false end
+	return true
+end
+
 function SessionTracker.start()
 	if started then return end
+	if not shouldTrack() then return end
 	started = true
 
-	local jobId = game.JobId ~= "" and game.JobId or ("studio-" .. tostring(game.PlaceId))
+	local jobId = game.JobId
 	local activityEvent = createActivityEvent()
 	local tracked = {}
 	local pending = {}

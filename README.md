@@ -213,6 +213,7 @@ Available commands and permissions:
 | Command | Access | Purpose |
 | --- | --- | --- |
 | `/leaderboard [period]` | Everyone | Shows the staff leaderboard for this week, month, year, or all time. |
+| `/session active [user:<member>]` | Staff | Shows a live session. Staff see their own; viewing another member's requires Admin. |
 | `/session view user:<member>` | Staff | Shows a member's paginated session history. |
 | `/session add user:<member>` | Admin | Adds an audited completed session for a Bloxlink-mapped member. |
 | `/session manage sessionid:<id>` | Admin | Opens controls to edit or soft-delete a completed session. Live sessions cannot be managed manually. |

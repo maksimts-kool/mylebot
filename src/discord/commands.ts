@@ -18,6 +18,8 @@ type Db = typeof database;
 
 export const commandData = [
   new SlashCommandBuilder().setName("session").setDescription("Manage staff sessions")
+    .addSubcommand((s) => s.setName("active").setDescription("🟢 Show a live session")
+      .addUserOption((o) => o.setName("user").setDescription("Discord user (defaults to you; other members need Admin)").setRequired(false)))
     .addSubcommand((s) => s.setName("view").setDescription("📚 View a user's session history")
       .addUserOption((o) => o.setName("user").setDescription("Discord user").setRequired(true)))
     .addSubcommand((s) => s.setName("manage").setDescription("🛠️ Manage a completed session")
@@ -51,7 +53,7 @@ function userError(message: string): never {
 export function requiredPermission(commandName: string, subcommand?: string): number {
   if (commandName === "leaderboard") return PermissionLevel.EVERYONE;
   if (commandName === "config") return PermissionLevel.MANAGER;
-  if (commandName === "session" && subcommand === "view") return PermissionLevel.STAFF;
+  if (commandName === "session" && ["view", "active"].includes(subcommand ?? "")) return PermissionLevel.STAFF;
   if (commandName === "session" && ["add", "manage"].includes(subcommand ?? "")) return PermissionLevel.ADMIN;
   return PermissionLevel.MANAGER;
 }
@@ -199,6 +201,7 @@ export class CommandHandler {
     if (action === "add") await this.showAdd(interaction);
     if (action === "manage") await this.showManage(interaction);
     if (action === "view") await this.showView(interaction);
+    if (action === "active") await this.showActive(interaction);
   }
 
   private async handleConfig(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -277,6 +280,41 @@ export class CommandHandler {
     }
     if (!identity) userError("Identity not found");
     await this.replyHistory(interaction, identity.id, 0, "reply");
+  }
+
+  private async showActive(interaction: ChatInputCommandInteraction): Promise<void> {
+    const target = interaction.options.getUser("user") ?? interaction.user;
+    const isSelf = target.id === interaction.user.id;
+    if (!isSelf && !await this.hasPermission(interaction, PermissionLevel.ADMIN)) {
+      userError("Admin role required to view another member's active session");
+    }
+    let identity = await this.db.identity.findFirst({ where: { discordUserId: target.id } });
+    if (!identity) {
+      const mapped = await this.bloxlink.robloxForDiscord(target.id);
+      if (mapped) identity = await this.db.identity.findUnique({ where: { robloxUserId: mapped.userId } });
+    }
+    if (!identity) userError(isSelf ? "You have no linked Roblox identity yet" : "That member has no linked Roblox identity yet");
+    const session = await this.db.session.findFirst({
+      where: { identityId: identity.id, state: { not: "ENDED" }, deletedAt: null },
+      include: { segments: true },
+      orderBy: { startedAt: "desc" },
+    });
+    if (!session) userError(isSelf ? "You have no active session right now" : `${identity.robloxUsername} has no active session right now`);
+    const now = new Date();
+    const totals = totalsForPeriod(session.segments, session.startedAt, now, now);
+    const state = session.state === "ACTIVE" ? "Active now" : session.state === "INACTIVE" ? "Inactive now" : "Waiting for reconnect";
+    const icon = session.state === "ACTIVE" ? "🟢" : session.state === "INACTIVE" ? "🟡" : "🔵";
+    const owner = identity.discordUserId ? `**${identity.robloxUsername}** · <@${identity.discordUserId}>` : `**${identity.robloxUsername}**`;
+    const embed = new EmbedBuilder()
+      .setTitle(`${icon} ${state}`)
+      .setDescription(`👤 ${owner}`)
+      .addFields(
+        { name: "🗓️ Started", value: `<t:${Math.floor(session.startedAt.getTime() / 1000)}:R>`, inline: true },
+        { name: "🖥️ Server", value: `\`${session.jobId}\``, inline: true },
+        { name: "⏱️ Time so far", value: `${friendlyDuration(totals.totalMs)} total · ${friendlyDuration(totals.activeMs)} active · ${friendlyDuration(totals.inactiveMs)} inactive`, inline: false },
+        { name: "🆔 Session ID", value: `\`${session.id}\``, inline: false },
+      );
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   }
 
   private async handleModal(interaction: ModalSubmitInteraction): Promise<void> {

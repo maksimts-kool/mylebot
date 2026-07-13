@@ -71,6 +71,33 @@ describe("ingestion validation", () => {
     expect(transaction.identity.delete).toHaveBeenCalledWith({ where: { id: "identity-1" } });
   });
 
+  it("ignores a teardown event from a server the player already left after hopping", async () => {
+    const now = new Date();
+    const existing = {
+      id: "session-1", identityId: "identity-1", state: "ACTIVE", jobId: "server-b",
+      startedAt: new Date(now.getTime() - 60_000), lastEventAt: new Date(now.getTime() - 30_000),
+      lastStateAt: new Date(now.getTime() - 30_000), reconnectDeadline: null,
+    };
+    const transaction = {
+      processedEvent: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn() },
+      identity: { upsert: vi.fn().mockResolvedValue({ id: "identity-1" }) },
+      session: { findFirst: vi.fn().mockResolvedValue(existing), update: vi.fn() },
+      timeSegment: { updateMany: vi.fn(), create: vi.fn() },
+    };
+    const db = { $transaction: vi.fn(async (operation) => operation(transaction)) };
+    const hopped = new SessionService(db as never, config);
+
+    await expect(hopped.process({
+      ...base, eventId: "0b3f1d4e-4c8a-4c2f-9c2a-1f2e3d4c5b6a", kind: "LEAVE",
+      jobId: "server-a", occurredAt: now.toISOString(),
+    })).resolves.toMatchObject({ status: "out_of_order", sessionId: "session-1", changed: false });
+    expect(transaction.session.update).not.toHaveBeenCalled();
+    expect(transaction.timeSegment.create).not.toHaveBeenCalled();
+    expect(transaction.processedEvent.create).toHaveBeenCalledWith({
+      data: { eventId: "0b3f1d4e-4c8a-4c2f-9c2a-1f2e3d4c5b6a", kind: "LEAVE", occurredAt: now, sessionId: "session-1" },
+    });
+  });
+
   it("only sweeps a stale session when its state and timestamp still match", async () => {
     const stale = {
       id: "session-1", state: "ACTIVE", lastEventAt: new Date("2026-01-01T00:00:00Z"),
