@@ -4,7 +4,8 @@ All notable changes are recorded here.
 
 ## Unreleased
 
-- Updated dependencies: Fastify rate-limit 11, Zod 4, TypeScript 7, Vitest 4, and `@types/node` 26. Prisma stays on 6.x pending the driver-adapter migration required by Prisma 7.
+- Updated dependencies: Fastify rate-limit 11, Zod 4, TypeScript 7, Vitest 4, and `@types/node` 26.
+- Migrated to Prisma 7: the connection URL now lives in `prisma.config.ts`, the client connects through the `@prisma/adapter-pg` driver adapter, and `DATABASE_URL` is loaded from `.env` at runtime for local development.
 - Bumped the release workflow to `actions/checkout@v5` and `actions/setup-node@v5` to clear the Node 20 deprecation warning.
 
 ## 0.9.6 - 2026-07-13
