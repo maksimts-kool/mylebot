@@ -1,0 +1,4 @@
+# Demo-local, never committed.
+.data/
+.env
+dist/
