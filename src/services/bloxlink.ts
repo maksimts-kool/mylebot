@@ -2,8 +2,14 @@ import type { Config } from "../config.js";
 import type { prisma as database } from "../db.js";
 
 type Db = typeof database;
+type RobloxMapping = { userId: bigint; username: string };
+
+const ROBLOX_MAPPING_CACHE_MS = 10 * 60 * 1_000;
 
 export class BloxlinkService {
+  private readonly robloxMappingCache = new Map<string, { expiresAt: number; value: RobloxMapping }>();
+  private readonly robloxMappingRequests = new Map<string, Promise<RobloxMapping | null>>();
+
   constructor(private readonly db: Db, private readonly config: Config) {}
 
   private async request(url: string): Promise<Response> {
@@ -54,9 +60,31 @@ export class BloxlinkService {
     }
   }
 
-  async robloxForDiscord(discordUserId: string): Promise<{ userId: bigint; username: string } | null> {
+  async robloxForDiscord(discordUserId: string): Promise<RobloxMapping | null> {
     const cached = await this.db.identity.findFirst({ where: { discordUserId } });
     if (cached) return { userId: cached.robloxUserId, username: cached.robloxUsername };
+    const cachedMapping = this.robloxMappingCache.get(discordUserId);
+    if (cachedMapping && cachedMapping.expiresAt > Date.now()) return cachedMapping.value;
+    const pending = this.robloxMappingRequests.get(discordUserId);
+    if (pending) return pending;
+
+    const request = this.fetchRobloxForDiscord(discordUserId);
+    this.robloxMappingRequests.set(discordUserId, request);
+    try {
+      const mapping = await request;
+      if (mapping) {
+        this.robloxMappingCache.set(discordUserId, {
+          value: mapping,
+          expiresAt: Date.now() + ROBLOX_MAPPING_CACHE_MS,
+        });
+      }
+      return mapping;
+    } finally {
+      this.robloxMappingRequests.delete(discordUserId);
+    }
+  }
+
+  private async fetchRobloxForDiscord(discordUserId: string): Promise<RobloxMapping | null> {
     if (!this.config.BLOXLINK_API_KEY || !this.config.DISCORD_GUILD_ID) return null;
     try {
       const url = `${this.config.BLOXLINK_BASE_URL}/guilds/${this.config.DISCORD_GUILD_ID}/discord-to-roblox/${discordUserId}`;

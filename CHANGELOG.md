@@ -4,6 +4,10 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+## 0.9.10 - 2026-07-19
+
+- Cached and coalesced uncached Discord-to-Roblox Bloxlink lookups, preventing repeated concurrent calls for the same Discord member.
+
 ## 0.9.9 - 2026-07-19
 
 - Resolved the Roblox username from Roblox's user API when Bloxlink returns only a numeric Roblox ID, so portal owner labels no longer fall back to `Roblox <id>`.

@@ -30,4 +30,22 @@ describe("BloxlinkService", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[1]?.[0]).toBe("https://users.roblox.com/v1/users/5369686203");
   });
+
+  it("shares and caches an uncached Bloxlink lookup for the same Discord user", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      robloxID: "5369686203",
+      resolved: { roblox: { name: "PixelRoyalAscent" } },
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const db = { identity: { findFirst: vi.fn().mockResolvedValue(null) } } as never;
+    const service = new BloxlinkService(db, config);
+
+    const [first, second] = await Promise.all([
+      service.robloxForDiscord("700413620319813684"),
+      service.robloxForDiscord("700413620319813684"),
+    ]);
+    await expect(service.robloxForDiscord("700413620319813684")).resolves.toEqual(first);
+    expect(second).toEqual(first);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
 });
