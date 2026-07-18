@@ -19,6 +19,7 @@ services:
       ROBLOX_MAX_RANK: ${ROBLOX_MAX_RANK:-255}
       REPORT_TIMEZONE: ${REPORT_TIMEZONE:-Europe/Tallinn}
       TRUST_PROXY: ${TRUST_PROXY:-loopback}
+      SITE_NOTIFY_SECRET: ${SITE_NOTIFY_SECRET:?set SITE_NOTIFY_SECRET}
     ports:
       - "${APP_BIND_IP:-127.0.0.1}:${APP_PORT:-3000}:3000"
     depends_on:
