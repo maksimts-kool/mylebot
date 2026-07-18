@@ -1,5 +1,5 @@
-import { Client, Events, GatewayIntentBits } from "discord.js";
-import { buildApi } from "./api.js";
+import { Client, DiscordAPIError, EmbedBuilder, Events, GatewayIntentBits } from "discord.js";
+import { buildApi, type SendDirectMessage } from "./api.js";
 import { loadConfig } from "./config.js";
 import { prisma } from "./db.js";
 import { CommandHandler, commandData } from "./discord/commands.js";
@@ -19,10 +19,29 @@ const settings = new RuntimeSettingsService(prisma);
 const sessions = new SessionService(prisma, config, settings);
 const publisher = new DiscordPublisher(client, prisma, config, bloxlink, settings);
 new CommandHandler(client, prisma, config, publisher, bloxlink, settings).register();
+
+// Sends a Discord DM on behalf of the store-owners site. Discord code 50007
+// means the recipient has DMs closed or shares no guild with the bot.
+const sendDirectMessage: SendDirectMessage = async (input) => {
+  if (!client.isReady()) return { ok: false, status: 503, error: "discord_not_ready" };
+  try {
+    const user = await client.users.fetch(input.discordId);
+    const embed = new EmbedBuilder().setTitle(input.title).setDescription(input.message);
+    if (input.color !== undefined) embed.setColor(input.color);
+    if (input.url) embed.setURL(input.url);
+    await user.send({ embeds: [embed] });
+    return { ok: true };
+  } catch (error) {
+    if (error instanceof DiscordAPIError && error.code === 50007) return { ok: false, status: 422, error: "dms_closed" };
+    console.warn("Site notify DM failed", { errorType: error instanceof Error ? error.name : "UnknownError" });
+    return { ok: false, status: 502, error: "dm_send_failed" };
+  }
+};
+
 const api = await buildApi(config, sessions, async (ids, removedMessages) => {
   await publisher.refreshMany(ids);
   if (removedMessages) await publisher.removeMessages(removedMessages);
-}, async () => { await prisma.$queryRaw`SELECT 1`; });
+}, async () => { await prisma.$queryRaw`SELECT 1`; }, sendDirectMessage);
 
 async function bootstrapDiscord(): Promise<void> {
   api.log.info({ phase: "discord_bootstrap" }, "Discord bootstrap started");

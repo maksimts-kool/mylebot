@@ -12,6 +12,12 @@ const schema = z.object({
   BLOXLINK_API_KEY: z.string().default(""),
   BLOXLINK_BASE_URL: z.string().url().default("https://api.blox.link/v4/public"),
   ROBLOX_INGESTION_SECRET: z.string().min(16),
+  // Shared secret for the store-owners site's DM notification endpoint.
+  // Empty disables POST /internal/notify entirely.
+  SITE_NOTIFY_SECRET: z
+    .string()
+    .default("")
+    .refine((value) => value === "" || value.length >= 16, "SITE_NOTIFY_SECRET must be at least 16 characters when set"),
   ROBLOX_UNIVERSE_ID: z.coerce.bigint().refine((value) => value > 0n, "ROBLOX_UNIVERSE_ID must be positive"),
   ROBLOX_GROUP_ID: z.coerce.bigint().refine((value) => value > 0n, "ROBLOX_GROUP_ID must be positive"),
   ROBLOX_ALLOWED_PLACE_IDS: csv.transform((ids, context) => ids.map((id) => {

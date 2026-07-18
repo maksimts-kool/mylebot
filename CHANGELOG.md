@@ -4,6 +4,8 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+- Added `POST /internal/notify`, an authenticated internal endpoint that lets the companion store-owners portal send Discord DMs through the bot's existing gateway connection. Gated by the new `SITE_NOTIFY_SECRET`; disabled when unset.
+
 ## 0.9.7 - 2026-07-13
 
 - Updated dependencies: Fastify rate-limit 11, Zod 4, TypeScript 7, Vitest 4, and `@types/node` 26.
