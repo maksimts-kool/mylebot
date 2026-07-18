@@ -11,6 +11,9 @@ const notifySchema = z.object({
   discordId: z.string().regex(/^\d{5,25}$/, "discordId must be a Discord snowflake"),
   title: z.string().min(1).max(256),
   message: z.string().min(1).max(2000),
+  // When the message contains {{uploader}}, the bot resolves this Discord ID
+  // through Bloxlink and substitutes the Roblox username (without rank).
+  uploaderDiscordId: z.string().regex(/^\d{5,25}$/, "uploaderDiscordId must be a Discord snowflake").optional(),
   color: z.number().int().min(0).max(0xffffff).optional(),
   url: z.string().url().optional(),
 });
@@ -18,6 +21,13 @@ const notifySchema = z.object({
 export type DirectMessageInput = z.infer<typeof notifySchema>;
 export type DirectMessageResult = { ok: true } | { ok: false; status?: number; error?: string };
 export type SendDirectMessage = (input: DirectMessageInput) => Promise<DirectMessageResult>;
+export type ResolveRobloxUsername = (discordId: string) => Promise<string | null>;
+export interface VerifiedGuildMember {
+  discordId: string;
+  discordName: string;
+  robloxUsername: string | null;
+}
+export type ListVerifiedGuildMembers = () => Promise<VerifiedGuildMember[]>;
 
 function errorType(error: unknown): string {
   return error instanceof Error ? error.name : "UnknownError";
@@ -36,6 +46,8 @@ export async function buildApi(
   onChanged: (ids: string[], removedMessages?: DiscordMessageReference[]) => Promise<void>,
   readiness: () => Promise<void> = async () => undefined,
   sendDirectMessage: SendDirectMessage = async () => ({ ok: false, status: 503, error: "not_configured" }),
+  resolveRobloxUsername: ResolveRobloxUsername = async () => null,
+  listVerifiedGuildMembers: ListVerifiedGuildMembers = async () => [],
 ) {
   const app = Fastify({
     logger: {
@@ -94,9 +106,35 @@ export async function buildApi(
       return reply.code(401).send({ error: "invalid_authentication" });
     }
     const input = notifySchema.parse(request.body);
-    const result = await sendDirectMessage(input);
+    const uploaderName = input.uploaderDiscordId && input.message.includes("{{uploader}}")
+      ? await resolveRobloxUsername(input.uploaderDiscordId)
+      : null;
+    const message = input.message.replaceAll("{{uploader}}", uploaderName ?? "A store owner");
+    const result = await sendDirectMessage({ ...input, message });
     if (!result.ok) return reply.code(result.status ?? 502).send({ error: result.error ?? "dm_failed" });
     return reply.code(200).send({ status: "sent" });
+  });
+
+  // Internal lookup for the store-owners portal. The value is a Roblox username
+  // only; rank and Discord account details are intentionally never returned.
+  app.get<{ Params: { discordId: string } }>("/internal/roblox-username/:discordId", async (request, reply) => {
+    if (!config.SITE_NOTIFY_SECRET) return reply.code(503).send({ error: "notify_disabled" });
+    if (!secretMatches(request.headers.authorization, config.SITE_NOTIFY_SECRET)) {
+      return reply.code(401).send({ error: "invalid_authentication" });
+    }
+    const { discordId } = z.object({ discordId: z.string().regex(/^\d{5,25}$/) }).parse(request.params);
+    const username = await resolveRobloxUsername(discordId);
+    return reply.code(200).send({ username });
+  });
+
+  // Authenticated owner-picker data for the store-owners portal. The bot only
+  // returns Bloxlink-verified members who currently belong to its own guild.
+  app.get("/internal/verified-members", async (request, reply) => {
+    if (!config.SITE_NOTIFY_SECRET) return reply.code(503).send({ error: "notify_disabled" });
+    if (!secretMatches(request.headers.authorization, config.SITE_NOTIFY_SECRET)) {
+      return reply.code(401).send({ error: "invalid_authentication" });
+    }
+    return reply.code(200).send({ members: await listVerifiedGuildMembers() });
   });
 
   app.setErrorHandler((error, _request, reply) => {

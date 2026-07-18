@@ -4,7 +4,11 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+## 0.9.8 - 2026-07-19
+
 - Added `POST /internal/notify`, an authenticated internal endpoint that lets the companion store-owners portal send Discord DMs through the bot's existing gateway connection. Gated by the new `SITE_NOTIFY_SECRET`; disabled when unset.
+- Added a Bloxlink-verified member lookup for the portal's searchable store-owner picker, independent of game-session history.
+- Portal notification messages can resolve an uploader's Roblox username through the bot's existing Bloxlink integration.
 
 ## 0.9.7 - 2026-07-13
 

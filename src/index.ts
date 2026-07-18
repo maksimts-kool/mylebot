@@ -1,5 +1,5 @@
 import { Client, DiscordAPIError, EmbedBuilder, Events, GatewayIntentBits } from "discord.js";
-import { buildApi, type SendDirectMessage } from "./api.js";
+import { buildApi, type SendDirectMessage, type VerifiedGuildMember } from "./api.js";
 import { loadConfig } from "./config.js";
 import { prisma } from "./db.js";
 import { CommandHandler, commandData } from "./discord/commands.js";
@@ -38,10 +38,72 @@ const sendDirectMessage: SendDirectMessage = async (input) => {
   }
 };
 
+const VERIFIED_MEMBER_CACHE_MS = 5 * 60 * 1000;
+let verifiedMemberCache: { expiresAt: number; members: VerifiedGuildMember[] } | null = null;
+let verifiedMemberRefresh: Promise<VerifiedGuildMember[]> | null = null;
+
+/**
+ * Lists every member that currently has Bloxlink's Verified role in the bot's
+ * guild. This deliberately does not use the session-tracker Identity table:
+ * someone can be assigned a store before they ever play in the game.
+ */
+async function loadVerifiedGuildMembers(): Promise<VerifiedGuildMember[]> {
+  if (!config.DISCORD_GUILD_ID) return [];
+  try {
+    const guild = await client.guilds.fetch(config.DISCORD_GUILD_ID);
+    const roles = await guild.roles.fetch();
+    const verifiedRole = roles.find((role) => role.name.trim().toLowerCase() === "verified");
+    if (!verifiedRole) {
+      console.warn("Verified member list failed", { reason: "verified_role_missing" });
+      return [];
+    }
+
+    const members: VerifiedGuildMember[] = [];
+    let after: string | undefined;
+    do {
+      const page = await guild.members.list({ limit: 1_000, cache: false, ...(after ? { after } : {}) });
+      for (const member of page.values()) {
+        if (!member.roles.cache.has(verifiedRole.id)) continue;
+        members.push({
+          discordId: member.id,
+          discordName: member.displayName,
+          // The verified role is the source of truth here. Fetching a Roblox
+          // name for every guild member would needlessly hammer Bloxlink's API.
+          robloxUsername: null,
+        });
+      }
+      if (page.size < 1_000) break;
+      after = page.lastKey();
+    } while (after);
+
+    return members.sort((a, b) => a.discordName.localeCompare(b.discordName));
+  } catch (error) {
+    console.warn("Verified member list failed", { errorType: errorType(error) });
+    return [];
+  }
+}
+
+async function listVerifiedGuildMembers(): Promise<VerifiedGuildMember[]> {
+  if (!client.isReady()) return [];
+  if (verifiedMemberCache && verifiedMemberCache.expiresAt > Date.now()) return verifiedMemberCache.members;
+  if (verifiedMemberRefresh) return verifiedMemberRefresh;
+  verifiedMemberRefresh = loadVerifiedGuildMembers();
+  try {
+    const members = await verifiedMemberRefresh;
+    verifiedMemberCache = { members, expiresAt: Date.now() + VERIFIED_MEMBER_CACHE_MS };
+    return members;
+  } finally {
+    verifiedMemberRefresh = null;
+  }
+}
+
 const api = await buildApi(config, sessions, async (ids, removedMessages) => {
   await publisher.refreshMany(ids);
   if (removedMessages) await publisher.removeMessages(removedMessages);
-}, async () => { await prisma.$queryRaw`SELECT 1`; }, sendDirectMessage);
+}, async () => { await prisma.$queryRaw`SELECT 1`; }, sendDirectMessage, async (discordId) => {
+  const mapped = await bloxlink.robloxForDiscord(discordId);
+  return mapped?.username ?? null;
+}, listVerifiedGuildMembers);
 
 async function bootstrapDiscord(): Promise<void> {
   api.log.info({ phase: "discord_bootstrap" }, "Discord bootstrap started");

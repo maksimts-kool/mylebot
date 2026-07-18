@@ -77,6 +77,67 @@ describe("site notify endpoint", () => {
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ discordId: validBody.discordId, title: "Hello" }));
   });
 
+  it("uses the uploader's Roblox username in a site notification", async () => {
+    const send = vi.fn().mockResolvedValue({ ok: true });
+    const resolveRobloxUsername = vi.fn().mockResolvedValue("MallBuilder");
+    const app = await buildApi(config, sessions, noop, undefined, send, resolveRobloxUsername);
+    apps.push(app);
+    const response = await app.inject({
+      method: "POST",
+      url: "/internal/notify",
+      headers: { authorization: `Bearer ${baseEnv.SITE_NOTIFY_SECRET}` },
+      payload: {
+        ...validBody,
+        message: "{{uploader}} uploaded A1.001.260718",
+        uploaderDiscordId: "700413620319813684",
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(resolveRobloxUsername).toHaveBeenCalledWith("700413620319813684");
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ message: "MallBuilder uploaded A1.001.260718" }));
+  });
+
+  it("returns the Roblox username for the authenticated portal", async () => {
+    const resolveRobloxUsername = vi.fn().mockResolvedValue("MallBuilder");
+    const app = await buildApi(config, sessions, noop, undefined, vi.fn(), resolveRobloxUsername);
+    apps.push(app);
+    const response = await app.inject({
+      method: "GET",
+      url: "/internal/roblox-username/700413620319813684",
+      headers: { authorization: `Bearer ${baseEnv.SITE_NOTIFY_SECRET}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ username: "MallBuilder" });
+    expect(resolveRobloxUsername).toHaveBeenCalledWith("700413620319813684");
+  });
+
+  it("returns verified members in the bot's guild for the authenticated portal", async () => {
+    const listVerifiedGuildMembers = vi.fn().mockResolvedValue([
+      { discordId: "700413620319813684", discordName: "Mall Builder", robloxUsername: "MallBuilder" },
+    ]);
+    const app = await buildApi(config, sessions, noop, undefined, vi.fn(), undefined, listVerifiedGuildMembers);
+    apps.push(app);
+    const response = await app.inject({
+      method: "GET",
+      url: "/internal/verified-members",
+      headers: { authorization: `Bearer ${baseEnv.SITE_NOTIFY_SECRET}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ members: [{
+      discordId: "700413620319813684", discordName: "Mall Builder", robloxUsername: "MallBuilder",
+    }] });
+    expect(listVerifiedGuildMembers).toHaveBeenCalledOnce();
+  });
+
+  it("does not list verified members without the portal secret", async () => {
+    const listVerifiedGuildMembers = vi.fn();
+    const app = await buildApi(config, sessions, noop, undefined, vi.fn(), undefined, listVerifiedGuildMembers);
+    apps.push(app);
+    const response = await app.inject({ method: "GET", url: "/internal/verified-members" });
+    expect(response.statusCode).toBe(401);
+    expect(listVerifiedGuildMembers).not.toHaveBeenCalled();
+  });
+
   it("surfaces a closed-DM failure from the sender", async () => {
     const send = vi.fn().mockResolvedValue({ ok: false, status: 422, error: "dms_closed" });
     const app = await buildApi(config, sessions, noop, undefined, send);

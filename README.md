@@ -88,13 +88,15 @@ The Discord server owner or another member with Discord's Administrator permissi
 
 A valid event with a rank below `ROBLOX_MIN_RANK` intentionally purges that player's stored identity, sessions, audit and processed-event records, and published Discord messages. A rank above `ROBLOX_MAX_RANK` is rejected without performing that purge.
 
-### Store-owners site notifications
+### Store-owners portal integration
 
 | Variable | Purpose |
 | --- | --- |
-| `SITE_NOTIFY_SECRET` | Shared bearer secret for `POST /internal/notify`. Empty (the default) disables the endpoint. When set, must be at least 16 characters and match the store-owners site's `BOT_NOTIFY_SECRET`. |
+| `SITE_NOTIFY_SECRET` | Shared bearer secret for the store-owners portal endpoints. Empty (the default) disables them. When set, it must be at least 16 characters and match the site's `BOT_NOTIFY_SECRET`. |
 
-The companion [store-owners portal](../myle-storeowners) calls `POST /internal/notify` so it can send Discord DMs through this bot's existing gateway connection instead of logging in a second client. The request is authenticated with `Authorization: Bearer <SITE_NOTIFY_SECRET>` and carries a JSON body:
+The companion [store-owners portal](../myle-storeowners) calls `POST /internal/notify` so it can send Discord DMs through this bot's existing gateway connection instead of logging in a second client. It also calls `GET /internal/verified-members` to populate its searchable store-owner picker. That endpoint lists every current guild member with Bloxlink's **Verified** role, independently of their session history. Both requests use `Authorization: Bearer <SITE_NOTIFY_SECRET>`.
+
+The notification request carries a JSON body:
 
 ```json
 { "discordId": "123456789012345678", "title": "Upload received", "message": "…", "color": 3901635, "url": "https://…" }
