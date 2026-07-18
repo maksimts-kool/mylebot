@@ -13,6 +13,24 @@ export class BloxlinkService {
     });
   }
 
+  /** Resolve a Roblox username when Bloxlink supplies only a numeric user ID. */
+  private async usernameForRobloxId(robloxUserId: string): Promise<string | null> {
+    try {
+      const response = await fetch(`https://users.roblox.com/v1/users/${encodeURIComponent(robloxUserId)}`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) {
+        console.warn("Roblox username lookup failed", { status: response.status, robloxUserId });
+        return null;
+      }
+      const body = await response.json() as { name?: unknown };
+      return typeof body.name === "string" && body.name.trim() ? body.name.trim() : null;
+    } catch (error) {
+      console.warn("Roblox username lookup errored", { error, robloxUserId });
+      return null;
+    }
+  }
+
   async discordForRoblox(robloxUserId: bigint): Promise<string | null> {
     const identity = await this.db.identity.findUnique({ where: { robloxUserId } });
     const cacheIsFresh = identity?.mappingCheckedAt && Date.now() - identity.mappingCheckedAt.getTime() < 24 * 60 * 60 * 1000;
@@ -47,10 +65,16 @@ export class BloxlinkService {
         console.warn("Bloxlink Discord-to-Roblox request failed", { status: response.status, discordUserId });
         return null;
       }
-      const body = await response.json() as { robloxID?: string; resolved?: { roblox?: { id?: string; name?: string } } };
-      const id = body.robloxID ?? body.resolved?.roblox?.id;
-      if (!id) return null;
-      return { userId: BigInt(id), username: body.resolved?.roblox?.name ?? `Roblox ${id}` };
+      const body = await response.json() as {
+        robloxID?: string | number;
+        resolved?: { roblox?: { id?: string | number; name?: string } };
+      };
+      const rawId = body.robloxID ?? body.resolved?.roblox?.id;
+      if (rawId === undefined || rawId === null) return null;
+      const id = String(rawId);
+      if (!/^\d+$/.test(id)) return null;
+      const username = body.resolved?.roblox?.name?.trim() || await this.usernameForRobloxId(id);
+      return { userId: BigInt(id), username: username ?? `Roblox ${id}` };
     } catch (error) {
       console.warn("Bloxlink Discord-to-Roblox request errored", { error, discordUserId });
       return null;

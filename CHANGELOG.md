@@ -4,6 +4,10 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+## 0.9.9 - 2026-07-19
+
+- Resolved the Roblox username from Roblox's user API when Bloxlink returns only a numeric Roblox ID, so portal owner labels no longer fall back to `Roblox <id>`.
+
 ## 0.9.8 - 2026-07-19
 
 - Added `POST /internal/notify`, an authenticated internal endpoint that lets the companion store-owners portal send Discord DMs through the bot's existing gateway connection. Gated by the new `SITE_NOTIFY_SECRET`; disabled when unset.
