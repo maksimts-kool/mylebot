@@ -23,6 +23,20 @@ function formatClock(milliseconds: number): string {
   return `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
 }
 
+export function buildSessionActionRow(session: {
+  id: string;
+  identityId: string;
+  state: SessionState;
+  placeId: string | bigint;
+  jobId: string;
+}): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    ...(session.state !== "ENDED" ? [new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("Join Server").setURL(`https://www.roblox.com/games/start?placeId=${session.placeId}&gameInstanceId=${encodeURIComponent(session.jobId)}`)] : []),
+    new ButtonBuilder().setCustomId(`history:${session.identityId}`).setStyle(ButtonStyle.Secondary).setLabel("View History"),
+    ...(session.state !== "ENDED" ? [new ButtonBuilder().setCustomId(`refresh:${session.id}`).setStyle(ButtonStyle.Primary).setLabel("Refresh")] : []),
+  );
+}
+
 export class DiscordPublisher {
   private readonly pendingMessageRemovals: DiscordMessageReference[] = [];
 
@@ -101,11 +115,7 @@ export class DiscordPublisher {
       .setDescription(`Started: <t:${Math.floor(session.startedAt.getTime() / 1000)}:f> | Updated: <t:${Math.floor(session.lastEventAt.getTime() / 1000)}:R>`)
       .setColor(statusColor[session.state])
       .addFields(fields);
-    const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      ...(session.state !== "ENDED" ? [new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("Join Server").setURL(`https://www.roblox.com/games/start?placeId=${session.placeId}&gameInstanceId=${encodeURIComponent(session.jobId)}`)] : []),
-      new ButtonBuilder().setCustomId(`history:${session.identityId}`).setStyle(ButtonStyle.Secondary).setLabel("View History"),
-      new ButtonBuilder().setCustomId(`refresh:${session.id}`).setStyle(ButtonStyle.Primary).setLabel("Refresh"),
-    );
+    const buttons = buildSessionActionRow(session);
     const channel = await this.client.channels.fetch(settings.logsChannelId) as TextChannel;
     if (session.discordMessage) {
       if (session.discordMessage.channelId !== channel.id) {

@@ -228,7 +228,7 @@ Available commands and permissions:
 
 | Command | Access | Purpose |
 | --- | --- | --- |
-| `/leaderboard [period]` | Everyone | Shows the staff leaderboard for this week, month, year, or all time. |
+| `/leaderboard [period]` | Everyone | Shows the staff leaderboard for this week, month, year, or all time. Its public controls are limited to the caller and expire after 15 minutes of inactivity. |
 | `/session active [user:<member>]` | Staff | Shows a live session. Staff see their own; viewing another member's requires Admin. |
 | `/session view user:<member>` | Staff | Shows a member's paginated session history. |
 | `/session add user:<member>` | Admin | Adds an audited completed session for a Bloxlink-mapped member. |

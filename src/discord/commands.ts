@@ -16,6 +16,45 @@ import type { DiscordPublisher } from "./publisher.js";
 
 type Db = typeof database;
 
+export const PUBLIC_COMPONENT_LIFETIME_MS = 15 * 60_000;
+
+type PublicComponentRegistration = {
+  userId: string;
+  onExpire: () => Promise<void>;
+  timeout: NodeJS.Timeout;
+};
+
+export class PublicComponentTracker {
+  private readonly registrations = new Map<string, PublicComponentRegistration>();
+
+  constructor(private readonly lifetimeMs = PUBLIC_COMPONENT_LIFETIME_MS) {}
+
+  track(messageId: string, userId: string, onExpire: () => Promise<void>): void {
+    const previous = this.registrations.get(messageId);
+    if (previous) clearTimeout(previous.timeout);
+
+    const registration: PublicComponentRegistration = {
+      userId,
+      onExpire,
+      timeout: setTimeout(() => {
+        if (this.registrations.get(messageId) !== registration) return;
+        this.registrations.delete(messageId);
+        void onExpire().catch((error: unknown) => console.error("Failed to disable expired public controls", { error, messageId }));
+      }, this.lifetimeMs),
+    };
+    registration.timeout.unref();
+    this.registrations.set(messageId, registration);
+  }
+
+  access(messageId: string, userId: string): "allowed" | "not-owner" | "expired" {
+    const registration = this.registrations.get(messageId);
+    if (!registration) return "expired";
+    if (registration.userId !== userId) return "not-owner";
+    this.track(messageId, userId, registration.onExpire);
+    return "allowed";
+  }
+}
+
 export const commandData = [
   new SlashCommandBuilder().setName("session").setDescription("Manage staff sessions")
     .addSubcommand((s) => s.setName("active").setDescription("🟢 Show a live session")
@@ -118,6 +157,8 @@ export function friendlyPeriod(startDate: string, endDate: string, timezone: str
 }
 
 export class CommandHandler {
+  private readonly publicComponents = new PublicComponentTracker();
+
   constructor(
     private readonly client: Client,
     private readonly db: Db,
@@ -465,6 +506,7 @@ export class CommandHandler {
       return;
     }
     if (interaction.customId.startsWith("leaderboard:")) {
+      await this.requirePublicComponentOwner(interaction);
       const [, startDate, endDate, minimum, page] = interaction.customId.split(":");
       await this.renderLeaderboard(interaction, startDate!, endDate!, Number(minimum), Number(page)); return;
     }
@@ -574,13 +616,8 @@ export class CommandHandler {
     const description = ranking
       ? `🗓️ **Period:** ${period}\n\n${ranking}`
       : `🗓️ **Period:** ${period}\n\n👥 No one has logged any time yet.`;
-    const components: Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>> = [];
-    if (pageRows.length) components.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(new StringSelectMenuBuilder().setCustomId("leaderboard-user").setPlaceholder("👤 View a user's session history").addOptions(pageRows.map((row) => ({ label: row.username.split(" · ")[0]!.slice(0,100), value: row.identityId })))));
-    components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId(`leaderboard:${startDate}:${endDate}:${minimum}:${page-1}`).setLabel("Previous").setEmoji("◀️").setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
-      new ButtonBuilder().setCustomId(`leaderboard:${startDate}:${endDate}:${minimum}:${page}`).setLabel("Refresh").setEmoji("🔄").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`leaderboard:${startDate}:${endDate}:${minimum}:${page+1}`).setLabel("Next").setEmoji("▶️").setStyle(ButtonStyle.Secondary).setDisabled((page+1)*10 >= rows.length),
-    ));
+    const components = this.leaderboardComponents(pageRows, rows.length, startDate, endDate, minimum, page);
+    const expiredComponents = this.leaderboardComponents(pageRows, rows.length, startDate, endDate, minimum, page, true);
     const response = {
       embeds: [new EmbedBuilder()
         .setTitle("🏆 Staff leaderboard")
@@ -588,13 +625,60 @@ export class CommandHandler {
         .setFooter({ text: `Page ${page+1} of ${Math.max(1, Math.ceil(rows.length/10))} · Total time includes inactive time; reconnecting gaps are excluded` })],
       components,
     };
-    if (interaction.isButton()) await interaction.update(response);
-    else if (interaction.deferred || interaction.replied) await interaction.editReply(response);
-    else await interaction.reply(response);
+    if (interaction.isButton()) {
+      await interaction.update(response);
+      this.publicComponents.track(interaction.message.id, interaction.user.id, async () => {
+        await interaction.message.edit({ components: expiredComponents });
+      });
+    } else {
+      const message = interaction.deferred || interaction.replied
+        ? await interaction.editReply(response)
+        : await interaction.reply(response);
+      this.publicComponents.track(message.id, interaction.user.id, async () => {
+        await message.edit({ components: expiredComponents });
+      });
+    }
+  }
+
+  private leaderboardComponents(
+    pageRows: Array<{ identityId: string; username: string }>,
+    rowCount: number,
+    startDate: string,
+    endDate: string,
+    minimum: number,
+    page: number,
+    disabled = false,
+  ): Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>> {
+    const components: Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>> = [];
+    if (pageRows.length) components.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("leaderboard-user")
+        .setPlaceholder("👤 View a user's session history")
+        .addOptions(pageRows.map((row) => ({ label: row.username.split(" · ")[0]!.slice(0, 100), value: row.identityId })))
+        .setDisabled(disabled),
+    ));
+    components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId(`leaderboard:${startDate}:${endDate}:${minimum}:${page-1}`).setLabel("Previous").setEmoji("◀️").setStyle(ButtonStyle.Secondary).setDisabled(disabled || page === 0),
+      new ButtonBuilder().setCustomId(`leaderboard:${startDate}:${endDate}:${minimum}:${page}`).setLabel("Refresh").setEmoji("🔄").setStyle(ButtonStyle.Primary).setDisabled(disabled),
+      new ButtonBuilder().setCustomId(`leaderboard:${startDate}:${endDate}:${minimum}:${page+1}`).setLabel("Next").setEmoji("▶️").setStyle(ButtonStyle.Secondary).setDisabled(disabled || (page+1)*10 >= rowCount),
+    ));
+    return components;
+  }
+
+  private async requirePublicComponentOwner(interaction: ButtonInteraction | StringSelectMenuInteraction): Promise<void> {
+    const access = this.publicComponents.access(interaction.message.id, interaction.user.id);
+    if (access === "not-owner") userError("Only the person who ran this command can use these controls");
+    if (access === "expired") {
+      await interaction.message.edit({ components: [] }).catch((error: unknown) => {
+        console.error("Failed to remove expired public controls", { error, messageId: interaction.message.id });
+      });
+      userError("These controls have expired. Run the command again");
+    }
   }
 
   private async handleSelect(interaction: StringSelectMenuInteraction): Promise<void> {
     if (interaction.customId === "leaderboard-user") {
+      await this.requirePublicComponentOwner(interaction);
       if (!await this.hasPermission(interaction, PermissionLevel.STAFF)) userError("Staff role required");
       await this.replyHistory(interaction, interaction.values[0]!, 0, "reply");
     }

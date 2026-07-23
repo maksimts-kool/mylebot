@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PermissionLevel,
+  PublicComponentTracker,
   commandData,
   formatSessionDateTime,
   friendlyPeriod,
@@ -8,6 +9,10 @@ import {
   parseSessionDateTime,
   requiredPermission,
 } from "../src/discord/commands.js";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("Discord command permissions", () => {
   it("uses the requested access levels", () => {
@@ -76,5 +81,42 @@ describe("leaderboard period labels", () => {
 
   it("shows full dates for a span that crosses years", () => {
     expect(friendlyPeriod("2006-01-01", "2026-07-13", "Europe/Tallinn")).toBe("Jan 1, 2006 – Jul 13, 2026");
+  });
+});
+
+describe("public command controls", () => {
+  it("allows only the caller while the message is tracked", () => {
+    const tracker = new PublicComponentTracker();
+    tracker.track("message-1", "caller-1", async () => {});
+
+    expect(tracker.access("message-1", "caller-1")).toBe("allowed");
+    expect(tracker.access("message-1", "someone-else")).toBe("not-owner");
+    expect(tracker.access("unknown-message", "caller-1")).toBe("expired");
+  });
+
+  it("expires and disables tracked controls after the lifetime", async () => {
+    vi.useFakeTimers();
+    const onExpire = vi.fn(async () => {});
+    const tracker = new PublicComponentTracker(1_000);
+    tracker.track("message-1", "caller-1", onExpire);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(tracker.access("message-1", "caller-1")).toBe("expired");
+    expect(onExpire).toHaveBeenCalledOnce();
+  });
+
+  it("keeps controls alive while the caller is using them", async () => {
+    vi.useFakeTimers();
+    const onExpire = vi.fn(async () => {});
+    const tracker = new PublicComponentTracker(1_000);
+    tracker.track("message-1", "caller-1", onExpire);
+
+    await vi.advanceTimersByTimeAsync(750);
+    expect(tracker.access("message-1", "caller-1")).toBe("allowed");
+    await vi.advanceTimersByTimeAsync(750);
+
+    expect(tracker.access("message-1", "caller-1")).toBe("allowed");
+    expect(onExpire).not.toHaveBeenCalled();
   });
 });
