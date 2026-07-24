@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { loadConfig } from "../../src/core/config.js";
 import { allCommandData } from "../../src/features/command-data.js";
 import {
   parsePermissionRoleChoice,
@@ -51,10 +52,31 @@ describe("Discord command permissions", () => {
 });
 
 describe("deployed command set", () => {
+  const baseEnv = {
+    DATABASE_URL: "postgresql://example.invalid/db",
+    ROBLOX_INGESTION_SECRET: "12345678901234567890123456789012",
+    ROBLOX_UNIVERSE_ID: "100",
+    ROBLOX_GROUP_ID: "200",
+    ROBLOX_ALLOWED_PLACE_IDS: "300",
+  };
+
   it("includes every session command and no duplicate names", () => {
-    const names = allCommandData.map((command) => command.name);
+    const names = allCommandData(loadConfig(baseEnv)).map((command) => command.name);
     for (const command of sessionCommandData) expect(names).toContain(command.name);
     expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("only deploys /taiga when the integration is configured", () => {
+    const withoutTaiga = allCommandData(loadConfig(baseEnv)).map((command) => command.name);
+    expect(withoutTaiga).not.toContain("taiga");
+
+    const withTaiga = allCommandData(loadConfig({
+      ...baseEnv,
+      TAIGA_USERNAME: "bot",
+      TAIGA_PASSWORD: "secret",
+      TAIGA_PROJECT_SLUG: "my-project",
+    })).map((command) => command.name);
+    expect(withTaiga).toContain("taiga");
   });
 });
 

@@ -110,6 +110,70 @@ model ProcessedEvent {
   @@index([receivedAt])
 }
 
+enum TaigaCardKind {
+  BUG
+  SUGGESTION
+}
+
+/// A Discord forum post paired with the Taiga user story it created. Only posts
+/// created after the integration was switched on ever get a row here.
+model TaigaCard {
+  id              String        @id @default(cuid())
+  taigaStoryId    Int           @unique
+  taigaRef        Int
+  guildId         String
+  channelId       String
+  threadId        String        @unique
+  kind            TaigaCardKind
+  title           String
+  statusName      String
+  authorDiscordId String
+  authorName      String
+  declinedAt      DateTime?
+  /// Set just before the bot deletes the story in Taiga, so the webhook the
+  /// deletion triggers is not mistaken for someone declining the card.
+  deleting        Boolean       @default(false)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([statusName])
+}
+
+/// Idempotency keys for Taiga webhook deliveries, which Taiga may retry.
+model TaigaWebhookDelivery {
+  id          String   @id @default(cuid())
+  fingerprint String   @unique
+  receivedAt  DateTime @default(now())
+
+  @@index([receivedAt])
+}
+
+/// Last known state of each epic, so the webhook and the reconcile sweep cannot
+/// both announce the same change.
+model TaigaEpicState {
+  taigaEpicId Int      @id
+  ref         Int
+  subject     String
+  statusName  String?
+  isClosed    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model TaigaSettings {
+  id                       String    @id
+  enabled                  Boolean   @default(false)
+  bugForumChannelId        String?
+  suggestionForumChannelId String?
+  notificationChannelId    String?
+  /// Posts created before this instant are never touched.
+  activatedAt              DateTime?
+  /// Set once the existing epics have been recorded without announcing them.
+  epicsSeededAt            DateTime?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+}
+
 model AuditEntry {
   id          String   @id @default(cuid())
   sessionId   String?

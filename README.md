@@ -10,6 +10,7 @@ A Node.js service that records eligible Roblox group members' play sessions in P
 - Publishes and periodically refreshes session-log messages in Discord.
 - Provides session history, manual session administration, and timezone-aware leaderboards.
 - Resolves Roblox and Discord identities through Bloxlink when an API key is configured.
+- Mirrors the Discord bug-report and suggestion forums onto a Taiga kanban board, keeping post tags in step with the board and announcing every change.
 - Includes Docker Compose definitions for local deployment and Portainer stacks.
 - Includes server and client Lua components for each Roblox place.
 
@@ -21,14 +22,17 @@ A Node.js service that records eligible Roblox group members' play sessions in P
 4. The Discord publisher creates or updates the corresponding session-log message. Scheduled jobs sweep reconnecting or stale sessions, refresh live messages, and remove expired event-deduplication records.
 5. Discord slash commands query the same persisted data for history and reports. Administrative changes are audited.
 
-The main components are:
+The code is organised as feature modules. Each feature owns its HTTP routes, slash commands, gateway listeners, and background jobs, and [`src/index.ts`](src/index.ts) only composes them:
 
-- [`src/api.ts`](src/api.ts): authenticated ingestion and health endpoints.
-- [`src/services/session-service.ts`](src/services/session-service.ts): session state transitions and persistence.
-- [`src/discord/publisher.ts`](src/discord/publisher.ts): Discord session-log projection.
-- [`src/discord/commands.ts`](src/discord/commands.ts): slash commands and permission handling.
+- [`src/core/`](src/core/): configuration, database client, HTTP server, Discord client, job scheduler, and the `Feature` contract.
+- [`src/shared/`](src/shared/): cross-feature services — Bloxlink, runtime settings, permission levels, reusable components.
+- [`src/features/sessions/`](src/features/sessions/): Roblox session tracking — [ingestion route](src/features/sessions/api/routes.ts), [lifecycle service](src/features/sessions/service/session-service.ts), [Discord publisher](src/features/sessions/discord/publisher.ts), and [commands](src/features/sessions/discord/commands/).
+- [`src/features/portal/`](src/features/portal/): the store-owners portal's internal endpoints.
+- [`src/features/taiga/`](src/features/taiga/): the Taiga board integration.
 - [`prisma/schema.prisma`](prisma/schema.prisma): PostgreSQL data model.
 - [`roblox/`](roblox/): Roblox server and client sender package.
+
+To add a feature, write a `createXFeature(ctx): Feature` factory and register it in [`src/index.ts`](src/index.ts); nothing else in the tree has to change.
 
 ## Prerequisites
 
@@ -103,6 +107,40 @@ The notification request carries a JSON body:
 ```
 
 The bot fetches the user and sends an embed DM. Responses: `200` sent, `401` bad secret, `503` endpoint disabled (no secret configured), `422` the recipient has DMs closed or shares no server with the bot, `502` any other send failure. Discord only permits DMs to users who share a guild with the bot and have DMs enabled.
+
+### Taiga integration
+
+| Variable | Purpose |
+| --- | --- |
+| `TAIGA_USERNAME` / `TAIGA_PASSWORD` | Taiga account the bot logs in as. Taiga issues no long-lived API keys, so the bot exchanges these for a short-lived token it refreshes itself. Both are held in memory only and never logged. |
+| `TAIGA_PROJECT_SLUG` | Project slug from the board URL — for `https://tree.taiga.io/project/my-project/kanban`, that is `my-project`. |
+| `TAIGA_WEBHOOK_SECRET` | Secret key of the Taiga webhook. Empty disables `POST /v1/taiga/webhook`. |
+| `TAIGA_BASE_URL` / `TAIGA_WEB_URL` | API host and the host humans browse. Defaults suit taiga.io; change both for a self-hosted instance. |
+| `TAIGA_RECONCILE_SECONDS` | How often the safety sweep re-reads the board. Defaults to 600. |
+
+`TAIGA_USERNAME`, `TAIGA_PASSWORD`, and `TAIGA_PROJECT_SLUG` must be set together. Leaving them empty disables the feature completely: no `/taiga` command, no webhook route, no forum listener, and no privileged Discord intents requested.
+
+**Discord setup.** The integration reads the first message of each forum post, which needs the privileged **Message Content** intent — enable it under *Bot → Privileged Gateway Intents* in the Discord Developer Portal, or every card is created with an empty description. The bot also needs **View Channel**, **Read Message History**, **Send Messages**, and **Manage Threads** in both forums; Manage Threads is what allows it to set tags and archive posts. Each forum needs tags named `New`, `Approved`, `In progress`, and `Declined` (matched case-insensitively).
+
+**Taiga setup.** In *Project settings → Integrations → Webhooks*, add a webhook pointing at `https://<your-bot-host>/v1/taiga/webhook` with the same secret key as `TAIGA_WEBHOOK_SECRET`. The board needs columns named `Suggested`, `Planned`, `In progress`, `Done`, and `In game`.
+
+Then run `/taiga` in Discord to pick the two forums and the notifications channel, and switch the integration on. `/taiga` also shows a health block that names any column or forum tag it cannot resolve.
+
+**Behaviour.**
+
+| Event | Result |
+| --- | --- |
+| New post in either forum | A user story is created in `Suggested`, tagged `bug` or `suggestion` in Taiga, with the post's first message as the description, a link back to the thread, and `Created by: @name (Discord ID …)`. The post is tagged `New`. |
+| Card moved to `Planned` or `In progress` | Post is tagged `Approved` + `In progress`. |
+| Card moved to `Done` or `In game` | Post is tagged `Approved` only. Reaching `In game` also archives the post. |
+| Card deleted in any column except `In game` | Post is tagged `Declined` and archived. |
+| Card deleted in `In game` | Nothing changes on the post; the bot just stops tracking it. |
+| Forum post deleted | The Taiga card is deleted with it. |
+| Epic created, changed, or closed | Announced in the notifications channel; closing one lists the posts it shipped. Epics are report-only — link cards to them yourself in Taiga. |
+
+Enabling the integration stamps an activation time, and **posts older than that are never touched** — switching it on does not back-fill the existing forums.
+
+Every change is announced in the notifications channel. Taiga webhooks drive updates in real time; a reconcile sweep re-reads the board every `TAIGA_RECONCILE_SECONDS` and repairs anything a missed delivery dropped, including while the bot was restarting. The sweep only treats a card as deleted when the whole board was read successfully, so a failed API call cannot mass-decline the forums.
 
 ### Server and timing
 
@@ -234,6 +272,7 @@ Available commands and permissions:
 | `/session add user:<member>` | Admin | Adds an audited completed session for a Bloxlink-mapped member. |
 | `/session manage sessionid:<id>` | Admin | Opens controls to edit or soft-delete a completed session. Live sessions cannot be managed manually. |
 | `/config` | Manager | Opens an ephemeral panel for the logs channel, tracking state, and role permission assignments. |
+| `/taiga` | Manager | Opens an ephemeral panel for the Taiga integration: the two forums, the notifications channel, the on/off switch, a configuration health check, and a manual reconcile. Only deployed when Taiga credentials are configured. |
 
 Permission levels are cumulative: manager includes admin and staff access, and admin includes staff access. Manual session forms accept local values such as `11/07/2026 14:30` in `REPORT_TIMEZONE`; ISO timestamps are also accepted. Manual totals must equal the session's wall-clock duration.
 
@@ -256,9 +295,11 @@ Permission levels are cumulative: manager includes admin and staff access, and a
 Run one test file or one named test with:
 
 ```powershell
-npx vitest run tests/api.test.ts
-npx vitest run tests/api.test.ts -t "accepts an authenticated event"
+npx vitest run tests/sessions/api.test.ts
+npx vitest run tests/sessions/api.test.ts -t "accepts an authenticated event"
 ```
+
+Tests mirror the source layout: `tests/sessions/`, `tests/portal/`, `tests/taiga/`, and `tests/shared/`.
 
 The usual validation sequence is:
 

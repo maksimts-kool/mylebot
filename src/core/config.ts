@@ -35,6 +35,8 @@ const schema = z.object({
   // Taiga board integration. Leaving the credentials empty disables the whole
   // feature, including the privileged Discord message intents it needs.
   TAIGA_BASE_URL: z.string().url().default("https://api.taiga.io"),
+  // Where humans read the board, used to build links in Discord embeds.
+  TAIGA_WEB_URL: z.string().url().default("https://tree.taiga.io"),
   TAIGA_USERNAME: z.string().default(""),
   TAIGA_PASSWORD: z.string().default(""),
   TAIGA_PROJECT_SLUG: z.string().default(""),

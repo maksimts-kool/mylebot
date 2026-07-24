@@ -4,6 +4,12 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+- Restructured the codebase into feature modules: `src/core/` (configuration, database, HTTP server, Discord client, scheduler, feature contract), `src/shared/`, and `src/features/{sessions,portal,taiga}/`. A feature now declares its own routes, commands, listeners, and jobs, and `src/index.ts` only composes them.
+- Added the Taiga board integration. New posts in the bug-report and suggestion forums become cards in the `Suggested` column; moving a card retags its post (`New` → `Approved` + `In progress` → `Approved`), reaching `In game` archives it, and deleting a card in any other column marks the post `Declined` and archives it. Deleting a forum post deletes its card. Every change, plus epic activity, is announced in a notifications channel. Configure it with `/taiga`; enabling it never back-fills existing posts.
+- Taiga updates arrive over a signature-verified webhook at `POST /v1/taiga/webhook`, with a periodic reconcile sweep that repairs anything a missed delivery dropped.
+- Fixed a malformed presence payload answering `500` instead of `400`: a non-numeric Roblox ID threw inside the Zod transform rather than failing validation.
+- Fixed `npm start`, which pointed at `dist/index.js` instead of the emitted `dist/src/index.js`.
+
 ## 0.9.10 - 2026-07-19
 
 - Cached and coalesced uncached Discord-to-Roblox Bloxlink lookups, preventing repeated concurrent calls for the same Discord member.

@@ -4,16 +4,31 @@ This file is the project-specific working agreement for `mylebot`. Read it befor
 
 ## What this service does
 
-`mylebot` tracks eligible Roblox group members' play sessions in PostgreSQL and projects that state into Discord.
+`mylebot` is a Discord bot built from independent feature modules. Its first and largest feature tracks eligible Roblox group members' play sessions in PostgreSQL and projects that state into Discord; others integrate the store-owners portal and the Taiga board.
 
-The data flow is:
+The session data flow is:
 
 1. [`roblox/`](roblox/) observes player presence and sends authenticated event batches.
-2. [`src/api.ts`](src/api.ts) authenticates and validates ingestion requests.
-3. [`src/services/session-service.ts`](src/services/session-service.ts) owns lifecycle transitions, accounting, idempotency, and persistence.
-4. [`src/discord/publisher.ts`](src/discord/publisher.ts) publishes session state; [`src/discord/commands.ts`](src/discord/commands.ts) provides reporting and administration.
+2. [`src/features/sessions/api/routes.ts`](src/features/sessions/api/routes.ts) authenticates and validates ingestion requests.
+3. [`src/features/sessions/service/session-service.ts`](src/features/sessions/service/session-service.ts) owns lifecycle transitions, accounting, idempotency, and persistence.
+4. [`src/features/sessions/discord/publisher.ts`](src/features/sessions/discord/publisher.ts) publishes session state; [`src/features/sessions/discord/commands/`](src/features/sessions/discord/commands/) provides reporting and administration.
 
 Discord is a projection and administration surface, not the source of session truth. Do not move lifecycle rules into API routes, jobs, or Discord handlers.
+
+## Feature architecture
+
+Code belongs to exactly one of three layers:
+
+- `src/core/` — configuration, database client, HTTP server, Discord client, scheduler, and the `Feature` contract. Core must never import from `src/features/`.
+- `src/shared/` — services more than one feature needs (Bloxlink, runtime settings, permission levels, reusable Discord components).
+- `src/features/<name>/` — one self-contained slice, with `domain/` (pure), `service/` (orchestration and persistence), `api/` (transport), `discord/` (gateway surface), and an `index.ts` exporting `create<Name>Feature(ctx): Feature`.
+
+A feature declares its routes, slash commands, background jobs, and lifecycle hooks through the `Feature` object; [`src/index.ts`](src/index.ts) only composes them. When adding a feature:
+
+- Register it in [`src/index.ts`](src/index.ts) and in [`src/features/command-data.ts`](src/features/command-data.ts), which is what `scripts/deploy-commands.ts` deploys. Keep the two gated identically so a manual deploy cannot install a command the running bot ignores.
+- Namespace every component `customId` with the feature name. Features share the `interactionCreate` event, so each handler must ignore interactions it does not own.
+- Return `null` from the factory when the feature is not configured, rather than half-registering it.
+- Features must not import from each other. Promote anything genuinely shared into `src/shared/`.
 
 ## Start here
 
@@ -29,12 +44,17 @@ Useful entry points:
 
 | Area | Source | Tests |
 | --- | --- | --- |
-| Configuration and environment validation | [`src/config.ts`](src/config.ts) | API and service tests |
-| HTTP ingestion and health checks | [`src/api.ts`](src/api.ts) | [`tests/api.test.ts`](tests/api.test.ts), [`tests/session-validation.test.ts`](tests/session-validation.test.ts) |
-| Session lifecycle | [`src/services/session-service.ts`](src/services/session-service.ts) | [`tests/session-validation.test.ts`](tests/session-validation.test.ts) |
-| Time accounting and reports | [`src/domain/accounting.ts`](src/domain/accounting.ts), [`src/domain/reporting.ts`](src/domain/reporting.ts) | [`tests/accounting.test.ts`](tests/accounting.test.ts), [`tests/reporting.test.ts`](tests/reporting.test.ts) |
-| Runtime configuration | [`src/services/runtime-settings.ts`](src/services/runtime-settings.ts) | [`tests/runtime-settings.test.ts`](tests/runtime-settings.test.ts) |
-| Discord permissions and commands | [`src/discord/commands.ts`](src/discord/commands.ts) | [`tests/commands.test.ts`](tests/commands.test.ts) |
+| Configuration and environment validation | [`src/core/config.ts`](src/core/config.ts) | API and service tests |
+| HTTP server, health checks, error contract | [`src/core/http.ts`](src/core/http.ts) | [`tests/sessions/api.test.ts`](tests/sessions/api.test.ts) |
+| Feature contract and composition | [`src/core/feature.ts`](src/core/feature.ts), [`src/index.ts`](src/index.ts) | — |
+| Roblox event ingestion | [`src/features/sessions/api/routes.ts`](src/features/sessions/api/routes.ts) | [`tests/sessions/api.test.ts`](tests/sessions/api.test.ts), [`tests/sessions/session-validation.test.ts`](tests/sessions/session-validation.test.ts) |
+| Session lifecycle | [`src/features/sessions/service/session-service.ts`](src/features/sessions/service/session-service.ts) | [`tests/sessions/session-validation.test.ts`](tests/sessions/session-validation.test.ts) |
+| Time accounting and reports | [`src/features/sessions/domain/`](src/features/sessions/domain/) | [`tests/sessions/accounting.test.ts`](tests/sessions/accounting.test.ts), [`tests/sessions/reporting.test.ts`](tests/sessions/reporting.test.ts) |
+| Runtime configuration | [`src/shared/runtime-settings.ts`](src/shared/runtime-settings.ts) | [`tests/shared/runtime-settings.test.ts`](tests/shared/runtime-settings.test.ts) |
+| Discord permissions | [`src/shared/permissions.ts`](src/shared/permissions.ts) | [`tests/sessions/commands.test.ts`](tests/sessions/commands.test.ts) |
+| Session commands | [`src/features/sessions/discord/commands/`](src/features/sessions/discord/commands/) | [`tests/sessions/commands.test.ts`](tests/sessions/commands.test.ts) |
+| Store-owners portal endpoints | [`src/features/portal/`](src/features/portal/) | [`tests/portal/site-notify.test.ts`](tests/portal/site-notify.test.ts) |
+| Taiga board integration | [`src/features/taiga/`](src/features/taiga/) | [`tests/taiga/`](tests/taiga/) |
 | Database model | [`prisma/schema.prisma`](prisma/schema.prisma), [`prisma/migrations/`](prisma/migrations/) | Service and API tests |
 | Roblox producer | [`roblox/server/MainModule.lua`](roblox/server/MainModule.lua) | Manual/integration validation |
 
@@ -74,9 +94,21 @@ Useful entry points:
 - Under sender queue pressure, discard replaceable heartbeats before lifecycle events such as join, activity change, leave, or shutdown.
 - Timestamps are instants in storage and transport. Reporting boundaries and manual date input use the configured IANA `REPORT_TIMEZONE`; preserve DST-safe, half-open date ranges.
 
+### Taiga integration
+
+- The board is the source of truth for a card's column; the forum post is the projection. `data.status` on a webhook is authoritative — never derive state from `change.diff` alone, so a replayed delivery converges instead of drifting.
+- Column and tag names live only in [`src/features/taiga/domain/mapping.ts`](src/features/taiga/domain/mapping.ts). An unknown column must leave the post untouched rather than guess a tag set.
+- Deleting a card means "declined" in every column except `In game`, where it means the shipped card was cleared off the board and the post keeps its `Approved` tag.
+- The bot flags a card row `deleting` before deleting the story in Taiga, so the webhook its own delete triggers is not read as somebody declining the post.
+- Webhook deliveries are deduplicated on a hash of the raw body. A delivery is claimed before it is applied, so a partially failed delivery is repaired by the reconcile sweep, not by a retry.
+- The reconcile sweep may only treat missing cards as deleted when the entire board was read successfully. Preserve that guard and its regression test; without it one failed API call declines every post.
+- Nothing older than `TaigaSettings.activatedAt` is ever touched. The integration must never back-fill existing forum posts.
+- Taiga `PATCH`/`PUT` requires the object's current `version`; read before writing if an edit path is ever added.
+
 ### Runtime settings and Discord
 
-- Discord logs-channel and role settings are configured through `/config` and stored in PostgreSQL; they do not have environment fallbacks.
+- Discord logs-channel and role settings are configured through `/config` and stored in PostgreSQL; they do not have environment fallbacks. Taiga's channel settings work the same way through `/taiga`; only credentials and hosts come from the environment.
+- Message intents are privileged and are requested only when Taiga is configured. Do not add them unconditionally — an unconfigured deployment would fail to log in.
 - Discord access is cumulative. Guild administrators have manager access; otherwise take the maximum permission level from database roles.
 - Slash-command definitions synchronize at startup. When command shapes change, keep startup synchronization, [`scripts/deploy-commands.ts`](scripts/deploy-commands.ts), tests, and README documentation aligned.
 - Discord publication failures must not become session state authority or corrupt persisted lifecycle state.
@@ -85,7 +117,7 @@ Useful entry points:
 
 - This is strict TypeScript with NodeNext ESM. Local TypeScript imports must use their emitted `.js` suffix.
 - Preserve `strict`, `noUncheckedIndexedAccess`, and `exactOptionalPropertyTypes` behavior from [`tsconfig.json`](tsconfig.json); fix types instead of weakening the compiler configuration.
-- Keep pure time/accounting/reporting logic in `src/domain/`, orchestration and persistence in `src/services/`, transport validation in `src/api.ts`, and Discord-specific behavior in `src/discord/`.
+- Within a feature, keep pure logic in `domain/`, orchestration and persistence in `service/`, transport validation in `api/`, and Discord-specific behavior in `discord/`. Prefer putting new logic in `domain/` where it can be unit tested without a client or a database.
 - Reuse existing Zod schemas, Prisma transaction patterns, and error conventions before introducing new abstractions.
 - Validate at external boundaries: HTTP payloads, environment variables, Discord modal input, and external-service responses.
 - Avoid broad catch blocks and silent recovery. Expected user errors should remain distinguishable from operational failures.
@@ -108,9 +140,10 @@ Add or update the smallest test that proves the requested behavior. Bug fixes sh
 Focused commands:
 
 ```powershell
-npx vitest run tests/api.test.ts
-npx vitest run tests/api.test.ts -t "accepts an authenticated event"
-npx vitest run tests/session-validation.test.ts
+npx vitest run tests/sessions/api.test.ts
+npx vitest run tests/sessions/api.test.ts -t "accepts an authenticated event"
+npx vitest run tests/sessions/session-validation.test.ts
+npx vitest run tests/taiga
 ```
 
 Before finishing code changes, run:

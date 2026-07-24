@@ -8,6 +8,7 @@ import { buildHttpServer } from "./core/http.js";
 import { Scheduler } from "./core/scheduler.js";
 import { createPortalFeature } from "./features/portal/index.js";
 import { createSessionsFeature } from "./features/sessions/index.js";
+import { createTaigaFeature } from "./features/taiga/index.js";
 import { BloxlinkService } from "./shared/bloxlink.js";
 import { RuntimeSettingsService } from "./shared/runtime-settings.js";
 
@@ -27,7 +28,8 @@ const ctx: FeatureContext = {
 const features: Feature[] = [
   createSessionsFeature(ctx),
   createPortalFeature(ctx),
-];
+  createTaigaFeature(ctx),
+].filter((feature): feature is Feature => feature !== null);
 
 for (const feature of features) {
   if (feature.routes) await app.register(feature.routes);
