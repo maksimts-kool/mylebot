@@ -1,4 +1,7 @@
-import { ChannelType, EmbedBuilder, type Client, type SendableChannels } from "discord.js";
+import {
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder,
+  type Client, type SendableChannels,
+} from "discord.js";
 import type { TaigaCard, TaigaCardKind } from "@prisma/client";
 import { errorType } from "../../../core/errors.js";
 import type { TaigaClient } from "../client.js";
@@ -42,52 +45,68 @@ export class TaigaNotifier {
     return channel;
   }
 
-  private async send(embed: EmbedBuilder): Promise<void> {
+  private async send(embed: EmbedBuilder, buttons: ButtonBuilder[] = []): Promise<void> {
     try {
       const channel = await this.channel();
       if (!channel) return;
-      await channel.send({ embeds: [embed] });
+      const components = buttons.length ? [new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons)] : [];
+      await channel.send({ embeds: [embed], components });
     } catch (error) {
       console.warn("Taiga notification failed", { errorType: errorType(error) });
     }
   }
 
-  private links(card: TaigaCard): string {
-    return `[Forum post](${discordThreadUrl(card.guildId, card.threadId)}) · [Taiga card #${card.taigaRef}](${this.taiga.storyUrl(card.taigaRef)})`;
+  private forumButton(card: TaigaCard): ButtonBuilder {
+    return new ButtonBuilder()
+      .setStyle(ButtonStyle.Link)
+      .setLabel("Forum post")
+      .setEmoji("💬")
+      .setURL(discordThreadUrl(card.guildId, card.threadId));
+  }
+
+  private cardButtons(card: TaigaCard): ButtonBuilder[] {
+    return [
+      this.forumButton(card),
+      new ButtonBuilder()
+        .setStyle(ButtonStyle.Link)
+        .setLabel(`Taiga card #${card.taigaRef}`)
+        .setEmoji("📋")
+        .setURL(this.taiga.storyUrl(card.taigaRef)),
+    ];
   }
 
   async cardCreated(card: TaigaCard): Promise<void> {
     await this.send(new EmbedBuilder()
       .setTitle(`🆕 ${kindLabel(card.kind)} added to the board`)
-      .setDescription(`**${card.title}**\n${this.links(card)}`)
+      .setDescription(`**${card.title}**`)
       .setColor(columnColor(card.statusName))
       .addFields(
         { name: "Author", value: `<@${card.authorDiscordId}>`, inline: true },
         { name: "Column", value: card.statusName, inline: true },
-      ));
+      ), this.cardButtons(card));
   }
 
   async cardMoved(card: TaigaCard, from: string, to: string): Promise<void> {
     await this.send(new EmbedBuilder()
       .setTitle(`📦 ${kindLabel(card.kind)} moved to ${to}`)
-      .setDescription(`**${card.title}**\n${this.links(card)}`)
+      .setDescription(`**${card.title}**`)
       .setColor(columnColor(to))
       .addFields(
         { name: "From", value: from, inline: true },
         { name: "To", value: to, inline: true },
         { name: "Author", value: `<@${card.authorDiscordId}>`, inline: true },
-      ));
+      ), this.cardButtons(card));
   }
 
   async cardDeclined(card: TaigaCard): Promise<void> {
     await this.send(new EmbedBuilder()
       .setTitle(`🚫 ${kindLabel(card.kind)} declined`)
-      .setDescription(`**${card.title}**\n[Forum post](${discordThreadUrl(card.guildId, card.threadId)})`)
+      .setDescription(`**${card.title}**`)
       .setColor(DECLINED_COLOR)
       .addFields(
         { name: "Author", value: `<@${card.authorDiscordId}>`, inline: true },
         { name: "Last column", value: card.statusName, inline: true },
-      ));
+      ), [this.forumButton(card)]);
   }
 
   async postRemoved(card: TaigaCard): Promise<void> {
@@ -116,7 +135,7 @@ export class TaigaNotifier {
     const title = action === "created" ? "📘 New version epic" : action === "closed" ? "🚀 Version epic completed" : "📘 Version epic updated";
     const embed = new EmbedBuilder()
       .setTitle(title)
-      .setDescription(`**${epic.subject}**\n[Taiga epic #${epic.ref}](${this.taiga.epicUrl(epic.ref)})`)
+      .setDescription(`**${epic.subject}**`)
       .setColor(EPIC_COLOR);
     if (epic.statusName) embed.addFields({ name: "Status", value: epic.statusName, inline: true });
     if (relatedCards.length) {
@@ -134,6 +153,10 @@ export class TaigaNotifier {
       }
       embed.addFields({ name: `Included posts (${relatedCards.length})`, value: lines.join("\n") });
     }
-    await this.send(embed);
+    await this.send(embed, [new ButtonBuilder()
+      .setStyle(ButtonStyle.Link)
+      .setLabel(`Taiga epic #${epic.ref}`)
+      .setEmoji("📘")
+      .setURL(this.taiga.epicUrl(epic.ref))]);
   }
 }
