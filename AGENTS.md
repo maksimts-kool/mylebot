@@ -98,6 +98,7 @@ Useful entry points:
 
 - The board is the source of truth for a card's column; the forum post is the projection. `data.status` on a webhook is authoritative — never derive state from `change.diff` alone, so a replayed delivery converges instead of drifting.
 - Column and tag names live only in [`src/features/taiga/domain/mapping.ts`](src/features/taiga/domain/mapping.ts). An unknown column must leave the post untouched rather than guess a tag set.
+- The bot owns exactly the four board-state tags. Every other tag on a post belongs to the poster and must survive a column change — replace the state tags as a set, never the whole tag list.
 - Deleting a card means "declined" in every column except `In game`, where it means the shipped card was cleared off the board and the post keeps its `Approved` tag.
 - The bot flags a card row `deleting` before deleting the story in Taiga, so the webhook its own delete triggers is not read as somebody declining the post.
 - Webhook deliveries are deduplicated on a hash of the raw body. A delivery is claimed before it is applied, so a partially failed delivery is repaired by the reconcile sweep, not by a retry.
