@@ -1,6 +1,6 @@
 import { REST, Routes } from "discord.js";
-import { loadConfig } from "../src/config.js";
-import { commandData } from "../src/discord/commands.js";
+import { loadConfig } from "../src/core/config.js";
+import { allCommandData } from "../src/features/command-data.js";
 
 const config = loadConfig({
   ...process.env,
@@ -15,5 +15,5 @@ if (!config.DISCORD_TOKEN || !config.DISCORD_APPLICATION_ID || !config.DISCORD_G
 }
 const rest = new REST({ version: "10" }).setToken(config.DISCORD_TOKEN);
 await rest.put(Routes.applicationCommands(config.DISCORD_APPLICATION_ID), { body: [] });
-await rest.put(Routes.applicationGuildCommands(config.DISCORD_APPLICATION_ID, config.DISCORD_GUILD_ID), { body: commandData });
-console.log(`Removed legacy global commands and deployed ${commandData.length} guild commands`);
+await rest.put(Routes.applicationGuildCommands(config.DISCORD_APPLICATION_ID, config.DISCORD_GUILD_ID), { body: allCommandData });
+console.log(`Removed legacy global commands and deployed ${allCommandData.length} guild commands`);

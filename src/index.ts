@@ -1,112 +1,41 @@
-import { Client, DiscordAPIError, EmbedBuilder, Events, GatewayIntentBits } from "discord.js";
-import { buildApi, type SendDirectMessage, type VerifiedGuildMember } from "./api.js";
-import { loadConfig } from "./config.js";
-import { prisma } from "./db.js";
-import { CommandHandler, commandData } from "./discord/commands.js";
-import { DiscordPublisher } from "./discord/publisher.js";
-import { BloxlinkService } from "./services/bloxlink.js";
-import { SessionService } from "./services/session-service.js";
-import { RuntimeSettingsService } from "./services/runtime-settings.js";
-
-function errorType(error: unknown): string {
-  return error instanceof Error ? error.name : "UnknownError";
-}
+import { Events } from "discord.js";
+import { loadConfig } from "./core/config.js";
+import { prisma } from "./core/db.js";
+import { createDiscordClient } from "./core/discord-client.js";
+import { errorType } from "./core/errors.js";
+import type { Feature, FeatureContext } from "./core/feature.js";
+import { buildHttpServer } from "./core/http.js";
+import { Scheduler } from "./core/scheduler.js";
+import { createPortalFeature } from "./features/portal/index.js";
+import { createSessionsFeature } from "./features/sessions/index.js";
+import { BloxlinkService } from "./shared/bloxlink.js";
+import { RuntimeSettingsService } from "./shared/runtime-settings.js";
 
 const config = loadConfig();
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-const bloxlink = new BloxlinkService(prisma, config);
-const settings = new RuntimeSettingsService(prisma);
-const sessions = new SessionService(prisma, config, settings);
-const publisher = new DiscordPublisher(client, prisma, config, bloxlink, settings);
-new CommandHandler(client, prisma, config, publisher, bloxlink, settings).register();
+const client = createDiscordClient(config);
+const app = await buildHttpServer(config, async () => { await prisma.$queryRaw`SELECT 1`; });
 
-// Sends a Discord DM on behalf of the store-owners site. Discord code 50007
-// means the recipient has DMs closed or shares no guild with the bot.
-const sendDirectMessage: SendDirectMessage = async (input) => {
-  if (!client.isReady()) return { ok: false, status: 503, error: "discord_not_ready" };
-  try {
-    const user = await client.users.fetch(input.discordId);
-    const embed = new EmbedBuilder().setTitle(input.title).setDescription(input.message);
-    if (input.color !== undefined) embed.setColor(input.color);
-    if (input.url) embed.setURL(input.url);
-    await user.send({ embeds: [embed] });
-    return { ok: true };
-  } catch (error) {
-    if (error instanceof DiscordAPIError && error.code === 50007) return { ok: false, status: 422, error: "dms_closed" };
-    console.warn("Site notify DM failed", { errorType: error instanceof Error ? error.name : "UnknownError" });
-    return { ok: false, status: 502, error: "dm_send_failed" };
-  }
+const ctx: FeatureContext = {
+  config,
+  db: prisma,
+  client,
+  log: app.log,
+  settings: new RuntimeSettingsService(prisma),
+  bloxlink: new BloxlinkService(prisma, config),
 };
 
-const VERIFIED_MEMBER_CACHE_MS = 5 * 60 * 1000;
-let verifiedMemberCache: { expiresAt: number; members: VerifiedGuildMember[] } | null = null;
-let verifiedMemberRefresh: Promise<VerifiedGuildMember[]> | null = null;
+const features: Feature[] = [
+  createSessionsFeature(ctx),
+  createPortalFeature(ctx),
+];
 
-/**
- * Lists every member that currently has Bloxlink's Verified role in the bot's
- * guild. This deliberately does not use the session-tracker Identity table:
- * someone can be assigned a store before they ever play in the game.
- */
-async function loadVerifiedGuildMembers(): Promise<VerifiedGuildMember[]> {
-  if (!config.DISCORD_GUILD_ID) return [];
-  try {
-    const guild = await client.guilds.fetch(config.DISCORD_GUILD_ID);
-    const roles = await guild.roles.fetch();
-    const verifiedRole = roles.find((role) => role.name.trim().toLowerCase() === "verified");
-    if (!verifiedRole) {
-      console.warn("Verified member list failed", { reason: "verified_role_missing" });
-      return [];
-    }
-
-    const members: VerifiedGuildMember[] = [];
-    let after: string | undefined;
-    do {
-      const page = await guild.members.list({ limit: 1_000, cache: false, ...(after ? { after } : {}) });
-      for (const member of page.values()) {
-        if (!member.roles.cache.has(verifiedRole.id)) continue;
-        members.push({
-          discordId: member.id,
-          discordName: member.displayName,
-          // The verified role is the source of truth here. Fetching a Roblox
-          // name for every guild member would needlessly hammer Bloxlink's API.
-          robloxUsername: null,
-        });
-      }
-      if (page.size < 1_000) break;
-      after = page.lastKey();
-    } while (after);
-
-    return members.sort((a, b) => a.discordName.localeCompare(b.discordName));
-  } catch (error) {
-    console.warn("Verified member list failed", { errorType: errorType(error) });
-    return [];
-  }
+for (const feature of features) {
+  if (feature.routes) await app.register(feature.routes);
 }
-
-async function listVerifiedGuildMembers(): Promise<VerifiedGuildMember[]> {
-  if (!client.isReady()) return [];
-  if (verifiedMemberCache && verifiedMemberCache.expiresAt > Date.now()) return verifiedMemberCache.members;
-  if (verifiedMemberRefresh) return verifiedMemberRefresh;
-  verifiedMemberRefresh = loadVerifiedGuildMembers();
-  try {
-    const members = await verifiedMemberRefresh;
-    verifiedMemberCache = { members, expiresAt: Date.now() + VERIFIED_MEMBER_CACHE_MS };
-    return members;
-  } finally {
-    verifiedMemberRefresh = null;
-  }
-}
-
-const api = await buildApi(config, sessions, async (ids, removedMessages) => {
-  await publisher.refreshMany(ids);
-  if (removedMessages) await publisher.removeMessages(removedMessages);
-}, async () => { await prisma.$queryRaw`SELECT 1`; }, sendDirectMessage, async (discordId) => {
-  const mapped = await bloxlink.robloxForDiscord(discordId);
-  return mapped?.username ?? null;
-}, listVerifiedGuildMembers);
+const commandData = features.flatMap((feature) => feature.commands ?? []);
 
 async function bootstrapDiscord(): Promise<void> {
-  api.log.info({ phase: "discord_bootstrap" }, "Discord bootstrap started");
+  app.log.info({ phase: "discord_bootstrap" }, "Discord bootstrap started");
   try {
     if (config.DISCORD_GUILD_ID) {
       // Guild command replacement is immediate and removes stale command definitions.
@@ -114,83 +43,72 @@ async function bootstrapDiscord(): Promise<void> {
       await client.application!.commands.set([]);
       const guild = await client.guilds.fetch(config.DISCORD_GUILD_ID);
       await guild.commands.set(commandData);
-      api.log.info({ phase: "discord_command_sync", commandCount: commandData.length }, "Discord guild commands synchronized");
+      app.log.info({ phase: "discord_command_sync", commandCount: commandData.length }, "Discord guild commands synchronized");
     }
-    await publisher.restore();
-    api.log.info({ phase: "discord_bootstrap" }, "Discord bootstrap completed");
   } catch (error) {
-    api.log.error({ phase: "discord_bootstrap", errorType: errorType(error) }, "Discord bootstrap failed");
+    app.log.error({ phase: "discord_command_sync", errorType: errorType(error) }, "Discord command synchronization failed");
   }
+  // One feature failing to come up must not stop the others from doing so.
+  for (const feature of features) {
+    if (!feature.onReady) continue;
+    try {
+      await feature.onReady();
+    } catch (error) {
+      app.log.error({ phase: "discord_bootstrap", feature: feature.name, errorType: errorType(error) }, "Feature ready hook failed");
+    }
+  }
+  app.log.info({ phase: "discord_bootstrap" }, "Discord bootstrap completed");
 }
 
 client.once(Events.ClientReady, () => {
   void bootstrapDiscord();
 });
 
-api.log.info({ phase: "startup" }, "Application startup initialized");
-api.log.info({ phase: "initial_session_sweep" }, "Initial session sweep started");
-try {
-  const ids = await sessions.sweep();
-  await publisher.refreshMany(ids);
-  api.log.info({ phase: "initial_session_sweep", affectedSessionCount: ids.length }, "Initial session sweep completed");
-} catch (error) {
-  api.log.error({ phase: "initial_session_sweep", errorType: errorType(error) }, "Initial session sweep failed");
-  throw error;
+app.log.info({ phase: "startup", features: features.map(({ name }) => name) }, "Application startup initialized");
+for (const feature of features) {
+  if (!feature.onStart) continue;
+  try {
+    await feature.onStart();
+  } catch (error) {
+    app.log.error({ phase: "feature_start", feature: feature.name, errorType: errorType(error) }, "Feature startup failed");
+    throw error;
+  }
 }
-await api.listen({ host: config.API_HOST, port: config.API_PORT });
-api.log.info({ phase: "http_listening", host: config.API_HOST, port: config.API_PORT }, "HTTP server listening");
+
+await app.listen({ host: config.API_HOST, port: config.API_PORT });
+app.log.info({ phase: "http_listening", host: config.API_HOST, port: config.API_PORT }, "HTTP server listening");
+
 if (config.DISCORD_TOKEN) {
-  api.log.info({ phase: "discord_login" }, "Discord login started");
+  app.log.info({ phase: "discord_login" }, "Discord login started");
   try {
     await client.login(config.DISCORD_TOKEN);
-    api.log.info({ phase: "discord_login" }, "Discord login completed");
+    app.log.info({ phase: "discord_login" }, "Discord login completed");
   } catch (error) {
-    api.log.error({ phase: "discord_login", errorType: errorType(error) }, "Discord login failed");
+    app.log.error({ phase: "discord_login", errorType: errorType(error) }, "Discord login failed");
     throw error;
   }
 } else {
-  api.log.info({ phase: "discord_login", mode: "api_only" }, "API-only mode is active");
+  app.log.info({ phase: "discord_login", mode: "api_only" }, "API-only mode is active");
 }
 
-let stopping = false;
-function schedule(name: string, intervalMs: number, operation: () => Promise<void>): NodeJS.Timeout {
-  const timer = setTimeout(async function run() {
-    if (stopping) return;
-    const startedAt = Date.now();
-    try {
-      await operation();
-      api.log.info({ job: name, durationMs: Date.now() - startedAt }, "Scheduled job completed");
-    } catch (error) {
-      api.log.error({ job: name, errorType: errorType(error), durationMs: Date.now() - startedAt }, "Scheduled job failed");
-    } finally {
-      if (!stopping) timer.refresh();
-      const duration = Date.now() - startedAt;
-      if (duration > intervalMs) api.log.warn({ job: name, durationMs: duration, intervalMs }, "Scheduled job exceeded its interval");
-    }
-  }, intervalMs);
-  api.log.info({ job: name, intervalMs }, "Scheduled job registered");
-  return timer;
+const scheduler = new Scheduler(app.log);
+for (const feature of features) {
+  for (const job of feature.jobs ?? []) scheduler.register(job);
 }
-
-const sweepTimer = schedule("session sweep", 15_000, async () => {
-  const ids = await sessions.sweep();
-  await publisher.refreshMany(ids);
-});
-const refreshTimer = schedule("Discord refresh", config.DISCORD_UPDATE_SECONDS * 1000, async () => {
-  const live = await prisma.session.findMany({ where: { state: { not: "ENDED" }, deletedAt: null }, select: { id: true } });
-  await publisher.refreshMany(live.map(({ id }) => id));
-});
-const cleanupTimer = schedule("processed-event cleanup", 24 * 60 * 60 * 1000, async () => {
-  const count = await sessions.cleanupProcessedEvents();
-  if (count) api.log.info({ job: "processed-event cleanup", removedEventCount: count }, "Expired processed events removed");
-});
 
 async function shutdown(signal: string) {
-  api.log.info({ phase: "shutdown", signal }, "Application shutdown started");
-  stopping = true;
-  clearTimeout(sweepTimer); clearTimeout(refreshTimer); clearTimeout(cleanupTimer);
-  await api.close(); client.destroy(); await prisma.$disconnect();
-  api.log.info({ phase: "shutdown", signal }, "Application shutdown completed");
+  app.log.info({ phase: "shutdown", signal }, "Application shutdown started");
+  scheduler.stop();
+  for (const feature of features) {
+    if (!feature.onShutdown) continue;
+    try {
+      await feature.onShutdown();
+    } catch (error) {
+      app.log.error({ phase: "shutdown", feature: feature.name, errorType: errorType(error) }, "Feature shutdown hook failed");
+    }
+  }
+  await app.close(); client.destroy(); await prisma.$disconnect();
+  app.log.info({ phase: "shutdown", signal }, "Application shutdown completed");
 }
 process.once("SIGINT", () => void shutdown("SIGINT"));
 process.once("SIGTERM", () => void shutdown("SIGTERM"));

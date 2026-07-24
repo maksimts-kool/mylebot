@@ -1,0 +1,102 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { FastifyInstance } from "fastify";
+import { loadConfig } from "../../src/core/config.js";
+import { buildHttpServer, type Readiness } from "../../src/core/http.js";
+import { sessionRoutes, type SessionsChanged } from "../../src/features/sessions/api/routes.js";
+import type { SessionService } from "../../src/features/sessions/service/session-service.js";
+
+const config = loadConfig({
+  DATABASE_URL: "postgresql://example.invalid/db",
+  ROBLOX_INGESTION_SECRET: "12345678901234567890123456789012",
+  ROBLOX_UNIVERSE_ID: "100",
+  ROBLOX_GROUP_ID: "200",
+  ROBLOX_ALLOWED_PLACE_IDS: "300",
+  MAX_BATCH_SIZE: "1",
+});
+const validEvent = {
+  eventId: "650daf2b-79b0-4d70-9c19-2a280fa3ac39",
+  kind: "JOIN", occurredAt: new Date().toISOString(), universeId: "100", placeId: "300", jobId: "job",
+  player: { userId: "999999999999999999", username: "Tester", rankNumber: 1, rankName: "Staff", active: true },
+};
+const apps: FastifyInstance[] = [];
+afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
+
+async function buildApp(sessions: SessionService, onChanged: SessionsChanged, readiness?: Readiness): Promise<FastifyInstance> {
+  const app = await buildHttpServer(config, readiness);
+  await app.register(sessionRoutes({ config, sessions, onChanged }));
+  apps.push(app);
+  return app;
+}
+
+describe("ingestion API", () => {
+  it("reports liveness independently and readiness failures as unavailable", async () => {
+    const readiness = vi.fn().mockRejectedValue(new Error("database unavailable"));
+    const app = await buildApp({ process: vi.fn() } as never, async () => {}, readiness);
+    const health = await app.inject({ method: "GET", url: "/health" });
+    const ready = await app.inject({ method: "GET", url: "/ready" });
+    expect(health.statusCode).toBe(200);
+    expect(ready.statusCode).toBe(503);
+    expect(readiness).toHaveBeenCalledOnce();
+  });
+
+  it("rejects missing authentication before processing the body", async () => {
+    const process = vi.fn(); const app = await buildApp({ process } as never, async () => {});
+    const response = await app.inject({ method: "POST", url: "/v1/roblox/presence/batch", payload: { events: [validEvent] } });
+    expect(response.statusCode).toBe(401); expect(process).not.toHaveBeenCalled();
+  });
+
+  it("accepts an authenticated event and reports changed sessions", async () => {
+    const process = vi.fn().mockResolvedValue({ eventId: validEvent.eventId, status: "accepted", sessionId: "session-1", changed: true });
+    const changed = vi.fn(); const app = await buildApp({ process } as never, changed);
+    const info = vi.spyOn(app.log, "info");
+    const response = await app.inject({ method: "POST", url: "/v1/roblox/presence/batch", headers: { authorization: `Bearer ${config.ROBLOX_INGESTION_SECRET}` }, payload: { events: [validEvent] } });
+    expect(response.statusCode).toBe(202); expect(process).toHaveBeenCalledOnce(); expect(changed).toHaveBeenCalledWith(["session-1"]);
+    expect(info).toHaveBeenCalledWith({
+      eventCount: 1,
+      changedSessionCount: 1,
+      removedMessageCount: 0,
+      outcomes: { accepted: 1 },
+    }, "Authenticated presence batch completed");
+    const completion = info.mock.calls.find(([, message]) => message === "Authenticated presence batch completed");
+    expect(JSON.stringify(completion)).not.toContain(config.ROBLOX_INGESTION_SECRET);
+    expect(JSON.stringify(completion)).not.toContain(validEvent.player.userId);
+  });
+
+  it("passes low-rank Discord messages to the publisher for deletion", async () => {
+    const process = vi.fn().mockResolvedValue({
+      eventId: validEvent.eventId,
+      status: "removed_low_rank",
+      changed: false,
+      removedMessages: [{ channelId: "channel-1", messageId: "message-1" }],
+    });
+    const changed = vi.fn(); const app = await buildApp({ process } as never, changed);
+    const response = await app.inject({ method: "POST", url: "/v1/roblox/presence/batch", headers: { authorization: `Bearer ${config.ROBLOX_INGESTION_SECRET}` }, payload: { events: [validEvent] } });
+    expect(response.statusCode).toBe(202);
+    expect(changed).toHaveBeenCalledWith([], [{ channelId: "channel-1", messageId: "message-1" }]);
+  });
+
+  it("enforces the configured batch limit", async () => {
+    const app = await buildApp({ process: vi.fn() } as never, async () => {});
+    const response = await app.inject({ method: "POST", url: "/v1/roblox/presence/batch", headers: { authorization: `Bearer ${config.ROBLOX_INGESTION_SECRET}` }, payload: { events: [validEvent, { ...validEvent, eventId: "6bad52ed-746f-4e7c-b6c1-544065466ddf" }] } });
+    expect(response.statusCode).toBe(413);
+  });
+
+  it("reports a source-rejected event separately from an internal failure", async () => {
+    const process = vi.fn().mockRejectedValue(new Error("Unknown place ID"));
+    const app = await buildApp({ process } as never, async () => {});
+    const response = await app.inject({ method: "POST", url: "/v1/roblox/presence/batch", headers: { authorization: `Bearer ${config.ROBLOX_INGESTION_SECRET}` }, payload: { events: [validEvent] } });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: "rejected_event" });
+  });
+
+  it("reports a malformed payload as a validation failure, not a rejected event", async () => {
+    const app = await buildApp({ process: vi.fn() } as never, async () => {});
+    const response = await app.inject({
+      method: "POST", url: "/v1/roblox/presence/batch",
+      headers: { authorization: `Bearer ${config.ROBLOX_INGESTION_SECRET}` },
+      payload: { events: [{ ...validEvent, placeId: "not-a-number" }] },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: "invalid_payload" });
+  });
+});
