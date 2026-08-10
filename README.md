@@ -74,10 +74,14 @@ Comma-separated ID settings must not contain surrounding quotes. Roblox IDs are 
 | `DISCORD_TOKEN` | Discord bot token. If empty, the service starts in API-only mode. |
 | `DISCORD_APPLICATION_ID` | Discord application ID, required for command deployment. |
 | `DISCORD_GUILD_ID` | Guild where commands are installed and Bloxlink mappings are resolved. |
+| `VERIFICATION_CHANNEL_ID` | Channel where the bot posts verification reminders. Empty disables the verification feature. |
+| `VERIFICATION_UNVERIFIED_ROLE_ID` | Role whose human members must verify. Empty disables the verification feature. |
 | `BLOXLINK_API_KEY` | Optional Bloxlink API key. Without it, uncached Discord↔Roblox mappings cannot be resolved. |
 | `BLOXLINK_BASE_URL` | Bloxlink API base URL; normally leave the default unchanged. |
 
 The Discord server owner or another member with Discord's Administrator permission performs initial setup through `/config`. Select the session logs channel and assign staff, admin, and manager access to Discord roles there. These settings are stored in PostgreSQL; the logs channel and role assignments are not configured through environment variables.
+
+When both verification IDs are set, the bot posts an `@Unverified` reminder every three days. A member's 30-day period begins the first time the bot sees them with that role. On day 27, the bot mentions them in a final 3-day warning; it only kicks them on the next run if that warning was successfully posted and they still have the role. Removing the role immediately makes them ineligible, and bots are never tracked or kicked. This feature needs the privileged **Server Members Intent** enabled under *Bot → Privileged Gateway Intents* in the Discord Developer Portal. The bot also needs **View Channel**, **Send Messages**, **Read Message History**, and **Kick Members**, with its role above `Unverified`.
 
 ### Roblox ingestion
 

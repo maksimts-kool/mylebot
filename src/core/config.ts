@@ -9,6 +9,10 @@ const schema = z.object({
   DISCORD_TOKEN: z.string().default(""),
   DISCORD_APPLICATION_ID: z.string().default(""),
   DISCORD_GUILD_ID: z.string().default(""),
+  // Leaving either verification ID empty disables the Discord-only reminder
+  // and removal feature.
+  VERIFICATION_CHANNEL_ID: z.string().default(""),
+  VERIFICATION_UNVERIFIED_ROLE_ID: z.string().default(""),
   BLOXLINK_API_KEY: z.string().default(""),
   BLOXLINK_BASE_URL: z.string().url().default("https://api.blox.link/v4/public"),
   ROBLOX_INGESTION_SECRET: z.string().min(16),
@@ -79,4 +83,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 /** True when the Taiga integration has enough configuration to run at all. */
 export function taigaConfigured(config: Config): boolean {
   return Boolean(config.TAIGA_USERNAME && config.TAIGA_PASSWORD && config.TAIGA_PROJECT_SLUG);
+}
+
+/** True when the verification feature has a guild, channel, and role to use. */
+export function verificationConfigured(config: Config): boolean {
+  return Boolean(
+    config.DISCORD_GUILD_ID
+    && config.VERIFICATION_CHANNEL_ID
+    && config.VERIFICATION_UNVERIFIED_ROLE_ID,
+  );
 }

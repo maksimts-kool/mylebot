@@ -1,5 +1,5 @@
 import { ActivityType, Client, GatewayIntentBits, type PresenceData } from "discord.js";
-import type { Config } from "./config.js";
+import { verificationConfigured, type Config } from "./config.js";
 import { APP_VERSION } from "./version.js";
 
 export function botPresence(version = APP_VERSION): PresenceData {
@@ -16,6 +16,10 @@ export function botPresence(version = APP_VERSION): PresenceData {
  */
 export function createDiscordClient(config: Config): Client {
   const intents = [GatewayIntentBits.Guilds];
+  if (verificationConfigured(config)) {
+    // Required to fetch every member who currently has the Unverified role.
+    intents.push(GatewayIntentBits.GuildMembers);
+  }
   if (config.TAIGA_USERNAME && config.TAIGA_PASSWORD) {
     // Reading the first message of a forum post needs the privileged
     // MessageContent intent; see README "Taiga integration".

@@ -4,6 +4,12 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+## 0.12.0 - 2026-08-11
+
+- Added a Discord-only Unverified-member verification feature for the configured server. It posts an `@Unverified` reminder every three days, gives members a 30-day period, sends a final individual warning on day 27, and removes members who still have the role three days later.
+- Persisted verification deadlines and the reminder schedule in PostgreSQL, so restarts do not reset members' deadlines or shift the three-day cadence.
+- Added the conditional Server Members gateway intent, configuration for the verification channel and Unverified role, Portainer wiring, and regression coverage for deadlines, restart cadence, warning batching, and removal safety.
+
 ## 0.11.0 - 2026-08-11
 
 - Added rolling one-year retention for completed session and identity data, including related audit records, processed events, and published Discord message references.
