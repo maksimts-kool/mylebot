@@ -6,6 +6,7 @@ import { userError } from "../../../../core/errors.js";
 import { textInputRow } from "../../../../shared/discord/components.js";
 import { PermissionLevel } from "../../../../shared/permissions.js";
 import { assertDurationInvariant, formatDuration, totalsForPeriod } from "../../domain/accounting.js";
+import { recordedTimeMeetsSessionMinimum } from "../../domain/policy.js";
 import type { SessionCommandContext } from "./context.js";
 import { formatSessionDateTime, friendlyDuration, parseDuration, parseSessionDateTime } from "./format.js";
 import { replyHistory } from "./history.js";
@@ -28,6 +29,7 @@ export async function showManage(ctx: SessionCommandContext, interaction: ChatIn
   if (!session || session.deletedAt) userError("Session not found");
   if (session.state !== "ENDED") userError("Live sessions cannot be managed");
   const totals = Number(session.activeMilliseconds) + Number(session.inactiveMilliseconds);
+  if (!recordedTimeMeetsSessionMinimum(session.activeMilliseconds, session.inactiveMilliseconds)) userError("Session not found");
   const embed = new EmbedBuilder().setTitle("🛠️ Manage completed session").setDescription(`Manage the completed session for **${session.identity.robloxUsername}**.`).addFields(
     { name: "👤 Staff", value: session.identity.discordUserId ? `<@${session.identity.discordUserId}>` : "No linked Discord user", inline: true },
     { name: "🗓️ When", value: `<t:${Math.floor(session.startedAt.getTime() / 1000)}:f> to <t:${Math.floor(session.endedAt!.getTime() / 1000)}:f>`, inline: false },
@@ -101,6 +103,7 @@ export async function addSession(ctx: SessionCommandContext, interaction: ModalS
   const active = parseDuration(interaction.fields.getTextInputValue("active"));
   const inactive = parseDuration(interaction.fields.getTextInputValue("inactive"));
   assertDurationInvariant(start, end, active, inactive);
+  if (!recordedTimeMeetsSessionMinimum(active, inactive)) userError("A completed session must contain at least one minute of recorded time");
   const discordUserId = interaction.customId.slice(4);
   const mapped = await ctx.bloxlink.robloxForDiscord(discordUserId);
   if (!mapped) userError("That Discord user has no Bloxlink mapping");
@@ -142,6 +145,7 @@ export async function editEnded(ctx: SessionCommandContext, interaction: ModalSu
   const current = await ctx.db.session.findUnique({ where: { id } }); if (!current || current.state !== "ENDED" || current.deletedAt) userError("Completed session not found");
   const reconnect = Number(current.reconnectMilliseconds);
   assertDurationInvariant(start, end, active, inactive + reconnect);
+  if (!recordedTimeMeetsSessionMinimum(active, inactive)) userError("A completed session must contain at least one minute of recorded time");
   await ctx.db.$transaction(async (tx) => {
     await tx.timeSegment.deleteMany({ where: { sessionId: id } }); const activeEnd = new Date(start.getTime() + active);
     if (active) await tx.timeSegment.create({ data: { sessionId: id, state: "ACTIVE", startedAt: start, endedAt: activeEnd } });
@@ -168,6 +172,7 @@ export async function showEditEndedModal(ctx: SessionCommandContext, interaction
   const session = await ctx.db.session.findUnique({ where: { id } });
   if (!session || session.deletedAt) userError("Session not found");
   if (session.state !== "ENDED") userError("Live sessions cannot be managed");
+  if (!recordedTimeMeetsSessionMinimum(session.activeMilliseconds, session.inactiveMilliseconds)) userError("Session not found");
   const modal = new ModalBuilder().setCustomId(`editended:${id}`).setTitle("✏️ Edit completed session").addComponents(
     textInputRow("start", "Start (example: 11/07/2026 14:30)", formatSessionDateTime(session.startedAt, ctx.config.REPORT_TIMEZONE)),
     textInputRow("end", "End (example: 11/07/2026 16:45)", formatSessionDateTime(session.endedAt!, ctx.config.REPORT_TIMEZONE)),

@@ -5,6 +5,7 @@ import {
 import { DateTime } from "luxon";
 import type { Config } from "../../../../core/config.js";
 import { buildLeaderboard, tallinnDateRange } from "../../domain/reporting.js";
+import { SESSION_RETENTION_YEARS } from "../../domain/policy.js";
 import type { SessionCommandContext } from "./context.js";
 import { friendlyDuration, friendlyPeriod } from "./format.js";
 
@@ -16,7 +17,7 @@ export function presetDates(config: Config, period: string): { startDate: string
   let end = now.endOf("month");
   if (period === "week") { start = now.startOf("week"); end = now.endOf("week"); }
   if (period === "year") { start = now.startOf("year"); end = now.endOf("year"); }
-  if (period === "all") { start = DateTime.fromISO("2006-01-01", { zone: config.REPORT_TIMEZONE }); end = now.endOf("day"); }
+  if (period === "all") { start = now.minus({ years: SESSION_RETENTION_YEARS }).startOf("day"); end = now.endOf("day"); }
   return { startDate: start.toISODate()!, endDate: end.toISODate()! };
 }
 
@@ -58,7 +59,7 @@ export async function renderLeaderboard(
   const rows = buildLeaderboard(identities.map((identity) => ({
     identityId: identity.id,
     username: identity.discordUserId ? `${identity.robloxUsername} · <@${identity.discordUserId}>` : identity.robloxUsername,
-    segments: identity.sessions.flatMap((session) => session.segments),
+    sessions: identity.sessions,
   })), start, end, minimum);
   const pageRows = rows.slice(page*PAGE_SIZE, page*PAGE_SIZE+PAGE_SIZE);
   const period = friendlyPeriod(startDate, endDate, ctx.config.REPORT_TIMEZONE);

@@ -4,6 +4,7 @@ import {
 } from "discord.js";
 import { userError } from "../../../../core/errors.js";
 import { totalsForPeriod } from "../../domain/accounting.js";
+import { sessionMeetsMinimum } from "../../domain/policy.js";
 import type { SessionCommandContext } from "./context.js";
 import { friendlyDuration } from "./format.js";
 
@@ -16,8 +17,14 @@ export async function replyHistory(
   page: number,
   responseMode: "reply" | "update",
 ): Promise<void> {
-  const count = await ctx.db.session.count({ where: { identityId, deletedAt: null } });
-  const sessions = await ctx.db.session.findMany({ where: { identityId, deletedAt: null }, include: { identity: true, segments: true }, orderBy: { startedAt: "desc" }, skip: page * PAGE_SIZE, take: PAGE_SIZE });
+  const now = new Date();
+  const qualifyingSessions = (await ctx.db.session.findMany({
+    where: { identityId, deletedAt: null },
+    include: { identity: true, segments: true },
+    orderBy: { startedAt: "desc" },
+  })).filter((session) => sessionMeetsMinimum(session, now));
+  const count = qualifyingSessions.length;
+  const sessions = qualifyingSessions.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
   if (!sessions.length) userError("No sessions found");
   const identity = sessions[0]!.identity;
   const owner = identity.discordUserId ? `**${identity.robloxUsername}** · <@${identity.discordUserId}>` : `**${identity.robloxUsername}**`;

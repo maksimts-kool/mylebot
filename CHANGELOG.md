@@ -4,6 +4,12 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+## 0.11.0 - 2026-08-11
+
+- Added rolling one-year retention for completed session and identity data, including related audit records, processed events, and published Discord message references.
+- Made one minute of active plus inactive time the minimum completed session: shorter records are removed and excluded from history, yearly totals, and leaderboards.
+- Made the bot's Discord custom status show `Running on vX.Y.Z` and update automatically during the release version bump.
+
 ## 0.10.0 - 2026-07-25
 
 - Restructured the codebase into feature modules: `src/core/` (configuration, database, HTTP server, Discord client, scheduler, feature contract), `src/shared/`, and `src/features/{sessions,portal,taiga}/`. A feature now declares its own routes, commands, listeners, and jobs, and `src/index.ts` only composes them.

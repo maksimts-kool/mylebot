@@ -1,6 +1,7 @@
 import { DateTime } from "luxon";
-import type { SegmentLike, Totals } from "./accounting.js";
+import type { Totals } from "./accounting.js";
 import { totalsForPeriod } from "./accounting.js";
+import { MINIMUM_SESSION_MILLISECONDS, sessionMeetsMinimum, type SessionTimingLike } from "./policy.js";
 
 export function tallinnDateRange(startDate: string, endDate: string, timezone: string): { start: Date; end: Date } {
   const start = DateTime.fromISO(startDate, { zone: timezone }).startOf("day");
@@ -20,14 +21,21 @@ export function calendarYearRange(now: Date, timezone: string): { start: Date; e
 export type LeaderboardRow = { identityId: string; username: string; totals: Totals };
 
 export function buildLeaderboard(
-  rows: Array<{ identityId: string; username: string; segments: SegmentLike[] }>,
+  rows: Array<{ identityId: string; username: string; sessions: SessionTimingLike[] }>,
   start: Date,
   end: Date,
-  minimumMs = 0,
+  minimumMs = MINIMUM_SESSION_MILLISECONDS,
 ): LeaderboardRow[] {
   return rows
-    .map((row) => ({ ...row, totals: totalsForPeriod(row.segments, start, end) }))
-    .filter((row) => row.totals.totalMs >= minimumMs)
+    .map((row) => ({
+      ...row,
+      totals: totalsForPeriod(
+        row.sessions.filter((session) => sessionMeetsMinimum(session)).flatMap((session) => session.segments),
+        start,
+        end,
+      ),
+    }))
+    .filter((row) => row.totals.totalMs >= Math.max(minimumMs, MINIMUM_SESSION_MILLISECONDS))
     .sort((a, b) => b.totals.totalMs - a.totals.totalMs || a.username.localeCompare(b.username));
 }
 

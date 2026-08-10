@@ -130,4 +130,32 @@ describe("ingestion validation", () => {
     await expect(cleanup.cleanupProcessedEvents(now)).resolves.toBe(7);
     expect(deleteMany).toHaveBeenCalledWith({ where: { receivedAt: { lt: new Date("2026-01-02T00:00:00Z") } } });
   });
+
+  it("hard-deletes completed sessions older than one year or shorter than one minute", async () => {
+    const transaction = {
+      session: {
+        findMany: vi.fn().mockResolvedValue([
+          { id: "old", endedAt: new Date("2025-01-31T23:59:59Z"), activeMilliseconds: 60_000n, inactiveMilliseconds: 0n, discordMessage: { channelId: "channel", messageId: "old-message" } },
+          { id: "short", endedAt: new Date("2026-01-15T00:00:00Z"), activeMilliseconds: 30_000n, inactiveMilliseconds: 20_000n, discordMessage: null },
+          { id: "kept", endedAt: new Date("2026-01-15T00:00:00Z"), activeMilliseconds: 60_000n, inactiveMilliseconds: 0n, discordMessage: null },
+        ]),
+        deleteMany: vi.fn().mockResolvedValue({ count: 2 }),
+      },
+      auditEntry: { deleteMany: vi.fn() },
+      processedEvent: { deleteMany: vi.fn() },
+      identity: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    };
+    const db = { $transaction: vi.fn(async (operation) => operation(transaction)) };
+    const cleanup = new SessionService(db as never, config);
+
+    await expect(cleanup.cleanupSessionData(new Date("2026-02-01T00:00:00Z"))).resolves.toEqual({
+      removedSessionCount: 2,
+      removedIdentityCount: 1,
+      removedMessages: [{ channelId: "channel", messageId: "old-message" }],
+    });
+    expect(transaction.auditEntry.deleteMany).toHaveBeenCalledWith({ where: { sessionId: { in: ["old", "short"] } } });
+    expect(transaction.processedEvent.deleteMany).toHaveBeenCalledWith({ where: { sessionId: { in: ["old", "short"] } } });
+    expect(transaction.session.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ["old", "short"] }, state: "ENDED" } });
+    expect(transaction.identity.deleteMany).toHaveBeenCalledWith({ where: { sessions: { none: {} } } });
+  });
 });

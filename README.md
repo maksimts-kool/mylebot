@@ -266,7 +266,7 @@ Available commands and permissions:
 
 | Command | Access | Purpose |
 | --- | --- | --- |
-| `/leaderboard [period]` | Everyone | Shows the staff leaderboard for this week, month, year, or all time. Its public controls are limited to the caller and expire after 15 minutes of inactivity. |
+| `/leaderboard [period]` | Everyone | Shows the staff leaderboard for this week, month, year, or the retained rolling year. Completed records shorter than one minute are excluded. Its public controls are limited to the caller and expire after 15 minutes of inactivity. |
 | `/session active [user:<member>]` | Staff | Shows a live session. Staff see their own; viewing another member's requires Admin. |
 | `/session view user:<member>` | Staff | Shows a member's paginated session history. |
 | `/session add user:<member>` | Admin | Adds an audited completed session for a Bloxlink-mapped member. |
@@ -317,7 +317,7 @@ Run the release helper from a clean Git working tree. `M` increments the first v
 npm run release -- B
 ```
 
-The helper updates [`package.json`](package.json) and [`package-lock.json`](package-lock.json), creates a `chore(release): vX.Y.Z` commit and matching `vX.Y.Z` Git tag, then pushes the current branch and tag to the GitHub `origin` remote. The push is not attempted if the worktree is dirty or `origin` is not hosted on GitHub.
+The helper updates [`package.json`](package.json), [`package-lock.json`](package-lock.json), and the Discord `Running on vX.Y.Z` presence text, creates a `chore(release): vX.Y.Z` commit and matching `vX.Y.Z` Git tag, then pushes the current branch and tag to the GitHub `origin` remote. The push is not attempted if the worktree is dirty or `origin` is not hosted on GitHub.
 
 ## Troubleshooting
 
@@ -338,3 +338,4 @@ The helper updates [`package.json`](package.json) and [`package-lock.json`](pack
 - Set `TRUST_PROXY` only for the documented deployment topology; accepting untrusted forwarded addresses can undermine IP-based rate limiting.
 - Back up the `postgres_data` volume before upgrades or destructive maintenance.
 - Session removal through Discord is a soft deletion with an audit entry. The below-minimum-rank purge is intentionally permanent and broader.
+- Completed records with less than 60 seconds of active plus inactive time are not sessions and are permanently removed. Completed sessions, their audit/event data, published message references, and identities left with no sessions are also permanently removed after one rolling year.

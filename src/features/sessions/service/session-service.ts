@@ -3,8 +3,15 @@ import type { Config } from "../../../core/config.js";
 import type { Db } from "../../../core/db.js";
 import type { RuntimeSettingsService } from "../../../shared/runtime-settings.js";
 import type { PresenceEvent } from "../domain/events.js";
+import { recordedTimeMeetsSessionMinimum, sessionRetentionCutoff } from "../domain/policy.js";
 
 export type DiscordMessageReference = { channelId: string; messageId: string };
+
+export type SessionDataCleanupResult = {
+  removedSessionCount: number;
+  removedIdentityCount: number;
+  removedMessages: DiscordMessageReference[];
+};
 
 export type EventResult = {
   eventId: string;
@@ -232,5 +239,36 @@ export class SessionService {
     const receivedBefore = new Date(now.getTime() - this.config.PROCESSED_EVENT_RETENTION_DAYS * 86_400_000);
     const result = await this.db.processedEvent.deleteMany({ where: { receivedAt: { lt: receivedBefore } } });
     return result.count;
+  }
+
+  async cleanupSessionData(now = new Date()): Promise<SessionDataCleanupResult> {
+    const retentionCutoff = sessionRetentionCutoff(now);
+    return this.db.$transaction(async (tx) => {
+      const completed = await tx.session.findMany({
+        where: { state: "ENDED" },
+        select: {
+          id: true,
+          endedAt: true,
+          activeMilliseconds: true,
+          inactiveMilliseconds: true,
+          discordMessage: { select: { channelId: true, messageId: true } },
+        },
+      });
+      const expired = completed.filter((session) =>
+        (session.endedAt !== null && session.endedAt < retentionCutoff)
+        || !recordedTimeMeetsSessionMinimum(session.activeMilliseconds, session.inactiveMilliseconds));
+      const sessionIds = expired.map(({ id }) => id);
+      const removedMessages = expired.flatMap(({ discordMessage }) => discordMessage ? [discordMessage] : []);
+
+      let removedSessionCount = 0;
+      if (sessionIds.length) {
+        await tx.auditEntry.deleteMany({ where: { sessionId: { in: sessionIds } } });
+        await tx.processedEvent.deleteMany({ where: { sessionId: { in: sessionIds } } });
+        const removed = await tx.session.deleteMany({ where: { id: { in: sessionIds }, state: "ENDED" } });
+        removedSessionCount = removed.count;
+      }
+      const removedIdentities = await tx.identity.deleteMany({ where: { sessions: { none: {} } } });
+      return { removedSessionCount, removedIdentityCount: removedIdentities.count, removedMessages };
+    });
   }
 }

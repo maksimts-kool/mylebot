@@ -27,6 +27,14 @@ export function createSessionsFeature(ctx: FeatureContext): Feature {
       },
     }),
     onStart: async () => {
+      const cleanup = await sessions.cleanupSessionData();
+      await publisher.removeMessages(cleanup.removedMessages);
+      ctx.log.info({
+        phase: "initial_session_cleanup",
+        removedSessionCount: cleanup.removedSessionCount,
+        removedIdentityCount: cleanup.removedIdentityCount,
+        removedMessageCount: cleanup.removedMessages.length,
+      }, "Initial session data cleanup completed");
       // A failure here is fatal on purpose: starting up with a stale lifecycle
       // state would publish wrong session times.
       ctx.log.info({ phase: "initial_session_sweep" }, "Initial session sweep started");
@@ -52,6 +60,22 @@ export function createSessionsFeature(ctx: FeatureContext): Feature {
         run: async () => {
           const live = await ctx.db.session.findMany({ where: { state: { not: "ENDED" }, deletedAt: null }, select: { id: true } });
           await publisher.refreshMany(live.map(({ id }) => id));
+        },
+      },
+      {
+        name: "session data cleanup",
+        intervalMs: 24 * 60 * 60 * 1000,
+        run: async () => {
+          const cleanup = await sessions.cleanupSessionData();
+          await publisher.removeMessages(cleanup.removedMessages);
+          if (cleanup.removedSessionCount || cleanup.removedIdentityCount) {
+            ctx.log.info({
+              job: "session data cleanup",
+              removedSessionCount: cleanup.removedSessionCount,
+              removedIdentityCount: cleanup.removedIdentityCount,
+              removedMessageCount: cleanup.removedMessages.length,
+            }, "Expired and below-minimum session data removed");
+          }
         },
       },
       {

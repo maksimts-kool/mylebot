@@ -1,5 +1,13 @@
-import { Client, GatewayIntentBits } from "discord.js";
+import { ActivityType, Client, GatewayIntentBits, type PresenceData } from "discord.js";
 import type { Config } from "./config.js";
+import { APP_VERSION } from "./version.js";
+
+export function botPresence(version = APP_VERSION): PresenceData {
+  return {
+    activities: [{ name: "Custom Status", state: `Running on v${version}`, type: ActivityType.Custom }],
+    status: "online",
+  };
+}
 
 /**
  * Builds the gateway client. Intents are requested based on what is actually
@@ -13,5 +21,5 @@ export function createDiscordClient(config: Config): Client {
     // MessageContent intent; see README "Taiga integration".
     intents.push(GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent);
   }
-  return new Client({ intents });
+  return new Client({ intents, presence: botPresence() });
 }

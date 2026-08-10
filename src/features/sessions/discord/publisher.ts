@@ -8,6 +8,7 @@ import type { BloxlinkService } from "../../../shared/bloxlink.js";
 import type { RuntimeSettingsService } from "../../../shared/runtime-settings.js";
 import { totalsForPeriod } from "../domain/accounting.js";
 import { calendarYearRange } from "../domain/reporting.js";
+import { MINIMUM_SESSION_MILLISECONDS, sessionMeetsMinimum } from "../domain/policy.js";
 import type { DiscordMessageReference } from "../service/session-service.js";
 
 const statusName: Record<SessionState, string> = { ACTIVE: "Active", INACTIVE: "Inactive", RECONNECTING: "Reconnecting", ENDED: "Ended" };
@@ -75,9 +76,16 @@ export class DiscordPublisher {
       where: { id: sessionId }, include: { identity: true, segments: true, discordMessage: true },
     });
     if (!session || (session.deletedAt && !includeDeleted)) return;
-    const discordUserId = session.identity.discordUserId ?? await this.bloxlink.discordForRoblox(session.identity.robloxUserId);
     const now = session.endedAt ?? new Date();
     const totals = totalsForPeriod(session.segments, session.startedAt, now, now);
+    if (session.state === "ENDED" && totals.totalMs < MINIMUM_SESSION_MILLISECONDS) {
+      if (session.discordMessage) {
+        await this.removeMessages([session.discordMessage]);
+        await this.db.discordMessage.deleteMany({ where: { sessionId: session.id } });
+      }
+      return;
+    }
+    const discordUserId = session.identity.discordUserId ?? await this.bloxlink.discordForRoblox(session.identity.robloxUserId);
     const username = discordUserId
       ? `${session.identity.robloxUsername} (<@${discordUserId}>)`
       : session.identity.robloxUsername;
@@ -98,11 +106,14 @@ export class DiscordPublisher {
         where: { identityId: session.identityId, deletedAt: null, startedAt: { lt: year.end }, OR: [{ endedAt: null }, { endedAt: { gt: year.start } }] },
         include: { segments: true },
       });
-      const yearMs = yearSessions.reduce((sum, item) => sum + totalsForPeriod(item.segments, year.start, year.end, now).totalMs, 0);
-      const previous = await this.db.session.findFirst({
+      const yearMs = yearSessions
+        .filter((item) => sessionMeetsMinimum(item, now))
+        .reduce((sum, item) => sum + totalsForPeriod(item.segments, year.start, year.end, now).totalMs, 0);
+      const previous = (await this.db.session.findMany({
         where: { identityId: session.identityId, id: { not: session.id }, deletedAt: null, endedAt: { lt: session.startedAt } },
+        include: { segments: true },
         orderBy: { endedAt: "desc" },
-      });
+      })).find((item) => sessionMeetsMinimum(item, now));
       fields.push(
         { name: "History", value: "\u200b", inline: false },
         { name: `Total time (${reportYear})`, value: formatClock(yearMs), inline: true },
