@@ -67,6 +67,12 @@ if (versionPart === undefined) {
         run("npm", ["version", npmVersionPart, "-m", "chore(release): v%s"]);
 
         const version = run("node", ["-p", "require('./package.json').version"], true);
+        const generatedVersionStatus = run("git", ["status", "--porcelain", "--", "src/core/version.ts"], true);
+        if (generatedVersionStatus !== "") {
+            run("git", ["add", "src/core/version.ts"]);
+            run("git", ["commit", "--amend", "--no-edit"]);
+            run("git", ["tag", "--force", "--annotate", `v${version}`, "--message", `v${version}`]);
+        }
         run("git", ["push", "origin", "HEAD", "--follow-tags"]);
         console.log(`Released v${version} to GitHub.`);
     } catch (error) {
