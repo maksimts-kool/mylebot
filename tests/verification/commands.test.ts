@@ -19,8 +19,8 @@ describe("verification status command", () => {
           removalDueAt: now,
         },
         {
-          discordUserId: "200",
-          displayName: "Waiting",
+          discordUserId: "1485701483038118059",
+          displayName: "Maksim",
           firstSeenAt: new Date("2026-08-01T12:00:00Z"),
           warnedAt: null,
           finalWarningDueAt: new Date("2026-08-28T12:00:00Z"),
@@ -46,11 +46,12 @@ describe("verification status command", () => {
       expect.objectContaining({ name: "📨 Role reminder", value: expect.stringContaining("✅ Last sent") }),
       expect.objectContaining({ name: "🧹 Pending cleanup", value: expect.stringContaining("**1** stored entry") }),
     ]));
-    expect(content).toContain("🚨 <@100> • Removal due");
+    expect(content).toContain("🚨 @Warned • Removal due");
     expect(content).toContain("**Final warning:** ✅ Sent");
-    expect(content).toContain("⏳ <@200> • Waiting");
+    expect(content).toContain("⏳ @Maksim • Waiting");
+    expect(content).not.toContain("1485701483038118059");
     expect(content).toContain("**Earliest removal:**");
-    expect(content).toContain("🆕 <@300> • New");
+    expect(content).toContain("🆕 @New • New");
     expect(content).toContain("**Removal:** No deadline yet");
   });
 
@@ -81,6 +82,9 @@ describe("verification status command", () => {
       expect(characterCount).toBeLessThanOrEqual(6_000);
     }
     const content = JSON.stringify(data);
-    for (const member of status.members) expect(content).toContain(`<@${member.discordUserId}>`);
+    for (const member of status.members) {
+      expect(content).toContain(`@${member.displayName}`);
+      expect(content).not.toContain(member.discordUserId);
+    }
   });
 });

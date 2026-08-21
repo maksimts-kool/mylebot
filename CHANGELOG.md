@@ -4,6 +4,11 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+## 0.13.2 - 2026-08-22
+
+- Fixed `/verification status` showing raw `<@user-id>` text in embed field titles by rendering each member's current server display name instead.
+- Added regression coverage proving Discord IDs do not leak into the rendered dashboard while internal tracking continues to use stable IDs.
+
 ## 0.13.1 - 2026-08-21
 
 - Redesigned `/verification status` as an emoji-rich private embed dashboard with summary metrics, reminder health, removal safeguards, a status legend, and paginated member cards for warning and kick deadlines.
