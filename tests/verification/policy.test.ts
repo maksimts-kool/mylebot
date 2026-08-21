@@ -1,15 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
   finalWarningDueAt,
+  kickDueAt,
   reminderIsDue,
   shouldKick,
   shouldSendFinalWarning,
+  verificationDeadlineAt,
 } from "../../src/features/verification/domain/policy.js";
 
 describe("verification deadlines", () => {
   it("sends the final warning on day 27 of the 30-day period", () => {
     expect(finalWarningDueAt(new Date("2026-07-01T12:00:00Z")).toISOString())
       .toBe("2026-07-28T12:00:00.000Z");
+    expect(verificationDeadlineAt(new Date("2026-07-01T12:00:00Z")).toISOString())
+      .toBe("2026-07-31T12:00:00.000Z");
+    expect(kickDueAt(new Date("2026-07-28T12:00:00Z")).toISOString())
+      .toBe("2026-07-31T12:00:00.000Z");
   });
 
   it("warns after one month and never kicks before a delivered warning", () => {

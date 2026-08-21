@@ -78,6 +78,19 @@ describe("deployed command set", () => {
     })).map((command) => command.name);
     expect(withTaiga).toContain("taiga");
   });
+
+  it("only deploys /verification when verification is configured", () => {
+    const withoutVerification = allCommandData(loadConfig(baseEnv)).map((command) => command.name);
+    expect(withoutVerification).not.toContain("verification");
+
+    const withVerification = allCommandData(loadConfig({
+      ...baseEnv,
+      DISCORD_GUILD_ID: "1068891577054933083",
+      VERIFICATION_CHANNEL_ID: "1087381025291780147",
+      VERIFICATION_UNVERIFIED_ROLE_ID: "1087383526078423070",
+    })).map((command) => command.name);
+    expect(withVerification).toContain("verification");
+  });
 });
 
 describe("manual session date input", () => {

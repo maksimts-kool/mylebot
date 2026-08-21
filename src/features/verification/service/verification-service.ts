@@ -1,7 +1,15 @@
 import type { FastifyBaseLogger } from "fastify";
 import type { Db } from "../../../core/db.js";
 import { errorType } from "../../../core/errors.js";
-import { reminderIsDue, shouldKick, shouldSendFinalWarning } from "../domain/policy.js";
+import {
+  finalWarningDueAt,
+  kickDueAt,
+  reminderIsDue,
+  shouldKick,
+  shouldSendFinalWarning,
+  verificationDeadlineAt,
+  VERIFICATION_REMINDER_INTERVAL_MS,
+} from "../domain/policy.js";
 
 export type UnverifiedMember = {
   discordUserId: string;
@@ -15,6 +23,20 @@ export interface VerificationGateway {
   postRemovedMembers(members: UnverifiedMember[]): Promise<void>;
   kick(member: UnverifiedMember): Promise<void>;
 }
+
+export type VerificationStatusMember = UnverifiedMember & {
+  firstSeenAt: Date | null;
+  warnedAt: Date | null;
+  finalWarningDueAt: Date | null;
+  removalDueAt: Date | null;
+};
+
+export type VerificationStatus = {
+  members: VerificationStatusMember[];
+  lastReminderAt: Date | null;
+  nextReminderAt: Date | null;
+  staleTrackedCount: number;
+};
 
 const FINAL_WARNING_TEXT = "You have 3 days left to verify. Please do it now or you will be removed from the server.";
 
@@ -45,6 +67,52 @@ export class VerificationService {
     private readonly gateway: VerificationGateway,
     private readonly log: FastifyBaseLogger,
   ) {}
+
+  /** Read-only live view used by the manager status command. */
+  async status(): Promise<VerificationStatus> {
+    const [members, records, schedule] = await Promise.all([
+      this.gateway.listUnverifiedMembers(),
+      this.db.verificationMember.findMany({ where: { guildId: this.guildId } }),
+      this.db.verificationSchedule.findUnique({ where: { guildId: this.guildId } }),
+    ]);
+    const membersById = new Map(members.map((member) => [member.discordUserId, member]));
+    const recordsById = new Map(records.map((record) => [record.discordUserId, record]));
+
+    const statusMembers = members.map((member): VerificationStatusMember => {
+      const record = recordsById.get(member.discordUserId);
+      if (!record) {
+        return {
+          ...member,
+          firstSeenAt: null,
+          warnedAt: null,
+          finalWarningDueAt: null,
+          removalDueAt: null,
+        };
+      }
+      return {
+        ...member,
+        firstSeenAt: record.firstSeenAt,
+        warnedAt: record.warnedAt,
+        finalWarningDueAt: finalWarningDueAt(record.firstSeenAt),
+        removalDueAt: record.warnedAt === null
+          ? verificationDeadlineAt(record.firstSeenAt)
+          : kickDueAt(record.warnedAt),
+      };
+    }).sort((left, right) => {
+      const leftDue = left.removalDueAt?.getTime() ?? Number.POSITIVE_INFINITY;
+      const rightDue = right.removalDueAt?.getTime() ?? Number.POSITIVE_INFINITY;
+      return leftDue - rightDue || left.displayName.localeCompare(right.displayName);
+    });
+
+    return {
+      members: statusMembers,
+      lastReminderAt: schedule?.lastReminderAt ?? null,
+      nextReminderAt: schedule?.lastReminderAt === null || schedule === null
+        ? null
+        : new Date(schedule.lastReminderAt.getTime() + VERIFICATION_REMINDER_INTERVAL_MS),
+      staleTrackedCount: records.filter((record) => !membersById.has(record.discordUserId)).length,
+    };
+  }
 
   async run(now = new Date()): Promise<boolean> {
     const schedule = await this.db.verificationSchedule.findUnique({ where: { guildId: this.guildId } });

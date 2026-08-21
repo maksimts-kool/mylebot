@@ -4,6 +4,12 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+## 0.13.0 - 2026-08-21
+
+- Added the private manager-only `/verification status` command, with a live Unverified-role member list, persisted final-warning delivery state, warning and removal deadlines, and the last and next general reminder times.
+- Split large verification status lists safely across private Discord messages without pinging the listed members.
+- Removed the standalone staffing demo, including its npm scripts, configuration, tests, local environment, and data-store surface.
+
 ## 0.12.0 - 2026-08-11
 
 - Added a Discord-only Unverified-member verification feature for the configured server. It posts an `@Unverified` reminder every three days, gives members a 30-day period, sends a final individual warning on day 27, and removes members who still have the role three days later.

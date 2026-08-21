@@ -140,6 +140,42 @@ describe("verification service", () => {
     expect(verificationSchedule.upsert).not.toHaveBeenCalled();
   });
 
+  it("reports current role members, warning delivery, deadlines, and stale records without changing them", async () => {
+    const waiting = member("100");
+    const warned = member("200");
+    const untracked = member("400");
+    const discord = gateway([waiting, warned, untracked]);
+    const lastReminderAt = new Date("2026-08-10T12:00:00Z");
+    const verificationMember = {
+      findMany: vi.fn().mockResolvedValue([
+        { guildId, discordUserId: waiting.discordUserId, firstSeenAt: new Date("2026-08-01T12:00:00Z"), warnedAt: null },
+        { guildId, discordUserId: warned.discordUserId, firstSeenAt: new Date("2026-07-01T12:00:00Z"), warnedAt: new Date("2026-08-08T12:00:00Z") },
+        { guildId, discordUserId: "300", firstSeenAt: new Date("2026-07-01T12:00:00Z"), warnedAt: null },
+      ]),
+    };
+    const service = new VerificationService({
+      verificationMember,
+      verificationSchedule: schedule(lastReminderAt),
+    } as never, guildId, discord, logger() as never);
+
+    const status = await service.status();
+
+    expect(status.lastReminderAt).toEqual(lastReminderAt);
+    expect(status.nextReminderAt?.toISOString()).toBe("2026-08-13T12:00:00.000Z");
+    expect(status.staleTrackedCount).toBe(1);
+    expect(status.members.map(({ discordUserId }) => discordUserId)).toEqual(["200", "100", "400"]);
+    expect(status.members[0]).toEqual(expect.objectContaining({
+      discordUserId: warned.discordUserId,
+      warnedAt: new Date("2026-08-08T12:00:00Z"),
+      removalDueAt: new Date("2026-08-11T12:00:00Z"),
+    }));
+    expect(status.members[2]).toEqual(expect.objectContaining({
+      discordUserId: untracked.discordUserId,
+      firstSeenAt: null,
+      removalDueAt: null,
+    }));
+  });
+
   it("splits large final-warning mention lists below Discord's limit", () => {
     const members = Array.from({ length: 200 }, (_, index) => member(String(100_000_000_000_000_000n + BigInt(index))));
     const batches = finalWarningBatches(members);

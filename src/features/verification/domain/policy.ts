@@ -14,13 +14,21 @@ export function finalWarningDueAt(firstSeenAt: Date): Date {
   return new Date(firstSeenAt.getTime() + VERIFICATION_PERIOD_MS - FINAL_WARNING_GRACE_MS);
 }
 
+export function verificationDeadlineAt(firstSeenAt: Date): Date {
+  return new Date(firstSeenAt.getTime() + VERIFICATION_PERIOD_MS);
+}
+
+export function kickDueAt(warnedAt: Date): Date {
+  return new Date(warnedAt.getTime() + FINAL_WARNING_GRACE_MS);
+}
+
 export function shouldSendFinalWarning(record: VerificationRecord, now: Date): boolean {
   return record.warnedAt === null && finalWarningDueAt(record.firstSeenAt).getTime() <= now.getTime();
 }
 
 export function shouldKick(record: VerificationRecord, now: Date): boolean {
   return record.warnedAt !== null
-    && record.warnedAt.getTime() + FINAL_WARNING_GRACE_MS <= now.getTime();
+    && kickDueAt(record.warnedAt).getTime() <= now.getTime();
 }
 
 export function reminderIsDue(lastReminderAt: Date | null, now: Date): boolean {

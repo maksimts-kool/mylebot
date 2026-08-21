@@ -1,6 +1,7 @@
-import { taigaConfigured, type Config } from "../core/config.js";
+import { taigaConfigured, verificationConfigured, type Config } from "../core/config.js";
 import { sessionCommandData } from "./sessions/discord/commands/definitions.js";
 import { taigaCommandData } from "./taiga/discord/commands.js";
+import { verificationCommandData } from "./verification/discord/commands.js";
 
 /**
  * Every slash command the bot deploys, gated exactly like the features are at
@@ -12,5 +13,6 @@ export function allCommandData(config: Config) {
   return [
     ...sessionCommandData,
     ...(taigaConfigured(config) ? taigaCommandData : []),
+    ...(verificationConfigured(config) ? verificationCommandData : []),
   ];
 }
