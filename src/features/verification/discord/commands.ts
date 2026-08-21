@@ -1,4 +1,5 @@
 import {
+  EmbedBuilder,
   MessageFlags,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
@@ -24,55 +25,97 @@ function discordTimestamp(date: Date, style: "F" | "R"): string {
   return `<t:${Math.floor(date.getTime() / 1_000)}:${style}>`;
 }
 
-function memberStatus(member: VerificationStatusMember, now: Date): string {
+function memberField(member: VerificationStatusMember, now: Date): { name: string; value: string; inline: false } {
   const mention = `<@${member.discordUserId}>`;
   if (member.firstSeenAt === null || member.finalWarningDueAt === null || member.removalDueAt === null) {
-    return `${mention} — Final warning sent: no; not tracked yet, so there is no removal deadline.`;
+    return {
+      name: `🆕 ${mention} • New`,
+      value: "**Final warning:** ❌ Not sent\n**Tracking:** Starts during the next reminder cycle\n**Removal:** No deadline yet",
+      inline: false,
+    };
   }
   if (member.warnedAt !== null) {
-    const removal = member.removalDueAt.getTime() <= now.getTime() ? "due now" : discordTimestamp(member.removalDueAt, "R");
-    return `${mention} — Final warning sent: yes, ${discordTimestamp(member.warnedAt, "R")}; removal ${removal} (${discordTimestamp(member.removalDueAt, "F")}).`;
+    const dueNow = member.removalDueAt.getTime() <= now.getTime();
+    return {
+      name: `${dueNow ? "🚨" : "⚠️"} ${mention} • ${dueNow ? "Removal due" : "Final warning sent"}`,
+      value: `**Final warning:** ✅ Sent ${discordTimestamp(member.warnedAt, "R")}\n**Removal:** ${dueNow ? "🚨 **Due now**" : `⏳ ${discordTimestamp(member.removalDueAt, "R")}`} • ${discordTimestamp(member.removalDueAt, "F")}`,
+      inline: false,
+    };
   }
   if (member.finalWarningDueAt.getTime() <= now.getTime()) {
-    return `${mention} — Final warning sent: no; warning is due now. Removal waits until 3 days after a successful warning.`;
+    return {
+      name: `📣 ${mention} • Warning due`,
+      value: "**Final warning:** ❌ Not sent — **due now**\n**Removal:** 🔒 Blocked until 3 full days after a successful warning",
+      inline: false,
+    };
   }
-  return `${mention} — Final warning sent: no; warning ${discordTimestamp(member.finalWarningDueAt, "R")}; earliest removal ${discordTimestamp(member.removalDueAt, "F")}.`;
+  return {
+    name: `⏳ ${mention} • Waiting`,
+    value: `**Tracking since:** ${discordTimestamp(member.firstSeenAt, "F")}\n**Final warning:** ${discordTimestamp(member.finalWarningDueAt, "R")}\n**Earliest removal:** ${discordTimestamp(member.removalDueAt, "F")}`,
+    inline: false,
+  };
 }
 
-/** Split the complete live member list without exceeding Discord's message limit. */
-export function verificationStatusMessages(status: VerificationStatus, now = new Date(), limit = 2_000): string[] {
+const MEMBER_PAGE_SIZE = 20;
+const COLOR_GREEN = 0x57f287;
+const COLOR_YELLOW = 0xfee75c;
+const COLOR_RED = 0xed4245;
+const COLOR_BLUE = 0x5865f2;
+
+/** Build a private dashboard followed by paginated live-member embeds. */
+export function verificationStatusEmbeds(status: VerificationStatus, now = new Date()): EmbedBuilder[] {
   const warned = status.members.filter((member) => member.warnedAt !== null).length;
   const dueNow = status.members.filter((member) => member.warnedAt !== null
     && member.removalDueAt !== null
     && member.removalDueAt.getTime() <= now.getTime()).length;
   const untracked = status.members.filter((member) => member.firstSeenAt === null).length;
   const reminder = status.lastReminderAt === null
-    ? "Role reminder message sent: no recorded successful message."
-    : `Role reminder message sent: yes — last ${discordTimestamp(status.lastReminderAt, "R")}${status.nextReminderAt ? `; next due ${discordTimestamp(status.nextReminderAt, "R")}` : ""}.`;
-  const summary = [
-    "Verification timeout status",
-    `Currently unverified: ${status.members.length} | Final warning sent: ${warned} | Removal due now: ${dueNow} | Not tracked yet: ${untracked}`,
-    reminder,
-    "The member list is live. A member is removed only after their final warning was sent successfully and a full 3 days passed.",
-    ...(status.staleTrackedCount
-      ? [`Stored entries no longer holding the role: ${status.staleTrackedCount} (removed automatically on the next reminder cycle).`]
-      : []),
-  ].join("\n");
-
-  const lines = status.members.length
-    ? status.members.map((member) => memberStatus(member, now))
-    : ["Nobody currently has the Unverified role."];
-  const messages: string[] = [];
-  let current = summary;
-  for (const line of lines) {
-    if (`${current}\n${line}`.length > limit) {
-      messages.push(current);
-      current = "Verification timeout status (continued)";
-    }
-    current += `\n${line}`;
+    ? "❌ No successful reminder recorded yet"
+    : `✅ Last sent ${discordTimestamp(status.lastReminderAt, "R")}${status.nextReminderAt ? `\n⏰ Next due ${discordTimestamp(status.nextReminderAt, "R")}` : ""}`;
+  const summaryColor = dueNow ? COLOR_RED : warned ? COLOR_YELLOW : status.members.length ? COLOR_BLUE : COLOR_GREEN;
+  const summary = new EmbedBuilder()
+    .setTitle("🔐 Verification Timeout Dashboard")
+    .setDescription(status.members.length
+      ? "Live status for everyone currently holding the **Unverified** role."
+      : "✅ Nobody currently holds the **Unverified** role.")
+    .setColor(summaryColor)
+    .addFields(
+      { name: "👥 Unverified", value: `**${status.members.length}**`, inline: true },
+      { name: "⚠️ Warnings sent", value: `**${warned}**`, inline: true },
+      { name: "🚨 Removal due", value: `**${dueNow}**`, inline: true },
+      { name: "🆕 Not tracked", value: `**${untracked}**`, inline: true },
+      { name: "📨 Role reminder", value: reminder, inline: true },
+      {
+        name: "🛡️ Removal safeguard",
+        value: "A member can only be removed after their final warning was sent successfully and a full **3 days** passed.",
+        inline: false,
+      },
+    )
+    .setFooter({ text: "Private manager view • Live Discord role membership" })
+    .setTimestamp(now);
+  if (status.staleTrackedCount) {
+    summary.addFields({
+      name: "🧹 Pending cleanup",
+      value: `**${status.staleTrackedCount}** stored ${status.staleTrackedCount === 1 ? "entry no longer holds" : "entries no longer hold"} the role and will be cleared during the next reminder cycle.`,
+      inline: false,
+    });
   }
-  messages.push(current);
-  return messages;
+
+  const embeds = [summary];
+  const pageCount = Math.ceil(status.members.length / MEMBER_PAGE_SIZE);
+  for (let page = 0; page < pageCount; page += 1) {
+    const start = page * MEMBER_PAGE_SIZE;
+    const members = status.members.slice(start, start + MEMBER_PAGE_SIZE);
+    embeds.push(new EmbedBuilder()
+      .setTitle(`👥 Unverified Members • Page ${page + 1}/${pageCount}`)
+      .setDescription("🚨 Removal due  •  ⚠️ Warned  •  📣 Warning due  •  ⏳ Waiting  •  🆕 New")
+      .setColor(summaryColor)
+      .addFields(members.map((member) => memberField(member, now)))
+      .setFooter({
+        text: `${start + 1}–${start + members.length} of ${status.members.length} • Mentions do not send notifications`,
+      }));
+  }
+  return embeds;
 }
 
 export class VerificationCommandHandler {
@@ -107,12 +150,12 @@ export class VerificationCommandHandler {
 
   private async replyStatus(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const messages = verificationStatusMessages(await this.service.status());
-    const first = messages[0];
+    const embeds = verificationStatusEmbeds(await this.service.status());
+    const first = embeds[0];
     if (!first) return;
-    await interaction.editReply({ content: first, allowedMentions: { parse: [] } });
-    for (const content of messages.slice(1)) {
-      await interaction.followUp({ content, allowedMentions: { parse: [] }, flags: MessageFlags.Ephemeral });
+    await interaction.editReply({ embeds: [first], allowedMentions: { parse: [] } });
+    for (const embed of embeds.slice(1)) {
+      await interaction.followUp({ embeds: [embed], allowedMentions: { parse: [] }, flags: MessageFlags.Ephemeral });
     }
   }
 }

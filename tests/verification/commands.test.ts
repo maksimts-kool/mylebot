@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { verificationStatusMessages } from "../../src/features/verification/discord/commands.js";
+import { verificationStatusEmbeds } from "../../src/features/verification/discord/commands.js";
 import type { VerificationStatus } from "../../src/features/verification/service/verification-service.js";
 
 describe("verification status command", () => {
@@ -37,17 +37,24 @@ describe("verification status command", () => {
       ],
     };
 
-    const content = verificationStatusMessages(status, now).join("\n");
-    expect(content).toContain("Role reminder message sent: yes");
-    expect(content).toContain("<@100> — Final warning sent: yes");
-    expect(content).toContain("removal due now");
-    expect(content).toContain("<@200> — Final warning sent: no");
-    expect(content).toContain("earliest removal");
-    expect(content).toContain("<@300> — Final warning sent: no; not tracked yet");
-    expect(content).toContain("Stored entries no longer holding the role: 1");
+    const embeds = verificationStatusEmbeds(status, now).map((embed) => embed.toJSON());
+    const content = JSON.stringify(embeds);
+    expect(embeds[0]?.title).toBe("🔐 Verification Timeout Dashboard");
+    expect(embeds[0]?.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "👥 Unverified", value: "**3**" }),
+      expect.objectContaining({ name: "🚨 Removal due", value: "**1**" }),
+      expect.objectContaining({ name: "📨 Role reminder", value: expect.stringContaining("✅ Last sent") }),
+      expect.objectContaining({ name: "🧹 Pending cleanup", value: expect.stringContaining("**1** stored entry") }),
+    ]));
+    expect(content).toContain("🚨 <@100> • Removal due");
+    expect(content).toContain("**Final warning:** ✅ Sent");
+    expect(content).toContain("⏳ <@200> • Waiting");
+    expect(content).toContain("**Earliest removal:**");
+    expect(content).toContain("🆕 <@300> • New");
+    expect(content).toContain("**Removal:** No deadline yet");
   });
 
-  it("splits a large live list below Discord's message limit", () => {
+  it("paginates a large live list within Discord's embed limits", () => {
     const status: VerificationStatus = {
       lastReminderAt: null,
       nextReminderAt: null,
@@ -62,9 +69,18 @@ describe("verification status command", () => {
       })),
     };
 
-    const messages = verificationStatusMessages(status, new Date("2026-08-11T12:00:00Z"));
-    expect(messages.length).toBeGreaterThan(1);
-    expect(messages.every((message) => message.length <= 2_000)).toBe(true);
-    for (const member of status.members) expect(messages.join("\n")).toContain(`<@${member.discordUserId}>`);
+    const embeds = verificationStatusEmbeds(status, new Date("2026-08-11T12:00:00Z"));
+    expect(embeds).toHaveLength(6);
+    const data = embeds.map((embed) => embed.toJSON());
+    for (const page of data.slice(1)) {
+      expect(page.fields?.length).toBeLessThanOrEqual(20);
+      const characterCount = (page.title?.length ?? 0)
+        + (page.description?.length ?? 0)
+        + (page.footer?.text.length ?? 0)
+        + (page.fields ?? []).reduce((total, field) => total + field.name.length + field.value.length, 0);
+      expect(characterCount).toBeLessThanOrEqual(6_000);
+    }
+    const content = JSON.stringify(data);
+    for (const member of status.members) expect(content).toContain(`<@${member.discordUserId}>`);
   });
 });

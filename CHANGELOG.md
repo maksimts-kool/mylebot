@@ -4,6 +4,11 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+## 0.13.1 - 2026-08-21
+
+- Redesigned `/verification status` as an emoji-rich private embed dashboard with summary metrics, reminder health, removal safeguards, a status legend, and paginated member cards for warning and kick deadlines.
+- Kept status mentions non-notifying while making due removals, sent warnings, due warnings, waiting members, and newly untracked members visually distinct.
+
 ## 0.13.0 - 2026-08-21
 
 - Added the private manager-only `/verification status` command, with a live Unverified-role member list, persisted final-warning delivery state, warning and removal deadlines, and the last and next general reminder times.
