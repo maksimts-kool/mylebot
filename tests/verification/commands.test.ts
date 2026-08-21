@@ -46,12 +46,12 @@ describe("verification status command", () => {
       expect.objectContaining({ name: "📨 Role reminder", value: expect.stringContaining("✅ Last sent") }),
       expect.objectContaining({ name: "🧹 Pending cleanup", value: expect.stringContaining("**1** stored entry") }),
     ]));
-    expect(content).toContain("🚨 @Warned • Removal due");
+    expect(content).toContain("🚨 [@Warned](https://discord.com/users/100) • Removal due");
     expect(content).toContain("**Final warning:** ✅ Sent");
-    expect(content).toContain("⏳ @Maksim • Waiting");
-    expect(content).not.toContain("1485701483038118059");
+    expect(content).toContain("⏳ [@Maksim](https://discord.com/users/1485701483038118059) • Waiting");
+    expect(content).not.toContain("<@1485701483038118059>");
     expect(content).toContain("**Earliest removal:**");
-    expect(content).toContain("🆕 @New • New");
+    expect(content).toContain("🆕 [@New](https://discord.com/users/300) • New");
     expect(content).toContain("**Removal:** No deadline yet");
   });
 
@@ -83,8 +83,8 @@ describe("verification status command", () => {
     }
     const content = JSON.stringify(data);
     for (const member of status.members) {
-      expect(content).toContain(`@${member.displayName}`);
-      expect(content).not.toContain(member.discordUserId);
+      expect(content).toContain(`[@${member.displayName}](https://discord.com/users/${member.discordUserId})`);
+      expect(content).not.toContain(`<@${member.discordUserId}>`);
     }
   });
 });

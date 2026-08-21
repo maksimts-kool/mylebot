@@ -4,6 +4,11 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+## 0.13.3 - 2026-08-22
+
+- Made every member display name in `/verification status` a clickable link that opens their Discord profile while keeping raw mention syntax hidden.
+- Added regression coverage for clickable profile URLs across every paginated verification-status member card.
+
 ## 0.13.2 - 2026-08-22
 
 - Fixed `/verification status` showing raw `<@user-id>` text in embed field titles by rendering each member's current server display name instead.

@@ -27,7 +27,7 @@ function discordTimestamp(date: Date, style: "F" | "R"): string {
 }
 
 function memberField(member: VerificationStatusMember, now: Date): { name: string; value: string; inline: false } {
-  const displayName = `@${escapeMarkdown(member.displayName)}`;
+  const displayName = `[@${escapeMarkdown(member.displayName)}](https://discord.com/users/${member.discordUserId})`;
   if (member.firstSeenAt === null || member.finalWarningDueAt === null || member.removalDueAt === null) {
     return {
       name: `🆕 ${displayName} • New`,
@@ -113,7 +113,7 @@ export function verificationStatusEmbeds(status: VerificationStatus, now = new D
       .setColor(summaryColor)
       .addFields(members.map((member) => memberField(member, now)))
       .setFooter({
-        text: `${start + 1}–${start + members.length} of ${status.members.length} • Current server display names`,
+        text: `${start + 1}–${start + members.length} of ${status.members.length} • Click a name to open their profile`,
       }));
   }
   return embeds;
