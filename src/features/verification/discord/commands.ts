@@ -27,32 +27,33 @@ function discordTimestamp(date: Date, style: "F" | "R"): string {
 }
 
 function memberField(member: VerificationStatusMember, now: Date): { name: string; value: string; inline: false } {
-  const displayName = `[@${escapeMarkdown(member.displayName)}](https://discord.com/users/${member.discordUserId})`;
+  const profileLink = `[@${escapeMarkdown(member.displayName)}](https://discord.com/users/${member.discordUserId})`;
+  const memberLine = `**Member:** ${profileLink}`;
   if (member.firstSeenAt === null || member.finalWarningDueAt === null || member.removalDueAt === null) {
     return {
-      name: `🆕 ${displayName} • New`,
-      value: "**Final warning:** ❌ Not sent\n**Tracking:** Starts during the next reminder cycle\n**Removal:** No deadline yet",
+      name: "🆕 New",
+      value: `${memberLine}\n**Final warning:** ❌ Not sent\n**Tracking:** Starts during the next reminder cycle\n**Removal:** No deadline yet`,
       inline: false,
     };
   }
   if (member.warnedAt !== null) {
     const dueNow = member.removalDueAt.getTime() <= now.getTime();
     return {
-      name: `${dueNow ? "🚨" : "⚠️"} ${displayName} • ${dueNow ? "Removal due" : "Final warning sent"}`,
-      value: `**Final warning:** ✅ Sent ${discordTimestamp(member.warnedAt, "R")}\n**Removal:** ${dueNow ? "🚨 **Due now**" : `⏳ ${discordTimestamp(member.removalDueAt, "R")}`} • ${discordTimestamp(member.removalDueAt, "F")}`,
+      name: `${dueNow ? "🚨 Removal due" : "⚠️ Final warning sent"}`,
+      value: `${memberLine}\n**Final warning:** ✅ Sent ${discordTimestamp(member.warnedAt, "R")}\n**Removal:** ${dueNow ? "🚨 **Due now**" : `⏳ ${discordTimestamp(member.removalDueAt, "R")}`} • ${discordTimestamp(member.removalDueAt, "F")}`,
       inline: false,
     };
   }
   if (member.finalWarningDueAt.getTime() <= now.getTime()) {
     return {
-      name: `📣 ${displayName} • Warning due`,
-      value: "**Final warning:** ❌ Not sent — **due now**\n**Removal:** 🔒 Blocked until 3 full days after a successful warning",
+      name: "📣 Warning due",
+      value: `${memberLine}\n**Final warning:** ❌ Not sent — **due now**\n**Removal:** 🔒 Blocked until 3 full days after a successful warning`,
       inline: false,
     };
   }
   return {
-    name: `⏳ ${displayName} • Waiting`,
-    value: `**Tracking since:** ${discordTimestamp(member.firstSeenAt, "F")}\n**Final warning:** ${discordTimestamp(member.finalWarningDueAt, "R")}\n**Earliest removal:** ${discordTimestamp(member.removalDueAt, "F")}`,
+    name: "⏳ Waiting",
+    value: `${memberLine}\n**Tracking since:** ${discordTimestamp(member.firstSeenAt, "F")}\n**Final warning:** ${discordTimestamp(member.finalWarningDueAt, "R")}\n**Earliest removal:** ${discordTimestamp(member.removalDueAt, "F")}`,
     inline: false,
   };
 }

@@ -4,6 +4,8 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+- Moved clickable verification member names from embed field titles into field values, where Discord renders Markdown links instead of showing their bracket syntax literally.
+
 ## 0.13.3 - 2026-08-22
 
 - Made every member display name in `/verification status` a clickable link that opens their Discord profile while keeping raw mention syntax hidden.

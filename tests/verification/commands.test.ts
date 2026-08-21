@@ -46,13 +46,19 @@ describe("verification status command", () => {
       expect.objectContaining({ name: "📨 Role reminder", value: expect.stringContaining("✅ Last sent") }),
       expect.objectContaining({ name: "🧹 Pending cleanup", value: expect.stringContaining("**1** stored entry") }),
     ]));
-    expect(content).toContain("🚨 [@Warned](https://discord.com/users/100) • Removal due");
+    expect(content).toContain("🚨 Removal due");
+    expect(content).toContain("**Member:** [@Warned](https://discord.com/users/100)");
     expect(content).toContain("**Final warning:** ✅ Sent");
-    expect(content).toContain("⏳ [@Maksim](https://discord.com/users/1485701483038118059) • Waiting");
+    expect(content).toContain("⏳ Waiting");
+    expect(content).toContain("**Member:** [@Maksim](https://discord.com/users/1485701483038118059)");
     expect(content).not.toContain("<@1485701483038118059>");
     expect(content).toContain("**Earliest removal:**");
-    expect(content).toContain("🆕 [@New](https://discord.com/users/300) • New");
+    expect(content).toContain("🆕 New");
+    expect(content).toContain("**Member:** [@New](https://discord.com/users/300)");
     expect(content).toContain("**Removal:** No deadline yet");
+    const waitingField = embeds[1]?.fields?.find((field) => field.name === "⏳ Waiting");
+    expect(waitingField?.name).not.toMatch(/[\[\]{}]/);
+    expect(waitingField?.value).toContain("[@Maksim](https://discord.com/users/1485701483038118059)");
   });
 
   it("paginates a large live list within Discord's embed limits", () => {
@@ -83,7 +89,7 @@ describe("verification status command", () => {
     }
     const content = JSON.stringify(data);
     for (const member of status.members) {
-      expect(content).toContain(`[@${member.displayName}](https://discord.com/users/${member.discordUserId})`);
+      expect(content).toContain(`**Member:** [@${member.displayName}](https://discord.com/users/${member.discordUserId})`);
       expect(content).not.toContain(`<@${member.discordUserId}>`);
     }
   });
