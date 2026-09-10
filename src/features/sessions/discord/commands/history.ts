@@ -3,8 +3,10 @@ import {
   type ButtonInteraction, type ChatInputCommandInteraction, type StringSelectMenuInteraction,
 } from "discord.js";
 import { userError } from "../../../../core/errors.js";
+import { BRAND_COLOR } from "../../../../shared/discord/colors.js";
 import { totalsForPeriod } from "../../domain/accounting.js";
 import { sessionMeetsMinimum } from "../../domain/policy.js";
+import { sessionOwner, statusIcon, statusLabel } from "../session-embed.js";
 import type { SessionCommandContext } from "./context.js";
 import { friendlyDuration } from "./format.js";
 
@@ -27,15 +29,15 @@ export async function replyHistory(
   const sessions = qualifyingSessions.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
   if (!sessions.length) userError("No sessions found");
   const identity = sessions[0]!.identity;
-  const owner = identity.discordUserId ? `**${identity.robloxUsername}** · <@${identity.discordUserId}>` : `**${identity.robloxUsername}**`;
+  const owner = sessionOwner(identity);
   const description = sessions.map((session) => {
     const end = session.endedAt ?? new Date();
     const totals = totalsForPeriod(session.segments, session.startedAt, end, end);
-    const state = session.state === "ENDED" ? "Completed" : session.state === "ACTIVE" ? "Active now" : session.state === "INACTIVE" ? "Inactive now" : "Waiting for reconnect";
+    const state = statusLabel(session.state);
     const timing = session.endedAt
       ? `Started <t:${Math.floor(session.startedAt.getTime()/1000)}:f> and ended <t:${Math.floor(session.endedAt.getTime()/1000)}:R>`
       : `Started <t:${Math.floor(session.startedAt.getTime()/1000)}:R>`;
-    const icon = session.state === "ENDED" ? "✅" : session.state === "ACTIVE" ? "🟢" : session.state === "INACTIVE" ? "🟡" : "🔵";
+    const icon = statusIcon(session.state);
     return `${icon} **${state}**\n🗓️ ${timing}\n⏱️ ${friendlyDuration(totals.totalMs)} total · ${friendlyDuration(totals.activeMs)} active · ${friendlyDuration(totals.inactiveMs)} inactive\n🆔 Session ID: \`${session.id}\``;
   }).join("\n\n");
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -44,7 +46,7 @@ export async function replyHistory(
     new ButtonBuilder().setCustomId("historyclose").setLabel("Close").setEmoji("✖️").setStyle(ButtonStyle.Secondary),
   );
   const response = {
-    embeds: [new EmbedBuilder().setTitle("📚 Session history").setDescription(`👤 ${owner}\n\n${description}`).setFooter({ text: `Page ${page+1} of ${Math.max(1, Math.ceil(count/PAGE_SIZE))}` })],
+    embeds: [new EmbedBuilder().setColor(BRAND_COLOR).setTitle("📚 Session history").setDescription(`👤 ${owner}\n\n${description}`).setFooter({ text: `Page ${page+1} of ${Math.max(1, Math.ceil(count/PAGE_SIZE))}` })],
     components: [row],
   };
   if (responseMode === "update" && interaction.isButton()) await interaction.update(response);

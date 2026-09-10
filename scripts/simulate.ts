@@ -23,9 +23,11 @@ function event(kind: Kind, offsetSeconds: number, active: boolean, job = jobId) 
 const scenarios = [
   { name: "join and activity", events: [event("JOIN", 0, true), event("HEARTBEAT", 30, true)] },
   { name: "inactivity", events: [event("HEARTBEAT", 60, false), event("HEARTBEAT", 90, false)] },
-  { name: "reconnect into a different server", events: [event("LEAVE", 120, false), event("JOIN", 150, true, `${jobId}-reconnected`)] },
-  { name: "activity after reconnect", events: [event("HEARTBEAT", 180, true, `${jobId}-reconnected`)] },
-  { name: "server shutdown", events: [event("SHUTDOWN", 210, false, `${jobId}-reconnected`)] },
+  // Leaving ends the shift immediately, so joining another server starts a
+  // second, separate session.
+  { name: "leave, then join a different server", events: [event("LEAVE", 120, false), event("JOIN", 150, true, `${jobId}-second`)] },
+  { name: "activity in the second session", events: [event("HEARTBEAT", 180, true, `${jobId}-second`)] },
+  { name: "server shutdown", events: [event("SHUTDOWN", 210, false, `${jobId}-second`)] },
 ];
 
 for (const scenario of scenarios) {
@@ -36,5 +38,5 @@ for (const scenario of scenarios) {
   console.log(scenario.name, response.status, await response.text());
   if (!response.ok) process.exitCode = 1;
 }
-console.log("Simulation submitted. The final session ends after the configured reconnect grace period.");
+console.log("Simulation submitted. Both sessions are already closed: a leave or shutdown ends a shift immediately.");
 

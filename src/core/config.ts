@@ -50,7 +50,6 @@ const schema = z.object({
   API_PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
   TRUST_PROXY: z.enum(["false", "loopback"]).default("loopback"),
   REPORT_TIMEZONE: z.string().default("Europe/Tallinn"),
-  RECONNECT_GRACE_SECONDS: positiveInt(120),
   HEARTBEAT_STALE_SECONDS: positiveInt(75),
   DISCORD_UPDATE_SECONDS: positiveInt(60),
   MAX_BATCH_SIZE: positiveInt(100),

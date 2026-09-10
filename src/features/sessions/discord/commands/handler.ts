@@ -1,7 +1,7 @@
 import {
   MessageFlags,
-  type ButtonInteraction, type ChannelSelectMenuInteraction, type ChatInputCommandInteraction, type Client,
-  type Interaction, type ModalSubmitInteraction, type RoleSelectMenuInteraction, type StringSelectMenuInteraction,
+  type ButtonInteraction, type ChatInputCommandInteraction, type Client,
+  type Interaction, type ModalSubmitInteraction, type StringSelectMenuInteraction,
 } from "discord.js";
 import type { Config } from "../../../../core/config.js";
 import type { Db } from "../../../../core/db.js";
@@ -11,19 +11,19 @@ import { PublicComponentTracker } from "../../../../shared/discord/components.js
 import { PermissionLevel, hasPermission, permissionLabel } from "../../../../shared/permissions.js";
 import type { RuntimeSettingsService } from "../../../../shared/runtime-settings.js";
 import type { DiscordPublisher } from "../publisher.js";
-import { applyRoleLevel, configPanel, selectLogsChannel, selectPermissionRole, toggleTracking } from "./config-panel.js";
 import type { SessionCommandContext } from "./context.js";
 import { requiredPermission, sessionCommandNames } from "./definitions.js";
 import { replyHistory } from "./history.js";
 import { presetDates, renderLeaderboard } from "./leaderboard.js";
 import {
-  addSession, editEnded, removeSession, showActive, showAdd, showEditEndedModal, showManage, showView,
+  addSession, editEnded, removeSession, showActive, showAdd, showEditEndedModal, showManage,
+  showSessionDetails, showView,
 } from "./session-commands.js";
 
 /** Component identifiers this feature answers for. Everything else is another feature's. */
-const EXACT_CUSTOM_IDS = new Set(["cancel", "historyclose", "config-logs", "config-role", "leaderboard-user"]);
+const EXACT_CUSTOM_IDS = new Set(["cancel", "historyclose", "leaderboard-user"]);
 const CUSTOM_ID_PREFIXES = [
-  "refresh:", "config-tracking:", "config-role-level:", "history:", "historypage:",
+  "refresh:", "details:", "history:", "historypage:",
   "leaderboard:", "editended:", "remove:", "add:",
 ];
 
@@ -93,8 +93,6 @@ export class SessionCommandHandler {
     if (interaction.isChatInputCommand()) await this.handleCommand(interaction);
     else if (interaction.isModalSubmit()) await this.handleModal(interaction);
     else if (interaction.isButton()) await this.handleButton(interaction);
-    else if (interaction.isChannelSelectMenu()) await this.handleChannelSelect(interaction);
-    else if (interaction.isRoleSelectMenu()) await this.handleRoleSelect(interaction);
     else if (interaction.isStringSelectMenu()) await this.handleSelect(interaction);
   }
 
@@ -104,10 +102,6 @@ export class SessionCommandHandler {
       const period = interaction.options.getString("period") ?? "month";
       const { startDate, endDate } = presetDates(this.config, period);
       await renderLeaderboard(this.ctx, interaction, startDate, endDate, 0, 0); return;
-    }
-    if (interaction.commandName === "config") {
-      await this.ctx.requirePermission(interaction, PermissionLevel.MANAGER);
-      await interaction.reply({ ...await configPanel(this.ctx), flags: MessageFlags.Ephemeral }); return;
     }
     const action = interaction.options.getSubcommand();
     await this.ctx.requirePermission(interaction, requiredPermission(interaction.commandName, action));
@@ -133,12 +127,9 @@ export class SessionCommandHandler {
       await this.ctx.publisher.refresh(interaction.customId.slice(8));
       return;
     }
-    if (interaction.customId.startsWith("config-tracking:")) {
-      await toggleTracking(this.ctx, interaction);
-      return;
-    }
-    if (interaction.customId.startsWith("config-role-level:")) {
-      await applyRoleLevel(this.ctx, interaction);
+    if (interaction.customId.startsWith("details:")) {
+      await this.ctx.requirePermission(interaction, PermissionLevel.STAFF);
+      await showSessionDetails(this.ctx, interaction, interaction.customId.slice("details:".length));
       return;
     }
     if (interaction.customId.startsWith("history:")) {
@@ -163,16 +154,6 @@ export class SessionCommandHandler {
     if (interaction.customId.startsWith("remove:")) {
       await removeSession(this.ctx, interaction, interaction.customId.slice(7));
     }
-  }
-
-  private async handleChannelSelect(interaction: ChannelSelectMenuInteraction): Promise<void> {
-    if (interaction.customId !== "config-logs") return;
-    await selectLogsChannel(this.ctx, interaction);
-  }
-
-  private async handleRoleSelect(interaction: RoleSelectMenuInteraction): Promise<void> {
-    if (interaction.customId !== "config-role") return;
-    await selectPermissionRole(this.ctx, interaction);
   }
 
   private async handleSelect(interaction: StringSelectMenuInteraction): Promise<void> {

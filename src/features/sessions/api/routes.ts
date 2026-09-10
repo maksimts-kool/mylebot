@@ -42,7 +42,6 @@ export function sessionRoutes({ config, sessions, onChanged }: SessionRouteOptio
         const result = await sessions.process(event);
         results.push(result);
         if (result.changed && result.sessionId) changed.add(result.sessionId);
-        if (result.alsoChangedSessionId) changed.add(result.alsoChangedSessionId);
         if (result.removedMessages) removedMessages.push(...result.removedMessages);
       }
       if (removedMessages.length) await onChanged([...changed], removedMessages);

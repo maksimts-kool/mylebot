@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../../src/core/config.js";
 import { allCommandData } from "../../src/features/command-data.js";
+import { parsePermissionAction } from "../../src/features/config/sections/permissions.js";
 import {
-  parsePermissionRoleChoice,
   requiredPermission,
   sessionCommandData,
 } from "../../src/features/sessions/discord/commands/definitions.js";
@@ -20,7 +20,6 @@ describe("Discord command permissions", () => {
     expect(requiredPermission("session", "active")).toBe(PermissionLevel.STAFF);
     expect(requiredPermission("session", "add")).toBe(PermissionLevel.ADMIN);
     expect(requiredPermission("session", "manage")).toBe(PermissionLevel.ADMIN);
-    expect(requiredPermission("config", "tracking")).toBe(PermissionLevel.MANAGER);
   });
 
   it("deploys /session active with an optional user option", () => {
@@ -34,20 +33,16 @@ describe("Discord command permissions", () => {
     expect(user?.required ?? false).toBe(false);
   });
 
-  it("deploys the manager configuration command", () => {
-    const config = sessionCommandData.find((command) => command.name === "config");
-    expect(config?.options).toEqual([]);
-  });
-
   it("parses role permission button choices", () => {
-    expect(parsePermissionRoleChoice("config-role-level:123456789012345678:4")).toEqual({
+    expect(parsePermissionAction("level:123456789012345678:4")).toEqual({
       roleId: "123456789012345678",
       choice: "4",
     });
-    expect(parsePermissionRoleChoice("config-role-level:123456789012345678:remove")).toEqual({
+    expect(parsePermissionAction("level:123456789012345678:remove")).toEqual({
       roleId: "123456789012345678",
       choice: "remove",
     });
+    expect(parsePermissionAction("role")).toBeNull();
   });
 });
 
@@ -66,17 +61,20 @@ describe("deployed command set", () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
-  it("only deploys /taiga when the integration is configured", () => {
-    const withoutTaiga = allCommandData(loadConfig(baseEnv)).map((command) => command.name);
-    expect(withoutTaiga).not.toContain("taiga");
+  it("always deploys the shared /config and /help commands", () => {
+    const names = allCommandData(loadConfig(baseEnv)).map((command) => command.name);
+    expect(names).toContain("config");
+    expect(names).toContain("help");
+  });
 
+  it("no longer deploys a separate /taiga command now that its settings live in /config", () => {
     const withTaiga = allCommandData(loadConfig({
       ...baseEnv,
       TAIGA_USERNAME: "bot",
       TAIGA_PASSWORD: "secret",
       TAIGA_PROJECT_SLUG: "my-project",
     })).map((command) => command.name);
-    expect(withTaiga).toContain("taiga");
+    expect(withTaiga).not.toContain("taiga");
   });
 
   it("only deploys /verification when verification is configured", () => {

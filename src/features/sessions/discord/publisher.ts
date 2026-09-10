@@ -10,10 +10,7 @@ import { totalsForPeriod } from "../domain/accounting.js";
 import { calendarYearRange } from "../domain/reporting.js";
 import { MINIMUM_SESSION_MILLISECONDS, sessionMeetsMinimum } from "../domain/policy.js";
 import type { DiscordMessageReference } from "../service/session-service.js";
-
-const statusName: Record<SessionState, string> = { ACTIVE: "Active", INACTIVE: "Inactive", RECONNECTING: "Reconnecting", ENDED: "Ended" };
-const statusColor: Record<SessionState, number> = { ACTIVE: 0x22c55e, INACTIVE: 0xf59e0b, RECONNECTING: 0x3b82f6, ENDED: 0x6b7280 };
-const statusIcon: Record<SessionState, string> = { ACTIVE: "🟢", INACTIVE: "🟡", RECONNECTING: "🔵", ENDED: "⚫" };
+import { statusColor, statusIcon, statusName } from "./session-embed.js";
 
 function formatClock(milliseconds: number): string {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000));
@@ -30,10 +27,14 @@ export function buildSessionActionRow(session: {
   placeId: string | bigint;
   jobId: string;
 }): ActionRowBuilder<ButtonBuilder> {
+  const live = session.state !== "ENDED";
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    ...(session.state !== "ENDED" ? [new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("Join Server").setURL(`https://www.roblox.com/games/start?placeId=${session.placeId}&gameInstanceId=${encodeURIComponent(session.jobId)}`)] : []),
+    // The announcement itself stays short; everything `/session active` would
+    // show sits behind this button so the channel does not fill up with stats.
+    new ButtonBuilder().setCustomId(`details:${session.id}`).setStyle(ButtonStyle.Primary).setLabel("More info"),
+    ...(live ? [new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("Join Server").setURL(`https://www.roblox.com/games/start?placeId=${session.placeId}&gameInstanceId=${encodeURIComponent(session.jobId)}`)] : []),
     new ButtonBuilder().setCustomId(`history:${session.identityId}`).setStyle(ButtonStyle.Secondary).setLabel("View History"),
-    ...(session.state !== "ENDED" ? [new ButtonBuilder().setCustomId(`refresh:${session.id}`).setStyle(ButtonStyle.Primary).setLabel("Refresh")] : []),
+    ...(live ? [new ButtonBuilder().setCustomId(`refresh:${session.id}`).setStyle(ButtonStyle.Secondary).setLabel("Refresh")] : []),
   );
 }
 
@@ -86,20 +87,22 @@ export class DiscordPublisher {
       return;
     }
     const discordUserId = session.identity.discordUserId ?? await this.bloxlink.discordForRoblox(session.identity.robloxUserId);
-    const username = discordUserId
-      ? `${session.identity.robloxUsername} (<@${discordUserId}>)`
-      : session.identity.robloxUsername;
+    const ended = session.state === "ENDED";
+    // The mention lives in the message content, outside the embed, so the
+    // member is actually pinged when their shift is announced.
+    const content = discordUserId ? `<@${discordUserId}>` : session.identity.robloxUsername;
     const fields = [
-      { name: "Information", value: "\u200b", inline: false },
-      { name: `${statusIcon[session.state]} Status`, value: statusName[session.state], inline: true },
-      { name: "👤 Username", value: username, inline: true },
+      { name: `${statusIcon(session.state)} Status`, value: statusName(session.state), inline: true },
+      { name: "👤 Username", value: session.identity.robloxUsername, inline: true },
       { name: "📎 Rank", value: session.rankName, inline: true },
-      { name: "Activity", value: "\u200b", inline: false },
-      { name: "Total time", value: formatClock(totals.totalMs), inline: true },
-      { name: "Active time", value: formatClock(totals.activeMs), inline: true },
-      { name: "Inactive time", value: formatClock(totals.inactiveMs), inline: true },
     ];
-    if (session.state === "ENDED") {
+    if (ended) {
+      fields.push(
+        { name: "Activity", value: "\u200b", inline: false },
+        { name: "Total time", value: formatClock(totals.totalMs), inline: true },
+        { name: "Active time", value: formatClock(totals.activeMs), inline: true },
+        { name: "Inactive time", value: formatClock(totals.inactiveMs), inline: true },
+      );
       const year = calendarYearRange(now, this.config.REPORT_TIMEZONE);
       const reportYear = new Intl.DateTimeFormat("en", { timeZone: this.config.REPORT_TIMEZONE, year: "numeric" }).format(now);
       const yearSessions = await this.db.session.findMany({
@@ -117,33 +120,40 @@ export class DiscordPublisher {
       fields.push(
         { name: "History", value: "\u200b", inline: false },
         { name: `Total time (${reportYear})`, value: formatClock(yearMs), inline: true },
-        { name: "Last time played", value: previous?.endedAt ? `<t:${Math.floor(previous.endedAt.getTime() / 1000)}:f>` : "No previous session", inline: true },
+        { name: "Previous session", value: previous?.endedAt ? `<t:${Math.floor(previous.endedAt.getTime() / 1000)}:f>` : "No previous session", inline: true },
       );
     }
+    const headline = session.deletedAt
+      ? "🗑️ Session removed"
+      : ended ? "✅ Session ended" : `${statusIcon(session.state)} Session started`;
+    const timeline = ended && session.endedAt
+      ? `Started <t:${Math.floor(session.startedAt.getTime() / 1000)}:f> · Ended <t:${Math.floor(session.endedAt.getTime() / 1000)}:R>`
+      : `Started <t:${Math.floor(session.startedAt.getTime() / 1000)}:f> · Updated <t:${Math.floor(session.lastEventAt.getTime() / 1000)}:R>`;
     const embed = new EmbedBuilder()
-      .setTitle(`${session.deletedAt ? "Removed staff session" : "Staff session"} · ${session.id}`)
-      .setDescription(`Started: <t:${Math.floor(session.startedAt.getTime() / 1000)}:f> | Updated: <t:${Math.floor(session.lastEventAt.getTime() / 1000)}:R>`)
-      .setColor(statusColor[session.state])
-      .addFields(fields);
+      .setTitle(headline)
+      .setDescription(timeline)
+      .setColor(statusColor(session.state))
+      .addFields(fields)
+      .setFooter({ text: `Session ${session.id}` });
     const buttons = buildSessionActionRow(session);
     const channel = await this.client.channels.fetch(settings.logsChannelId) as TextChannel;
     if (session.discordMessage) {
       if (session.discordMessage.channelId !== channel.id) {
         await this.removeMessages([{ channelId: session.discordMessage.channelId, messageId: session.discordMessage.messageId }]);
-        const replacement = await channel.send({ embeds: [embed], components: session.deletedAt ? [] : [buttons] });
+        const replacement = await channel.send({ content, embeds: [embed], components: session.deletedAt ? [] : [buttons] });
         await this.db.discordMessage.update({ where: { sessionId: session.id }, data: { channelId: channel.id, messageId: replacement.id } });
         return;
       }
       try {
         const message = await channel.messages.fetch(session.discordMessage.messageId);
-        await message.edit({ embeds: [embed], components: session.deletedAt ? [] : [buttons] });
+        await message.edit({ content, embeds: [embed], components: session.deletedAt ? [] : [buttons] });
       } catch (error) {
         if (!(error instanceof DiscordAPIError) || error.code !== 10008) throw error;
-        const replacement = await channel.send({ embeds: [embed], components: session.deletedAt ? [] : [buttons] });
+        const replacement = await channel.send({ content, embeds: [embed], components: session.deletedAt ? [] : [buttons] });
         await this.db.discordMessage.update({ where: { sessionId: session.id }, data: { channelId: channel.id, messageId: replacement.id } });
       }
     } else {
-      const message = await channel.send({ embeds: [embed], components: session.deletedAt ? [] : [buttons] });
+      const message = await channel.send({ content, embeds: [embed], components: session.deletedAt ? [] : [buttons] });
       await this.db.discordMessage.create({ data: { sessionId: session.id, channelId: channel.id, messageId: message.id } });
     }
   }

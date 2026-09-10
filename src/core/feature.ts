@@ -1,6 +1,8 @@
 import type { Client, RESTPostAPIApplicationCommandsJSONBody } from "discord.js";
 import type { FastifyBaseLogger, FastifyPluginAsync } from "fastify";
 import type { BloxlinkService } from "../shared/bloxlink.js";
+import type { ConfigSection } from "../shared/discord/config-section.js";
+import type { HelpSection } from "../shared/discord/help.js";
 import type { RuntimeSettingsService } from "../shared/runtime-settings.js";
 import type { Config } from "./config.js";
 import type { Db } from "./db.js";
@@ -28,6 +30,14 @@ export interface Feature {
   commands?: RESTPostAPIApplicationCommandsJSONBody[];
   /** Routes, registered in their own encapsulated Fastify scope. */
   routes?: FastifyPluginAsync;
+  /**
+   * Settings pages this feature contributes to `/config`. `src/index.ts`
+   * collects them from every composed feature and hands them to the
+   * configuration feature, so features stay independent of one another.
+   */
+  configSections?: ConfigSection[];
+  /** What `/help` lists for this feature. */
+  help?: HelpSection;
   /** Runs before the HTTP server starts listening. Throwing aborts startup. */
   onStart?: () => Promise<void>;
   /** Runs after the Discord client is ready. Failures are logged, not fatal. */

@@ -17,7 +17,6 @@ export type EventResult = {
   eventId: string;
   status: "accepted" | "duplicate" | "out_of_order" | "tracking_disabled" | "removed_low_rank";
   sessionId?: string | undefined;
-  alsoChangedSessionId?: string | undefined;
   removedMessages?: DiscordMessageReference[] | undefined;
   changed: boolean;
 };
@@ -29,7 +28,6 @@ function elapsed(from: Date, to: Date): bigint {
 function counterUpdate(state: SessionState, amount: bigint): Prisma.SessionUpdateInput {
   if (state === "ACTIVE") return { activeMilliseconds: { increment: amount } };
   if (state === "INACTIVE") return { inactiveMilliseconds: { increment: amount } };
-  if (state === "RECONNECTING") return { reconnectMilliseconds: { increment: amount } };
   return {};
 }
 
@@ -92,17 +90,6 @@ export class SessionService {
         where: { identityId: identity.id, state: { not: "ENDED" }, deletedAt: null },
         orderBy: { startedAt: "desc" },
       });
-      let alsoChangedSessionId: string | undefined;
-      if (session?.state === "RECONNECTING" && session.reconnectDeadline && occurredAt > session.reconnectDeadline && (event.kind === "JOIN" || event.kind === "HEARTBEAT")) {
-        const endedAt = session.reconnectDeadline;
-        await tx.timeSegment.updateMany({ where: { sessionId: session.id, endedAt: null }, data: { endedAt } });
-        await tx.session.update({
-          where: { id: session.id },
-          data: { ...counterUpdate("RECONNECTING", elapsed(session.lastStateAt, endedAt)), state: "ENDED", endedAt, lastStateAt: endedAt, reconnectDeadline: null },
-        });
-        alsoChangedSessionId = session.id;
-        session = null;
-      }
       if (session && occurredAt <= session.lastEventAt) {
         await tx.processedEvent.create({ data: { eventId: event.eventId, kind: event.kind, occurredAt, sessionId: session.id } });
         return { eventId: event.eventId, status: "out_of_order", sessionId: session.id, changed: false };
@@ -128,8 +115,10 @@ export class SessionService {
           await tx.processedEvent.create({ data: { eventId: event.eventId, kind: event.kind, occurredAt, sessionId: session.id } });
           return { eventId: event.eventId, status: "out_of_order", sessionId: session.id, changed: false };
         }
+        // A departure or shutdown ends the shift there and then: there is no
+        // grace period, so the next join starts a new session.
         const desired: SessionState = teardown
-          ? "RECONNECTING"
+          ? "ENDED"
           : event.player.active ? "ACTIVE" : "INACTIVE";
         if (session.state !== desired) {
           session = await this.transition(tx, session, desired, occurredAt, event);
@@ -148,7 +137,7 @@ export class SessionService {
       await tx.processedEvent.create({
         data: { eventId: event.eventId, kind: event.kind, occurredAt, sessionId: session?.id ?? null },
       });
-      return { eventId: event.eventId, status: "accepted", sessionId: session?.id, alsoChangedSessionId, changed: changed || Boolean(alsoChangedSessionId) };
+      return { eventId: event.eventId, status: "accepted", sessionId: session?.id, changed };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
   }
 
@@ -176,6 +165,11 @@ export class SessionService {
     return { eventId: event.eventId, status: "removed_low_rank", removedMessages, changed: false };
   }
 
+  /**
+   * Moves a session to its next state: close the open segment, credit the time
+   * to the state being left, update the session, then open the next segment.
+   * `ENDED` is terminal, so it closes the session instead of opening a segment.
+   */
   private async transition(
     tx: Prisma.TransactionClient,
     session: Session,
@@ -183,21 +177,24 @@ export class SessionService {
     at: Date,
     event?: PresenceEvent,
   ): Promise<Session> {
-    const reconnectDeadline = next === "RECONNECTING"
-      ? new Date(at.getTime() + this.config.RECONNECT_GRACE_SECONDS * 1000)
-      : null;
     await tx.timeSegment.updateMany({ where: { sessionId: session.id, endedAt: null }, data: { endedAt: at } });
-    await tx.timeSegment.create({ data: { sessionId: session.id, state: next, startedAt: at } });
+    if (next !== "ENDED") await tx.timeSegment.create({ data: { sessionId: session.id, state: next, startedAt: at } });
     return tx.session.update({
       where: { id: session.id },
       data: {
         ...counterUpdate(session.state, elapsed(session.lastStateAt, at)),
-        state: next, lastStateAt: at, lastEventAt: event ? at : session.lastEventAt, reconnectDeadline,
+        state: next, lastStateAt: at, lastEventAt: event ? at : session.lastEventAt, reconnectDeadline: null,
+        ...(next === "ENDED" ? { endedAt: at } : {}),
         ...(event ? { placeId: event.placeId, jobId: event.jobId, rankNumber: event.player.rankNumber, rankName: event.player.rankName } : {}),
       },
     });
   }
 
+  /**
+   * Ends every session whose player stopped reporting. A session goes stale one
+   * heartbeat interval after its last event and ends at that instant, so the
+   * recorded time never counts the silence.
+   */
   async sweep(now = new Date()): Promise<string[]> {
     if (this.settings && !(await this.settings.get()).trackingEnabled) return [];
     const changed: string[] = [];
@@ -209,30 +206,34 @@ export class SessionService {
           where: { id: session.id, state: { in: ["ACTIVE", "INACTIVE"] }, lastEventAt: session.lastEventAt, deletedAt: null },
         });
         if (!current) return false;
-        const transitionAt = new Date(current.lastEventAt.getTime() + this.config.HEARTBEAT_STALE_SECONDS * 1000);
-        await this.transition(tx, current, "RECONNECTING", transitionAt);
+        await this.transition(tx, current, "ENDED", new Date(current.lastEventAt.getTime() + this.config.HEARTBEAT_STALE_SECONDS * 1000));
         return true;
       }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
       if (didChange) changed.push(session.id);
     }
-    const expired = await this.db.session.findMany({ where: { state: "RECONNECTING", reconnectDeadline: { lte: now }, deletedAt: null } });
-    for (const session of expired) {
-      const didChange = await this.withSerializableRetry(() => this.db.$transaction(async (tx) => {
-        const current = await tx.session.findFirst({
-          where: { id: session.id, state: "RECONNECTING", reconnectDeadline: session.reconnectDeadline, deletedAt: null },
-        });
-        if (!current) return false;
-        const endedAt = current.reconnectDeadline ?? now;
-        await tx.timeSegment.updateMany({ where: { sessionId: session.id, endedAt: null }, data: { endedAt } });
-        await tx.session.update({
-          where: { id: session.id },
-          data: { ...counterUpdate("RECONNECTING", elapsed(current.lastStateAt, endedAt)), state: "ENDED", endedAt, lastStateAt: endedAt, reconnectDeadline: null },
-        });
-        return true;
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
-      if (didChange) changed.push(session.id);
-    }
+    changed.push(...await this.closeLegacyReconnectingSessions());
     return changed;
+  }
+
+  /**
+   * Reconnect grace periods no longer exist, so nothing enters `RECONNECTING`
+   * any more. Sessions left in that state by an older build would otherwise
+   * stay live forever and hold the one-live-session index, so close them at the
+   * instant the player left. Remove this once no deployment can carry them.
+   */
+  private async closeLegacyReconnectingSessions(): Promise<string[]> {
+    const closed: string[] = [];
+    const stuck = await this.db.session.findMany({ where: { state: "RECONNECTING", deletedAt: null } });
+    for (const session of stuck) {
+      const didChange = await this.withSerializableRetry(() => this.db.$transaction(async (tx) => {
+        const current = await tx.session.findFirst({ where: { id: session.id, state: "RECONNECTING", lastStateAt: session.lastStateAt, deletedAt: null } });
+        if (!current) return false;
+        await this.transition(tx, current, "ENDED", current.lastStateAt);
+        return true;
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+      if (didChange) closed.push(session.id);
+    }
+    return closed;
   }
 
   async cleanupProcessedEvents(now = new Date()): Promise<number> {

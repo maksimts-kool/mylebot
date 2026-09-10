@@ -10,6 +10,7 @@ import {
 import type { Config } from "../../../core/config.js";
 import type { Db } from "../../../core/db.js";
 import { UserFacingError, errorType, userError } from "../../../core/errors.js";
+import type { HelpSection } from "../../../shared/discord/help.js";
 import { PermissionLevel, hasPermission } from "../../../shared/permissions.js";
 import type { VerificationService, VerificationStatus, VerificationStatusMember } from "../service/verification-service.js";
 
@@ -21,6 +22,14 @@ export const verificationCommandData = [
       .setName("status")
       .setDescription("Show pending warnings and removals")),
 ].map((command) => command.toJSON());
+
+export const verificationHelp: HelpSection = {
+  title: "Verification",
+  emoji: "🔐",
+  commands: [
+    { usage: "/verification status", description: "Shows every unverified member, whether their final warning was sent, and when removal becomes due.", permission: PermissionLevel.MANAGER },
+  ],
+};
 
 function discordTimestamp(date: Date, style: "F" | "R"): string {
   return `<t:${Math.floor(date.getTime() / 1_000)}:${style}>`;

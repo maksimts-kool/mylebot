@@ -4,6 +4,7 @@ import {
 } from "discord.js";
 import { DateTime } from "luxon";
 import type { Config } from "../../../../core/config.js";
+import { BRAND_COLOR } from "../../../../shared/discord/colors.js";
 import { buildLeaderboard, tallinnDateRange } from "../../domain/reporting.js";
 import { SESSION_RETENTION_YEARS } from "../../domain/policy.js";
 import type { SessionCommandContext } from "./context.js";
@@ -75,9 +76,10 @@ export async function renderLeaderboard(
   const expiredComponents = leaderboardComponents(pageRows, rows.length, startDate, endDate, minimum, page, true);
   const response = {
     embeds: [new EmbedBuilder()
+      .setColor(BRAND_COLOR)
       .setTitle("🏆 Staff leaderboard")
       .setDescription(description)
-      .setFooter({ text: `Page ${page+1} of ${Math.max(1, Math.ceil(rows.length/PAGE_SIZE))} · Total time includes inactive time; reconnecting gaps are excluded` })],
+      .setFooter({ text: `Page ${page+1} of ${Math.max(1, Math.ceil(rows.length/PAGE_SIZE))} · Total time includes inactive time` })],
     components,
   };
   if (interaction.isButton()) {

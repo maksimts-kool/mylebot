@@ -4,10 +4,10 @@ A Node.js service that records eligible Roblox group members' play sessions in P
 
 ## Features
 
-- Tracks active, inactive, reconnecting, and completed Roblox sessions across places in one universe.
+- Tracks active, inactive, and completed Roblox sessions across places in one universe.
 - Accepts authenticated, batched Roblox events with payload validation, rate limiting, event-age checks, ordering, and idempotency.
 - Persists identities, sessions, time segments, processed events, runtime settings, Discord message references, and audit records in PostgreSQL through Prisma.
-- Publishes and periodically refreshes session-log messages in Discord.
+- Publishes one Discord message per shift — the member mentioned outside the embed, a **More info** button for the full breakdown — and edits that same message until the shift ends.
 - Provides session history, manual session administration, and timezone-aware leaderboards.
 - Resolves Roblox and Discord identities through Bloxlink when an API key is configured.
 - Mirrors the Discord bug-report and suggestion forums onto a Taiga kanban board, keeping post tags in step with the board and announcing every change.
@@ -18,8 +18,8 @@ A Node.js service that records eligible Roblox group members' play sessions in P
 
 1. The Roblox package monitors player joins, activity, departures, and server shutdowns. It queues events and posts batches to `POST /v1/roblox/presence/batch` with a shared bearer secret.
 2. The Fastify API authenticates the request and validates the universe, place, group rank, timestamps, and event payload.
-3. The session service applies events in order and stores transitions in PostgreSQL. A departure or shutdown moves a session to `RECONNECTING`; a qualifying join during the grace period resumes it, otherwise the session ends.
-4. The Discord publisher creates or updates the corresponding session-log message. Scheduled jobs sweep reconnecting or stale sessions, refresh live messages, and remove expired event-deduplication records.
+3. The session service applies events in order and stores transitions in PostgreSQL. A departure or shutdown ends the session at that instant; a later join starts a new one.
+4. The Discord publisher posts one session message per shift and edits it in place until the shift ends. Scheduled jobs end stale sessions, refresh live messages, and remove expired event-deduplication records.
 5. Discord slash commands query the same persisted data for history and reports. Administrative changes are audited.
 
 The code is organised as feature modules. Each feature owns its HTTP routes, slash commands, gateway listeners, and background jobs, and [`src/index.ts`](src/index.ts) only composes them:
@@ -29,6 +29,8 @@ The code is organised as feature modules. Each feature owns its HTTP routes, sla
 - [`src/features/sessions/`](src/features/sessions/): Roblox session tracking — [ingestion route](src/features/sessions/api/routes.ts), [lifecycle service](src/features/sessions/service/session-service.ts), [Discord publisher](src/features/sessions/discord/publisher.ts), and [commands](src/features/sessions/discord/commands/).
 - [`src/features/portal/`](src/features/portal/): the store-owners portal's internal endpoints.
 - [`src/features/taiga/`](src/features/taiga/): the Taiga board integration.
+- [`src/features/config/`](src/features/config/): the `/config` panel. Features contribute their own settings pages through `Feature.configSections`.
+- [`src/features/help/`](src/features/help/): `/help`, built from the `Feature.help` sections of everything actually composed.
 - [`prisma/schema.prisma`](prisma/schema.prisma): PostgreSQL data model.
 - [`roblox/`](roblox/): Roblox server and client sender package.
 
@@ -79,7 +81,9 @@ Comma-separated ID settings must not contain surrounding quotes. Roblox IDs are 
 | `BLOXLINK_API_KEY` | Optional Bloxlink API key. Without it, uncached Discord↔Roblox mappings cannot be resolved. |
 | `BLOXLINK_BASE_URL` | Bloxlink API base URL; normally leave the default unchanged. |
 
-The Discord server owner or another member with Discord's Administrator permission performs initial setup through `/config`. Select the session logs channel and assign staff, admin, and manager access to Discord roles there. These settings are stored in PostgreSQL; the logs channel and role assignments are not configured through environment variables.
+The Discord server owner or another member with Discord's Administrator permission performs initial setup through `/config`. That one panel holds every server setting: session tracking and the logs channel, role permissions, the Taiga board integration, and the verification cycle. Pick a page from the menu at the bottom of the panel. These settings are stored in PostgreSQL; the logs channel and role assignments are not configured through environment variables.
+
+The role permissions page is a full editor: choose a role to grant or change staff, admin, or manager access, or revoke a role's access from the second menu. Access is cumulative, so a member gets the highest level of any role they hold, and anyone with Discord's Administrator permission always counts as a manager.
 
 When both verification IDs are set, the bot posts an `@Unverified` reminder every three days. A member's 30-day period begins the first time the bot sees them with that role. On day 27, the bot mentions them in a final 3-day warning; it only kicks them on the next run if that warning was successfully posted and they still have the role. Removing the role immediately makes them ineligible, and bots are never tracked or kicked. Managers can run `/verification status` for a private embed dashboard showing each member's clickable server display name, whether their final warning was successfully sent, and when removal becomes due. This feature needs the privileged **Server Members Intent** enabled under *Bot → Privileged Gateway Intents* in the Discord Developer Portal. The bot also needs **View Channel**, **Send Messages**, **Read Message History**, and **Kick Members**, with its role above `Unverified`.
 
@@ -122,13 +126,13 @@ The bot fetches the user and sends an embed DM. Responses: `200` sent, `401` bad
 | `TAIGA_BASE_URL` / `TAIGA_WEB_URL` | API host and the host humans browse. Defaults suit taiga.io; change both for a self-hosted instance. |
 | `TAIGA_RECONCILE_SECONDS` | How often the safety sweep re-reads the board. Defaults to 600. |
 
-`TAIGA_USERNAME`, `TAIGA_PASSWORD`, and `TAIGA_PROJECT_SLUG` must be set together. Leaving them empty disables the feature completely: no `/taiga` command, no webhook route, no forum listener, and no privileged Discord intents requested.
+`TAIGA_USERNAME`, `TAIGA_PASSWORD`, and `TAIGA_PROJECT_SLUG` must be set together. Leaving them empty disables the feature completely: no settings page in `/config`, no webhook route, no forum listener, and no privileged Discord intents requested.
 
 **Discord setup.** The integration reads the first message of each forum post, which needs the privileged **Message Content** intent — enable it under *Bot → Privileged Gateway Intents* in the Discord Developer Portal, or every card is created with an empty description. The bot also needs **View Channel**, **Read Message History**, **Send Messages**, and **Manage Threads** in both forums; Manage Threads is what allows it to set tags and archive posts. Each forum needs tags named `New`, `Approved`, `In progress`, and `Declined` (matched case-insensitively). Those four are the only tags the bot touches: a forum's own `Bug`/`Suggestion` category tag, or anything staff add by hand, is preserved across column changes.
 
 **Taiga setup.** In *Project settings → Integrations → Webhooks*, add a webhook pointing at `https://<your-bot-host>/v1/taiga/webhook` with the same secret key as `TAIGA_WEBHOOK_SECRET`. The board needs columns named `Suggested`, `Planned`, `In progress`, `Done`, and `In game`.
 
-Then run `/taiga` in Discord to pick the two forums and the notifications channel, and switch the integration on. `/taiga` also shows a health block that names any column or forum tag it cannot resolve.
+Then open `/config` in Discord, choose the **Taiga board** page, pick the two forums and the notifications channel, and switch the integration on. The page also shows a health block that names any column or forum tag it cannot resolve.
 
 **Behaviour.**
 
@@ -154,8 +158,7 @@ Every change is announced in the notifications channel. Taiga webhooks drive upd
 | `APP_BIND_IP` / `APP_PORT` | Host-side bind address and port used by Compose. Defaults to `127.0.0.1:3000`. |
 | `TRUST_PROXY` | `loopback` to trust local reverse proxies, or `false` to disable proxy trust. |
 | `REPORT_TIMEZONE` | IANA timezone used for report boundaries and manual local date input. |
-| `RECONNECT_GRACE_SECONDS` | Time allowed for a player to reconnect before a session ends. |
-| `HEARTBEAT_STALE_SECONDS` | Time without a heartbeat before a live session is treated as disconnected. |
+| `HEARTBEAT_STALE_SECONDS` | Time without a heartbeat before a live session is ended, and the point it is ended at. |
 | `DISCORD_UPDATE_SECONDS` | Interval for refreshing live Discord messages. |
 | `MAX_BATCH_SIZE` | Maximum accepted events per request. Keep this at least as large as the Roblox sender's batch size, currently 100. |
 | `MAX_EVENT_AGE_SECONDS` | Maximum age accepted for incoming events. |
@@ -209,7 +212,7 @@ $env:NODE_OPTIONS = "--env-file=.env"
 npm run simulate
 ```
 
-The simulator sends join, activity, inactivity, reconnection, and shutdown events. Optional overrides are `SIMULATOR_BASE_URL`, `SIMULATOR_RANK`, `SIMULATOR_USER_ID`, and `SIMULATOR_USERNAME`.
+The simulator sends join, activity, inactivity, departure, and shutdown events across two sessions. Optional overrides are `SIMULATOR_BASE_URL`, `SIMULATOR_RANK`, `SIMULATOR_USER_ID`, and `SIMULATOR_USERNAME`.
 
 ## Docker deployment
 
@@ -271,12 +274,12 @@ Available commands and permissions:
 | Command | Access | Purpose |
 | --- | --- | --- |
 | `/leaderboard [period]` | Everyone | Shows the staff leaderboard for this week, month, year, or the retained rolling year. Completed records shorter than one minute are excluded. Its public controls are limited to the caller and expire after 15 minutes of inactivity. |
-| `/session active [user:<member>]` | Staff | Shows a live session. Staff see their own; viewing another member's requires Admin. |
+| `/session active [user:<member>]` | Staff | Without a member, lists every session running right now. Naming a member shows that session in full; another member's session requires Admin. |
 | `/session view user:<member>` | Staff | Shows a member's paginated session history. |
 | `/session add user:<member>` | Admin | Adds an audited completed session for a Bloxlink-mapped member. |
 | `/session manage sessionid:<id>` | Admin | Opens controls to edit or soft-delete a completed session. Live sessions cannot be managed manually. |
-| `/config` | Manager | Opens an ephemeral panel for the logs channel, tracking state, and role permission assignments. |
-| `/taiga` | Manager | Opens an ephemeral panel for the Taiga integration: the two forums, the notifications channel, the on/off switch, a configuration health check, and a manual reconcile. Only deployed when Taiga credentials are configured. |
+| `/config` | Manager | Opens the ephemeral configuration panel. Pages: session tracking and logs channel, role permissions, the Taiga integration (only when Taiga credentials are configured), and the verification cycle (only when verification is configured). |
+| `/help` | Everyone | Lists every command the bot answers, marking the ones the caller's roles allow. |
 
 Permission levels are cumulative: manager includes admin and staff access, and admin includes staff access. Manual session forms accept local values such as `11/07/2026 14:30` in `REPORT_TIMEZONE`; ISO timestamps are also accepted. Manual totals must equal the session's wall-clock duration.
 
@@ -290,7 +293,7 @@ Permission levels are cumulative: manager includes admin and staff access, and a
 | `npm test` | Runs the Vitest suite once. |
 | `npm run test:watch` | Runs Vitest in watch mode. |
 | `npm run simulate` | Sends a representative presence lifecycle to a running API. |
-| `npm run release -- <M\|R\|B>` | Increments the major, release, or beta version, creates a commit and tag, and pushes both to GitHub. |
+| `npm run release -- <M\|R\|B> [options]` | Verifies the release is safe to cut, promotes the changelog, increments the major, release, or beta version, creates a commit and tag, and pushes both to GitHub. `--dry-run` reports the plan and stops. |
 | `npm run commands:deploy` | Replaces Discord guild command definitions. |
 | `npm run prisma:generate` | Generates the Prisma client. |
 | `npm run prisma:migrate` | Runs Prisma's development migration workflow. |
@@ -315,13 +318,23 @@ npm run build
 
 ### Create a release
 
-Run the release helper from a clean Git working tree. `M` increments the first version number (`1.2.3` → `2.0.0`), `R` increments the second (`1.2.3` → `1.3.0`), and `B` increments the third (`1.2.3` → `1.2.4`):
+Describe the release under `## Unreleased` in [`CHANGELOG.md`](CHANGELOG.md) first, then run the helper from a clean Git working tree. `M` increments the first version number (`1.2.3` → `2.0.0`), `R` increments the second (`1.2.3` → `1.3.0`), and `B` increments the third (`1.2.3` → `1.2.4`):
 
 ```powershell
 npm run release -- B
 ```
 
-The helper updates [`package.json`](package.json), [`package-lock.json`](package-lock.json), and the Discord `Running on vX.Y.Z` presence text, creates a `chore(release): vX.Y.Z` commit and matching `vX.Y.Z` Git tag, then pushes the current branch and tag to the GitHub `origin` remote. The push is not attempted if the worktree is dirty or `origin` is not hosted on GitHub.
+Use `npm run release -- R --dry-run` to see the resulting version and changelog entries without changing anything.
+
+Before touching the repository the helper checks that the worktree is clean (naming any file that is not), that `origin` is hosted on GitHub, that `HEAD` is on the default branch and not behind it, that the target tag is free locally and on `origin`, and that the changelog has entries to release. It then runs `npm test`, `npm run typecheck`, and `npm run build`.
+
+It renames the `## Unreleased` changelog section to `## X.Y.Z - YYYY-MM-DD` and opens an empty one above it, updates [`package.json`](package.json), [`package-lock.json`](package-lock.json), and the Discord `Running on vX.Y.Z` presence text, folds all of that into one `chore(release): vX.Y.Z` commit with a matching `vX.Y.Z` tag, then pushes the branch and tag to `origin`. If a step fails after the version bump, the helper prints the commands that undo the local commit and tag.
+
+| Option | Effect |
+| --- | --- |
+| `--dry-run` | Report the plan and stop before changing anything. |
+| `--skip-checks` | Do not run `npm test`, `npm run typecheck`, and `npm run build` first. |
+| `--allow-empty-changelog` | Release even with no entries under `## Unreleased`. |
 
 ## Troubleshooting
 

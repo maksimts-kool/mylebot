@@ -3,13 +3,18 @@ import {
   type ButtonInteraction, type ChatInputCommandInteraction, type ModalSubmitInteraction,
 } from "discord.js";
 import { userError } from "../../../../core/errors.js";
+import { BRAND_COLOR, SUCCESS_COLOR } from "../../../../shared/discord/colors.js";
 import { textInputRow } from "../../../../shared/discord/components.js";
 import { PermissionLevel } from "../../../../shared/permissions.js";
 import { assertDurationInvariant, formatDuration, totalsForPeriod } from "../../domain/accounting.js";
 import { recordedTimeMeetsSessionMinimum } from "../../domain/policy.js";
+import { sessionDetailEmbed, sessionOwner, statusIcon, statusLabel } from "../session-embed.js";
 import type { SessionCommandContext } from "./context.js";
 import { formatSessionDateTime, friendlyDuration, parseDuration, parseSessionDateTime } from "./format.js";
 import { replyHistory } from "./history.js";
+
+/** How many live sessions the roster lists before it stops and counts the rest. */
+const ACTIVE_ROSTER_LIMIT = 15;
 
 export async function showAdd(ctx: SessionCommandContext, interaction: ChatInputCommandInteraction): Promise<void> {
   const user = interaction.options.getUser("user", true);
@@ -30,7 +35,7 @@ export async function showManage(ctx: SessionCommandContext, interaction: ChatIn
   if (session.state !== "ENDED") userError("Live sessions cannot be managed");
   const totals = Number(session.activeMilliseconds) + Number(session.inactiveMilliseconds);
   if (!recordedTimeMeetsSessionMinimum(session.activeMilliseconds, session.inactiveMilliseconds)) userError("Session not found");
-  const embed = new EmbedBuilder().setTitle("🛠️ Manage completed session").setDescription(`Manage the completed session for **${session.identity.robloxUsername}**.`).addFields(
+  const embed = new EmbedBuilder().setColor(BRAND_COLOR).setTitle("🛠️ Manage completed session").setDescription(`Manage the completed session for **${session.identity.robloxUsername}**.`).addFields(
     { name: "👤 Staff", value: session.identity.discordUserId ? `<@${session.identity.discordUserId}>` : "No linked Discord user", inline: true },
     { name: "🗓️ When", value: `<t:${Math.floor(session.startedAt.getTime() / 1000)}:f> to <t:${Math.floor(session.endedAt!.getTime() / 1000)}:f>`, inline: false },
     { name: "⏱️ Recorded time", value: `${friendlyDuration(totals)} total · ${friendlyDuration(Number(session.activeMilliseconds))} active`, inline: false },
@@ -58,7 +63,11 @@ export async function showView(ctx: SessionCommandContext, interaction: ChatInpu
 
 export async function showActive(ctx: SessionCommandContext, interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const target = interaction.options.getUser("user") ?? interaction.user;
+  const target = interaction.options.getUser("user");
+  if (!target) {
+    await replyActiveRoster(ctx, interaction);
+    return;
+  }
   const isSelf = target.id === interaction.user.id;
   if (!isSelf) {
     await ctx.requirePermission(interaction, PermissionLevel.ADMIN, "Admin role required to view another member's active session");
@@ -75,25 +84,53 @@ export async function showActive(ctx: SessionCommandContext, interaction: ChatIn
   if (!identity) userError(isSelf ? "You have no active session right now" : "That member has no active session right now");
   const session = await ctx.db.session.findFirst({
     where: { identityId: identity.id, state: { not: "ENDED" }, deletedAt: null },
-    include: { segments: true },
+    include: { segments: true, identity: true },
     orderBy: { startedAt: "desc" },
   });
   if (!session) userError(isSelf ? "You have no active session right now" : `${identity.robloxUsername} has no active session right now`);
+  await interaction.editReply({ embeds: [sessionDetailEmbed(session)] });
+}
+
+/**
+ * Every session running right now. This is what `/session active` answers with
+ * when no member is named, so staff can see who is on shift at this moment.
+ */
+async function replyActiveRoster(ctx: SessionCommandContext, interaction: ChatInputCommandInteraction): Promise<void> {
   const now = new Date();
-  const totals = totalsForPeriod(session.segments, session.startedAt, now, now);
-  const state = session.state === "ACTIVE" ? "Active now" : session.state === "INACTIVE" ? "Inactive now" : "Waiting for reconnect";
-  const icon = session.state === "ACTIVE" ? "🟢" : session.state === "INACTIVE" ? "🟡" : "🔵";
-  const owner = identity.discordUserId ? `**${identity.robloxUsername}** · <@${identity.discordUserId}>` : `**${identity.robloxUsername}**`;
+  const sessions = await ctx.db.session.findMany({
+    where: { state: { not: "ENDED" }, deletedAt: null },
+    include: { identity: true, segments: true },
+    orderBy: { startedAt: "asc" },
+  });
+  const listed = sessions.slice(0, ACTIVE_ROSTER_LIMIT).map((session) => {
+    const totals = totalsForPeriod(session.segments, session.startedAt, now, now);
+    return [
+      `${statusIcon(session.state)} ${sessionOwner(session.identity)} — **${statusLabel(session.state)}**`,
+      `🗓️ Started <t:${Math.floor(session.startedAt.getTime() / 1000)}:R> · ⏱️ ${friendlyDuration(totals.totalMs)} total · ${friendlyDuration(totals.activeMs)} active`,
+    ].join("\n");
+  }).join("\n\n");
+  const remaining = sessions.length - Math.min(sessions.length, ACTIVE_ROSTER_LIMIT);
+  const description = sessions.length
+    ? `${listed}${remaining ? `\n\n…and ${remaining} more.` : ""}`
+    : "👥 Nobody is on shift right now.";
   const embed = new EmbedBuilder()
-    .setTitle(`${icon} ${state}`)
-    .setDescription(`👤 ${owner}`)
-    .addFields(
-      { name: "🗓️ Started", value: `<t:${Math.floor(session.startedAt.getTime() / 1000)}:R>`, inline: true },
-      { name: "🖥️ Server", value: `\`${session.jobId}\``, inline: true },
-      { name: "⏱️ Time so far", value: `${friendlyDuration(totals.totalMs)} total · ${friendlyDuration(totals.activeMs)} active · ${friendlyDuration(totals.inactiveMs)} inactive`, inline: false },
-      { name: "🆔 Session ID", value: `\`${session.id}\``, inline: false },
-    );
+    .setTitle("🟢 Active sessions")
+    .setDescription(description)
+    .setColor(BRAND_COLOR)
+    .setFooter({ text: `${sessions.length} live ${sessions.length === 1 ? "session" : "sessions"} · Name a member to see their full session` })
+    .setTimestamp(now);
   await interaction.editReply({ embeds: [embed] });
+}
+
+/**
+ * The "More info" button on a published session message: everything
+ * `/session active` would show for that one session, privately.
+ */
+export async function showSessionDetails(ctx: SessionCommandContext, interaction: ButtonInteraction, id: string): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const session = await ctx.db.session.findUnique({ where: { id }, include: { identity: true, segments: true } });
+  if (!session || session.deletedAt) userError("Session not found");
+  await interaction.editReply({ embeds: [sessionDetailEmbed(session)] });
 }
 
 export async function addSession(ctx: SessionCommandContext, interaction: ModalSubmitInteraction): Promise<void> {
@@ -127,7 +164,7 @@ export async function addSession(ctx: SessionCommandContext, interaction: ModalS
   });
   await ctx.publisher.refresh(session.id);
   await interaction.reply({
-    embeds: [new EmbedBuilder().setTitle("✅ Session added").setDescription(`A completed session was added for **${username}**.`).addFields(
+    embeds: [new EmbedBuilder().setColor(SUCCESS_COLOR).setTitle("✅ Session added").setDescription(`A completed session was added for **${username}**.`).addFields(
       { name: "🗓️ When", value: `<t:${Math.floor(start.getTime() / 1000)}:f> to <t:${Math.floor(end.getTime() / 1000)}:t>` },
       { name: "⏱️ Time recorded", value: `${friendlyDuration(active)} active · ${friendlyDuration(inactive)} inactive` },
       { name: "🆔 Session ID", value: `\`${session.id}\`` },
@@ -162,7 +199,7 @@ export async function editEnded(ctx: SessionCommandContext, interaction: ModalSu
   });
   await ctx.publisher.refresh(id);
   await interaction.reply({
-    embeds: [new EmbedBuilder().setTitle("✅ Session updated").setDescription("The completed session was updated successfully.").addFields({ name: "🆔 Session ID", value: `\`${id}\`` })],
+    embeds: [new EmbedBuilder().setColor(SUCCESS_COLOR).setTitle("✅ Session updated").setDescription("The completed session was updated successfully.").addFields({ name: "🆔 Session ID", value: `\`${id}\`` })],
     flags: MessageFlags.Ephemeral,
   });
 }

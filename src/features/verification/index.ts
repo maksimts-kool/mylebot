@@ -1,6 +1,7 @@
 import { verificationConfigured } from "../../core/config.js";
 import type { Feature, FeatureContext } from "../../core/feature.js";
-import { VerificationCommandHandler, verificationCommandData } from "./discord/commands.js";
+import { VerificationCommandHandler, verificationCommandData, verificationHelp } from "./discord/commands.js";
+import { verificationConfigSection } from "./discord/config-section.js";
 import { DiscordVerificationGateway } from "./discord/gateway.js";
 import { VERIFICATION_CHECK_INTERVAL_MS } from "./domain/policy.js";
 import { VerificationService } from "./service/verification-service.js";
@@ -19,6 +20,8 @@ export function createVerificationFeature(ctx: FeatureContext): Feature | null {
   return {
     name: "verification",
     commands: verificationCommandData,
+    help: verificationHelp,
+    configSections: [verificationConfigSection(ctx.config, service)],
     onReady: async () => { await service.run(); },
     jobs: [{
       name: "Discord verification reminder",

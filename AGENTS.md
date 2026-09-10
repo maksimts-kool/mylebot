@@ -25,7 +25,7 @@ Code belongs to exactly one of three layers:
 
 A feature declares its routes, slash commands, background jobs, and lifecycle hooks through the `Feature` object; [`src/index.ts`](src/index.ts) only composes them. When adding a feature:
 
-- Register it in [`src/index.ts`](src/index.ts) and in [`src/features/command-data.ts`](src/features/command-data.ts), which is what `scripts/deploy-commands.ts` deploys. Keep the two gated identically so a manual deploy cannot install a command the running bot ignores.
+- Register it in [`src/index.ts`](src/index.ts), and in [`src/features/command-data.ts`](src/features/command-data.ts) if it deploys a slash command of its own — that file is what `scripts/deploy-commands.ts` deploys. Keep the two gated identically so a manual deploy cannot install a command the running bot ignores. A feature that only has settings contributes a `ConfigSection` instead of a command, and adds nothing to `command-data.ts`.
 - Namespace every component `customId` with the feature name. Features share the `interactionCreate` event, so each handler must ignore interactions it does not own.
 - Return `null` from the factory when the feature is not configured, rather than half-registering it.
 - Features must not import from each other. Promote anything genuinely shared into `src/shared/`.
@@ -53,6 +53,8 @@ Useful entry points:
 | Runtime configuration | [`src/shared/runtime-settings.ts`](src/shared/runtime-settings.ts) | [`tests/shared/runtime-settings.test.ts`](tests/shared/runtime-settings.test.ts) |
 | Discord permissions | [`src/shared/permissions.ts`](src/shared/permissions.ts) | [`tests/sessions/commands.test.ts`](tests/sessions/commands.test.ts) |
 | Session commands | [`src/features/sessions/discord/commands/`](src/features/sessions/discord/commands/) | [`tests/sessions/commands.test.ts`](tests/sessions/commands.test.ts) |
+| `/config` panel and its sections | [`src/features/config/`](src/features/config/), [`src/shared/discord/config-section.ts`](src/shared/discord/config-section.ts) | [`tests/config/`](tests/config/) |
+| `/help` | [`src/features/help/`](src/features/help/), [`src/shared/discord/help.ts`](src/shared/discord/help.ts) | [`tests/help/`](tests/help/) |
 | Store-owners portal endpoints | [`src/features/portal/`](src/features/portal/) | [`tests/portal/site-notify.test.ts`](tests/portal/site-notify.test.ts) |
 | Taiga board integration | [`src/features/taiga/`](src/features/taiga/) | [`tests/taiga/`](tests/taiga/) |
 | Database model | [`prisma/schema.prisma`](prisma/schema.prisma), [`prisma/migrations/`](prisma/migrations/) | Service and API tests |
@@ -62,13 +64,12 @@ Useful entry points:
 
 ### Session lifecycle and accounting
 
-- The lifecycle is `ACTIVE` / `INACTIVE` -> `RECONNECTING` -> `ENDED`.
-- A valid join or heartbeat during the reconnect grace period resumes a reconnecting session as `ACTIVE` or `INACTIVE` rather than creating a new session.
-- A join or heartbeat after the reconnect deadline first closes the expired session at its deadline, then may create or update the next session.
-- Departures, shutdowns, and stale-heartbeat processing enter `RECONNECTING`; grace expiry ends the session.
-- For every transition: close the open segment, add elapsed time to the state being left, update the session, then open the next segment when appropriate.
-- Reconnecting time is retained for editing and wall-clock validation but excluded from report totals. Reports treat live sessions as ending at `endedAt ?? now`.
-- Manual session edits must preserve `active + inactive + reconnecting == endedAt - startedAt`.
+- The lifecycle is `ACTIVE` / `INACTIVE` -> `ENDED`. There is no reconnect grace period.
+- Departures and shutdowns end the session at the event's instant. Stale-heartbeat processing ends it at `lastEventAt + HEARTBEAT_STALE_SECONDS`. A later join starts a new session.
+- For every transition: close the open segment, add elapsed time to the state being left, update the session, then open the next segment. `ENDED` is terminal and opens no segment.
+- `RECONNECTING` stays in the database enum, and `reconnectMilliseconds` stays on `Session`, because historical rows use both. Nothing writes them any more; the sweep closes any row an older build left in that state. Reconnecting time is excluded from report totals but still needed for wall-clock validation when editing an old session.
+- Reports treat live sessions as ending at `endedAt ?? now`.
+- Manual session edits must preserve `active + inactive + reconnecting == endedAt - startedAt`, where `reconnecting` is whatever the stored row already carries.
 - Soft-deleted sessions must not participate in live-session queries or reports.
 
 ### Event processing and concurrency
@@ -76,7 +77,7 @@ Useful entry points:
 - Event UUIDs are idempotency keys. A processed UUID must never apply its event twice.
 - Process each batch in `lastEventAt` order so stale or reordered events cannot roll state backward.
 - Lifecycle writes belong in serializable transactions. Preserve bounded retries for Prisma `P2034` and `P2002` conflicts.
-- Stale-session and reconnect sweeps must re-check the state and timestamp/deadline they selected; do not overwrite a concurrent heartbeat or join.
+- The sweep must re-check the state and timestamp it selected before writing; do not overwrite a concurrent heartbeat or join.
 - PostgreSQL permits only one non-deleted live session per identity through the partial unique index in [`prisma/migrations/20260711000200_live_session_invariant/migration.sql`](prisma/migrations/20260711000200_live_session_invariant/migration.sql). Prisma cannot express this index, so it is intentionally absent from `schema.prisma`.
 
 ### Eligibility and destructive behavior
@@ -108,7 +109,9 @@ Useful entry points:
 
 ### Runtime settings and Discord
 
-- Discord logs-channel and role settings are configured through `/config` and stored in PostgreSQL; they do not have environment fallbacks. Taiga's channel settings work the same way through `/taiga`; only credentials and hosts come from the environment.
+- Every server setting is configured through `/config` and stored in PostgreSQL; none has an environment fallback. A feature contributes a settings page by returning a `ConfigSection` on `Feature.configSections`; `src/index.ts` collects those and passes them to the configuration feature, so features stay independent of one another. Only credentials and hosts come from the environment.
+- A section renders itself and applies its own component interactions. The panel owns the command, the manager check, navigation, and the acknowledgement. Namespace every section component with `config:<sectionId>:`, and keep a section to four action rows so the panel's navigation row fits.
+- `/help` is built the same way from `Feature.help`, so it can never list a command the bot does not answer.
 - Message intents are privileged and are requested only when Taiga is configured. Do not add them unconditionally — an unconfigured deployment would fail to log in.
 - Discord access is cumulative. Guild administrators have manager access; otherwise take the maximum permission level from database roles.
 - Slash-command definitions synchronize at startup. When command shapes change, keep startup synchronization, [`scripts/deploy-commands.ts`](scripts/deploy-commands.ts), tests, and README documentation aligned.

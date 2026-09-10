@@ -6,6 +6,8 @@ import { errorType } from "./core/errors.js";
 import type { Feature, FeatureContext } from "./core/feature.js";
 import { buildHttpServer } from "./core/http.js";
 import { Scheduler } from "./core/scheduler.js";
+import { createConfigFeature } from "./features/config/index.js";
+import { createHelpFeature } from "./features/help/index.js";
 import { createPortalFeature } from "./features/portal/index.js";
 import { createSessionsFeature } from "./features/sessions/index.js";
 import { createTaigaFeature } from "./features/taiga/index.js";
@@ -26,12 +28,22 @@ const ctx: FeatureContext = {
   bloxlink: new BloxlinkService(prisma, config),
 };
 
-const features: Feature[] = [
+const composed: Feature[] = [
   createSessionsFeature(ctx),
   createPortalFeature(ctx),
   createTaigaFeature(ctx),
   createVerificationFeature(ctx),
 ].filter((feature): feature is Feature => feature !== null);
+
+// `/config` and `/help` describe the rest of the bot, so they are built last
+// from what the other features actually declared. Features stay independent of
+// one another; only this file knows the whole set.
+const configFeature = createConfigFeature(ctx, composed.flatMap((feature) => feature.configSections ?? []));
+const features: Feature[] = [
+  ...composed,
+  configFeature,
+  createHelpFeature(ctx, [...composed, configFeature].flatMap((feature) => feature.help ?? [])),
+];
 
 for (const feature of features) {
   if (feature.routes) await app.register(feature.routes);

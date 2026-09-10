@@ -98,6 +98,79 @@ describe("ingestion validation", () => {
     });
   });
 
+  it("ends a session on departure instead of waiting for a reconnect", async () => {
+    const now = new Date();
+    const startedAt = new Date(now.getTime() - 600_000);
+    const existing = {
+      id: "session-1", identityId: "identity-1", state: "ACTIVE", jobId: "job",
+      startedAt, lastEventAt: new Date(now.getTime() - 30_000),
+      lastStateAt: new Date(now.getTime() - 30_000), reconnectDeadline: null,
+    };
+    const transaction = {
+      processedEvent: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn() },
+      identity: { upsert: vi.fn().mockResolvedValue({ id: "identity-1" }) },
+      session: { findFirst: vi.fn().mockResolvedValue(existing), update: vi.fn().mockResolvedValue({ ...existing, state: "ENDED" }) },
+      timeSegment: { updateMany: vi.fn(), create: vi.fn() },
+    };
+    const db = { $transaction: vi.fn(async (operation) => operation(transaction)) };
+    const leaving = new SessionService(db as never, config);
+
+    await expect(leaving.process({
+      ...base, eventId: "3f5c2d19-8a41-4f8e-9c07-6b2d5a1e4c33", kind: "LEAVE", occurredAt: now.toISOString(),
+    })).resolves.toMatchObject({ status: "accepted", sessionId: "session-1", changed: true });
+
+    // The open segment is closed and no follow-up segment is opened, because
+    // there is no reconnecting state left to account for.
+    expect(transaction.timeSegment.updateMany).toHaveBeenCalledWith({ where: { sessionId: "session-1", endedAt: null }, data: { endedAt: now } });
+    expect(transaction.timeSegment.create).not.toHaveBeenCalled();
+    expect(transaction.session.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "session-1" },
+      data: expect.objectContaining({ state: "ENDED", endedAt: now, reconnectDeadline: null }),
+    }));
+  });
+
+  it("ends a stale session at the instant its heartbeats stopped", async () => {
+    const stale = {
+      id: "session-1", state: "ACTIVE", lastEventAt: new Date("2026-01-01T00:00:00Z"),
+      lastStateAt: new Date("2026-01-01T00:00:00Z"), reconnectDeadline: null,
+    };
+    const transaction = {
+      session: { findFirst: vi.fn().mockResolvedValue(stale), update: vi.fn().mockResolvedValue(stale) },
+      timeSegment: { updateMany: vi.fn(), create: vi.fn() },
+    };
+    const db = {
+      session: { findMany: vi.fn().mockResolvedValueOnce([stale]).mockResolvedValueOnce([]) },
+      $transaction: vi.fn(async (operation) => operation(transaction)),
+    };
+    const sweeping = new SessionService(db as never, config);
+
+    await expect(sweeping.sweep(new Date("2026-01-01T01:00:00Z"))).resolves.toEqual(["session-1"]);
+    expect(transaction.session.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ state: "ENDED", endedAt: new Date("2026-01-01T00:01:15Z") }),
+    }));
+  });
+
+  it("closes a session an older build left waiting to reconnect", async () => {
+    const stuck = {
+      id: "session-1", state: "RECONNECTING", lastEventAt: new Date("2026-01-01T00:00:00Z"),
+      lastStateAt: new Date("2026-01-01T00:02:00Z"), reconnectDeadline: new Date("2026-01-01T00:04:00Z"),
+    };
+    const transaction = {
+      session: { findFirst: vi.fn().mockResolvedValue(stuck), update: vi.fn().mockResolvedValue(stuck) },
+      timeSegment: { updateMany: vi.fn(), create: vi.fn() },
+    };
+    const db = {
+      session: { findMany: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([stuck]) },
+      $transaction: vi.fn(async (operation) => operation(transaction)),
+    };
+    const sweeping = new SessionService(db as never, config);
+
+    await expect(sweeping.sweep(new Date("2026-01-01T01:00:00Z"))).resolves.toEqual(["session-1"]);
+    expect(transaction.session.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ state: "ENDED", endedAt: stuck.lastStateAt }),
+    }));
+  });
+
   it("only sweeps a stale session when its state and timestamp still match", async () => {
     const stale = {
       id: "session-1", state: "ACTIVE", lastEventAt: new Date("2026-01-01T00:00:00Z"),

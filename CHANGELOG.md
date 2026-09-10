@@ -5,6 +5,15 @@ All notable changes are recorded here.
 ## Unreleased
 
 - Moved clickable verification member names from embed field titles into field values, where Discord renders Markdown links instead of showing their bracket syntax literally.
+- Merged every server setting into one `/config` panel with a page per feature, and removed the separate `/taiga` command. Features now contribute settings pages through the `Feature.configSections` contract.
+- Added a full role permission editor to `/config`: roles listed by the level they grant, with granting, changing, and revoking per role.
+- Added `/help`, built from the features actually composed, marking which commands the caller's roles allow.
+- Made `/session active` list every session running right now when no member is named; naming a member still shows that session in full.
+- Rebuilt the published session message: the member is mentioned outside the embed, the embed announces the shift compactly, and a `More info` button replies privately with the full breakdown. The same message is still edited in place until the shift ends.
+- Renamed the completed session message's `Last time played` field to `Previous session`.
+- Replaced the grey embed colour on leaderboards, histories, and finished sessions with the server's main colour.
+- Removed the reconnect grace period. A departure, shutdown, or stale heartbeat now ends the session at that instant, and a later join starts a new one. `RECONNECT_GRACE_SECONDS` is gone; sessions an older build left reconnecting are closed by the sweep.
+- Made the release helper verify the branch, remote, tag, and changelog before cutting a release, run the test suite first, promote the `Unreleased` changelog section into the new version, and print recovery commands when a step fails after the version bump. Added `--dry-run`, `--skip-checks`, and `--allow-empty-changelog`.
 
 ## 0.13.3 - 2026-08-22
 
