@@ -56,6 +56,7 @@ model Session {
   updatedAt             DateTime     @updatedAt
   segments              TimeSegment[]
   discordMessage        DiscordMessage?
+  announcement          SessionAnnouncement?
   auditEntries          AuditEntry[]
 
   @@index([identityId, startedAt])
@@ -84,9 +85,23 @@ model DiscordMessage {
   updatedAt DateTime @updatedAt
 }
 
+/// One announcement message per session in the staff chat channel, kept apart
+/// from the session-log message so the two channels are independent.
+model SessionAnnouncement {
+  id        String   @id @default(cuid())
+  sessionId String   @unique
+  session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  channelId String
+  messageId String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model RuntimeSettings {
   id              String   @id
   logsChannelId   String?
+  /// Staff chat channel the bot announces shifts in. Empty disables announcements.
+  staffChannelId  String?
   trackingEnabled Boolean  @default(true)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt

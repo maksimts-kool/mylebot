@@ -145,15 +145,16 @@ export class SessionService {
     const removedMessages = await this.db.$transaction(async (tx) => {
       const identity = await tx.identity.findUnique({
         where: { robloxUserId: event.player.userId },
-        include: { sessions: { include: { discordMessage: true } } },
+        include: { sessions: { include: { discordMessage: true, announcement: true } } },
       });
       if (!identity) return [];
 
       const sessionIds = identity.sessions.map(({ id }) => id);
-      const messages = identity.sessions.flatMap(({ discordMessage }) => discordMessage ? [{
-        channelId: discordMessage.channelId,
-        messageId: discordMessage.messageId,
-      }] : []);
+      // Both the session log and the staff announcement have to come down; the
+      // rows themselves are removed by the cascade on the session delete.
+      const messages = identity.sessions.flatMap(({ discordMessage, announcement }) => [discordMessage, announcement]
+        .filter((message) => message !== null)
+        .map(({ channelId, messageId }) => ({ channelId, messageId })));
       if (sessionIds.length) {
         await tx.auditEntry.deleteMany({ where: { sessionId: { in: sessionIds } } });
         await tx.processedEvent.deleteMany({ where: { sessionId: { in: sessionIds } } });
@@ -253,13 +254,15 @@ export class SessionService {
           activeMilliseconds: true,
           inactiveMilliseconds: true,
           discordMessage: { select: { channelId: true, messageId: true } },
+          announcement: { select: { channelId: true, messageId: true } },
         },
       });
       const expired = completed.filter((session) =>
         (session.endedAt !== null && session.endedAt < retentionCutoff)
         || !recordedTimeMeetsSessionMinimum(session.activeMilliseconds, session.inactiveMilliseconds));
       const sessionIds = expired.map(({ id }) => id);
-      const removedMessages = expired.flatMap(({ discordMessage }) => discordMessage ? [discordMessage] : []);
+      const removedMessages = expired.flatMap(({ discordMessage, announcement }) => [discordMessage, announcement]
+        .filter((message) => message !== null));
 
       let removedSessionCount = 0;
       if (sessionIds.length) {

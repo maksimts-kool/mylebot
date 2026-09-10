@@ -46,8 +46,12 @@ describe("ingestion validation", () => {
         findUnique: vi.fn().mockResolvedValue({
           id: "identity-1",
           sessions: [
-            { id: "session-1", discordMessage: { channelId: "channel-1", messageId: "message-1" } },
-            { id: "session-2", discordMessage: null },
+            {
+              id: "session-1",
+              discordMessage: { channelId: "channel-1", messageId: "message-1" },
+              announcement: { channelId: "staff-1", messageId: "announcement-1" },
+            },
+            { id: "session-2", discordMessage: null, announcement: null },
           ],
         }),
         delete: vi.fn(),
@@ -62,7 +66,10 @@ describe("ingestion validation", () => {
     await expect(lowRank.process({ ...base, player: { ...base.player, rankNumber: 9 } })).resolves.toEqual({
       eventId: base.eventId,
       status: "removed_low_rank",
-      removedMessages: [{ channelId: "channel-1", messageId: "message-1" }],
+      removedMessages: [
+        { channelId: "channel-1", messageId: "message-1" },
+        { channelId: "staff-1", messageId: "announcement-1" },
+      ],
       changed: false,
     });
     expect(transaction.auditEntry.deleteMany).toHaveBeenCalledWith({ where: { sessionId: { in: ["session-1", "session-2"] } } });
@@ -208,9 +215,9 @@ describe("ingestion validation", () => {
     const transaction = {
       session: {
         findMany: vi.fn().mockResolvedValue([
-          { id: "old", endedAt: new Date("2025-01-31T23:59:59Z"), activeMilliseconds: 60_000n, inactiveMilliseconds: 0n, discordMessage: { channelId: "channel", messageId: "old-message" } },
-          { id: "short", endedAt: new Date("2026-01-15T00:00:00Z"), activeMilliseconds: 30_000n, inactiveMilliseconds: 20_000n, discordMessage: null },
-          { id: "kept", endedAt: new Date("2026-01-15T00:00:00Z"), activeMilliseconds: 60_000n, inactiveMilliseconds: 0n, discordMessage: null },
+          { id: "old", endedAt: new Date("2025-01-31T23:59:59Z"), activeMilliseconds: 60_000n, inactiveMilliseconds: 0n, discordMessage: { channelId: "channel", messageId: "old-message" }, announcement: { channelId: "staff", messageId: "old-announcement" } },
+          { id: "short", endedAt: new Date("2026-01-15T00:00:00Z"), activeMilliseconds: 30_000n, inactiveMilliseconds: 20_000n, discordMessage: null, announcement: null },
+          { id: "kept", endedAt: new Date("2026-01-15T00:00:00Z"), activeMilliseconds: 60_000n, inactiveMilliseconds: 0n, discordMessage: null, announcement: null },
         ]),
         deleteMany: vi.fn().mockResolvedValue({ count: 2 }),
       },
@@ -224,7 +231,10 @@ describe("ingestion validation", () => {
     await expect(cleanup.cleanupSessionData(new Date("2026-02-01T00:00:00Z"))).resolves.toEqual({
       removedSessionCount: 2,
       removedIdentityCount: 1,
-      removedMessages: [{ channelId: "channel", messageId: "old-message" }],
+      removedMessages: [
+        { channelId: "channel", messageId: "old-message" },
+        { channelId: "staff", messageId: "old-announcement" },
+      ],
     });
     expect(transaction.auditEntry.deleteMany).toHaveBeenCalledWith({ where: { sessionId: { in: ["old", "short"] } } });
     expect(transaction.processedEvent.deleteMany).toHaveBeenCalledWith({ where: { sessionId: { in: ["old", "short"] } } });

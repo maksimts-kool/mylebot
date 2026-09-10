@@ -7,7 +7,8 @@ A Node.js service that records eligible Roblox group members' play sessions in P
 - Tracks active, inactive, and completed Roblox sessions across places in one universe.
 - Accepts authenticated, batched Roblox events with payload validation, rate limiting, event-age checks, ordering, and idempotency.
 - Persists identities, sessions, time segments, processed events, runtime settings, Discord message references, and audit records in PostgreSQL through Prisma.
-- Publishes one Discord message per shift — the member mentioned outside the embed, a **More info** button for the full breakdown — and edits that same message until the shift ends.
+- Publishes and periodically refreshes the full session-log message in Discord.
+- Announces each shift in the staff chat channel with one short message that mentions the member outside the embed and carries a **More info** button, then edits that same message when the shift ends.
 - Provides session history, manual session administration, and timezone-aware leaderboards.
 - Resolves Roblox and Discord identities through Bloxlink when an API key is configured.
 - Mirrors the Discord bug-report and suggestion forums onto a Taiga kanban board, keeping post tags in step with the board and announcing every change.
@@ -81,7 +82,9 @@ Comma-separated ID settings must not contain surrounding quotes. Roblox IDs are 
 | `BLOXLINK_API_KEY` | Optional Bloxlink API key. Without it, uncached Discord↔Roblox mappings cannot be resolved. |
 | `BLOXLINK_BASE_URL` | Bloxlink API base URL; normally leave the default unchanged. |
 
-The Discord server owner or another member with Discord's Administrator permission performs initial setup through `/config`. That one panel holds every server setting: session tracking and the logs channel, role permissions, the Taiga board integration, and the verification cycle. Pick a page from the menu at the bottom of the panel. These settings are stored in PostgreSQL; the logs channel and role assignments are not configured through environment variables.
+The Discord server owner or another member with Discord's Administrator permission performs initial setup through `/config`. That one panel holds every server setting: session tracking, the session logs channel, the staff chat channel, role permissions, the Taiga board integration, and the verification cycle. Pick a page from the menu at the bottom of the panel. These settings are stored in PostgreSQL; channels and role assignments are not configured through environment variables.
+
+The two session channels are separate and independent. The **logs channel** keeps the complete record of every shift, refreshed while it runs. The **staff chat channel** gets one short announcement per shift that mentions the member and is edited when they finish; its **More info** button privately shows what `/session active` would. Leaving the staff chat channel unset switches announcements off without affecting the logs.
 
 The role permissions page is a full editor: choose a role to grant or change staff, admin, or manager access, or revoke a role's access from the second menu. Access is cumulative, so a member gets the highest level of any role they hold, and anyone with Discord's Administrator permission always counts as a manager.
 

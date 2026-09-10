@@ -115,6 +115,8 @@ Useful entry points:
 - Message intents are privileged and are requested only when Taiga is configured. Do not add them unconditionally — an unconfigured deployment would fail to log in.
 - Discord access is cumulative. Guild administrators have manager access; otherwise take the maximum permission level from database roles.
 - Slash-command definitions synchronize at startup. When command shapes change, keep startup synchronization, [`scripts/deploy-commands.ts`](scripts/deploy-commands.ts), tests, and README documentation aligned.
+- A session owns two independent Discord messages: the full record in the logs channel (`DiscordMessage`) and the short staff-chat announcement (`SessionAnnouncement`). Either channel may be unset. The announcement is written once when the shift starts and again when it ends or is removed — never on the periodic refresh — so live sessions are not edited every minute.
+- Anything that removes a session's data must take both messages down: the sub-minute check in the publisher, the low-rank purge, and the retention cleanup.
 - Discord publication failures must not become session state authority or corrupt persisted lifecycle state.
 
 ## Implementation conventions

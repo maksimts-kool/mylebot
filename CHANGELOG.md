@@ -4,7 +4,8 @@ All notable changes are recorded here.
 
 ## Unreleased
 
-_Nothing yet._
+- Restored the session-log message to its full record after v0.14.0 shortened it, and moved the shift announcement to its own message in a separately configured staff chat channel. The announcement mentions the member outside the embed, carries the `More info` button, and is edited in place when the shift ends.
+- Added the staff chat channel to the session tracking page of `/config`. Leaving it unset switches announcements off without affecting the session logs.
 
 ## 0.14.0 - 2026-09-10
 
