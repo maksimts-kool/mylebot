@@ -3,9 +3,19 @@ import type { Config } from "../../../core/config.js";
 import type { Db } from "../../../core/db.js";
 import type { RuntimeSettingsService } from "../../../shared/runtime-settings.js";
 import type { PresenceEvent } from "../domain/events.js";
-import { recordedTimeMeetsSessionMinimum, sessionRetentionCutoff } from "../domain/policy.js";
+import { announcementRetentionCutoff, recordedTimeMeetsSessionMinimum, sessionRetentionCutoff } from "../domain/policy.js";
 
 export type DiscordMessageReference = { channelId: string; messageId: string };
+
+/** A staff-chat announcement that is due to be taken down. */
+export type ExpiredAnnouncement = DiscordMessageReference & { id: string };
+
+/**
+ * How many announcements one cleanup pass takes down. Each removal is its own
+ * Discord call, so a backlog — the first run after this retention was
+ * introduced, say — is cleared over several passes instead of one long job.
+ */
+export const ANNOUNCEMENT_CLEANUP_BATCH = 100;
 
 export type SessionDataCleanupResult = {
   removedSessionCount: number;
@@ -241,6 +251,35 @@ export class SessionService {
     const receivedBefore = new Date(now.getTime() - this.config.PROCESSED_EVENT_RETENTION_DAYS * 86_400_000);
     const result = await this.db.processedEvent.deleteMany({ where: { receivedAt: { lt: receivedBefore } } });
     return result.count;
+  }
+
+  /**
+   * The staff-chat announcements whose shift settled long enough ago that they
+   * should come down. This only reads: the caller takes the messages down and
+   * then calls `forgetAnnouncements`, so a failed removal is retried on the
+   * next pass instead of leaving a message nobody owns any more.
+   */
+  async expiredAnnouncements(now = new Date(), take = ANNOUNCEMENT_CLEANUP_BATCH): Promise<ExpiredAnnouncement[]> {
+    const cutoff = announcementRetentionCutoff(now);
+    return this.db.sessionAnnouncement.findMany({
+      take,
+      where: {
+        session: {
+          OR: [
+            { endedAt: { lte: cutoff } },
+            { endedAt: null, deletedAt: { lte: cutoff } },
+          ],
+        },
+      },
+      select: { id: true, channelId: true, messageId: true },
+    });
+  }
+
+  /** Drops the announcement rows whose messages have been taken down. */
+  async forgetAnnouncements(ids: string[]): Promise<number> {
+    if (!ids.length) return 0;
+    const removed = await this.db.sessionAnnouncement.deleteMany({ where: { id: { in: ids } } });
+    return removed.count;
   }
 
   async cleanupSessionData(now = new Date()): Promise<SessionDataCleanupResult> {

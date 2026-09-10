@@ -1,17 +1,21 @@
-import {
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, RoleSelectMenuBuilder, StringSelectMenuBuilder,
-  type Client, type MessageActionRowComponentBuilder,
-} from "discord.js";
+import { ButtonStyle, type Client } from "discord.js";
 import type { Db } from "../../../core/db.js";
 import { userError } from "../../../core/errors.js";
-import { BRAND_COLOR } from "../../../shared/discord/colors.js";
-import { configCustomId, type ConfigComponentInteraction, type ConfigRow, type ConfigSection, type ConfigView } from "../../../shared/discord/config-section.js";
+import {
+  actionButton, backButton, configPage, configRow, field, note, optionSelect, roleSelect, selectedValue,
+  type ConfigSectionMeta,
+} from "../../../shared/discord/config-presets.js";
+import type { ConfigComponentInteraction, ConfigRow, ConfigSection, ConfigView } from "../../../shared/discord/config-section.js";
 import { PermissionLevel, permissionLabel } from "../../../shared/permissions.js";
 
-const ID = "permissions";
+const META: ConfigSectionMeta = {
+  id: "permissions",
+  label: "Role permissions",
+  emoji: "🔑",
+  description: "Grant, change, and revoke staff, admin, and manager access per role.",
+};
 
-/** Discord allows 25 options in a select menu. */
-const REMOVABLE_LIMIT = 25;
+const ACTIONS = { role: "role", revoke: "revoke", level: "level", back: "back" } as const;
 
 const ASSIGNABLE_LEVELS = [PermissionLevel.STAFF, PermissionLevel.ADMIN, PermissionLevel.MANAGER] as const;
 
@@ -26,7 +30,7 @@ const LEVEL_SUMMARY: Record<number, string> = {
  * custom id format stays covered by a test.
  */
 export function parsePermissionAction(action: string): { roleId: string; choice: string } | null {
-  const prefix = "level:";
+  const prefix = `${ACTIONS.level}:`;
   if (!action.startsWith(prefix)) return null;
   const [roleId, choice] = action.slice(prefix.length).split(":");
   return roleId && choice ? { roleId, choice } : null;
@@ -43,82 +47,56 @@ export function permissionsSection(db: Db, client: Client, guildId: string): Con
 
   async function view(): Promise<ConfigView> {
     const roles = await db.permissionRole.findMany({ orderBy: [{ level: "desc" }, { createdAt: "asc" }] });
-    const byLevel = [...ASSIGNABLE_LEVELS].reverse().map((level) => {
-      const members = roles.filter((role) => role.level === level);
-      return {
-        name: `${permissionLabel(level)} — ${members.length} ${members.length === 1 ? "role" : "roles"}`,
-        value: members.length
-          ? members.map(({ roleId }) => `<@&${roleId}>`).join(" ")
-          : "_No roles_",
-        inline: false,
-      };
-    });
-    const embed = new EmbedBuilder()
-      .setTitle("🔑 Role permissions")
-      .setDescription([
+    const rows: ConfigRow[] = [roleSelect(META, ACTIONS.role, "Add or change a role's access")];
+    if (roles.length) {
+      rows.push(optionSelect(META, ACTIONS.revoke, "Remove a role's access", roles.map((role) => ({
+        label: roleName(role.roleId),
+        description: `Currently ${permissionLabel(role.level)}`,
+        value: role.roleId,
+      }))));
+    }
+    return configPage(META, {
+      summary: [
         "Access is cumulative: a member gets the highest level of any role they hold, and anyone with Discord's Administrator permission always counts as a manager.",
         "",
         ...ASSIGNABLE_LEVELS.map((level) => `**${permissionLabel(level)}** — ${LEVEL_SUMMARY[level]}`),
-      ].join("\n"))
-      .setColor(BRAND_COLOR)
-      .addFields(byLevel);
-
-    const components: ConfigRow[] = [
-      new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(
-        new RoleSelectMenuBuilder().setCustomId(configCustomId(ID, "role")).setPlaceholder("Add or change a role's access"),
-      ),
-    ];
-    if (roles.length) {
-      components.push(new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(
-        new StringSelectMenuBuilder()
-          .setCustomId(configCustomId(ID, "revoke"))
-          .setPlaceholder("Remove a role's access")
-          .addOptions(roles.slice(0, REMOVABLE_LIMIT).map((role) => ({
-            label: roleName(role.roleId).slice(0, 100),
-            description: `Currently ${permissionLabel(role.level)}`,
-            value: role.roleId,
-          }))),
-      ));
-    }
-    return { embeds: [embed], components };
+      ],
+      fields: [...ASSIGNABLE_LEVELS].reverse().map((level) => {
+        const members = roles.filter((role) => role.level === level);
+        return note(
+          `${permissionLabel(level)} — ${members.length} ${members.length === 1 ? "role" : "roles"}`,
+          members.length ? members.map(({ roleId }) => `<@&${roleId}>`).join(" ") : "_No roles_",
+        );
+      }),
+      rows,
+    });
   }
 
   async function levelView(roleId: string): Promise<ConfigView> {
     const current = await db.permissionRole.findUnique({ where: { roleId } });
-    const embed = new EmbedBuilder()
-      .setTitle("🔑 Role permissions")
-      .setDescription(`Choose the access level for <@&${roleId}>.`)
-      .setColor(BRAND_COLOR)
-      .addFields(
-        { name: "Current access", value: current ? permissionLabel(current.level) : "None", inline: true },
-        ...ASSIGNABLE_LEVELS.map((level) => ({ name: permissionLabel(level), value: LEVEL_SUMMARY[level] ?? "", inline: false })),
-      );
-    const row = new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(
-      ...ASSIGNABLE_LEVELS.map((level) => new ButtonBuilder()
-        .setCustomId(configCustomId(ID, `level:${roleId}:${level}`))
-        .setLabel(permissionLabel(level))
-        .setStyle(level === PermissionLevel.MANAGER ? ButtonStyle.Success : level === PermissionLevel.ADMIN ? ButtonStyle.Primary : ButtonStyle.Secondary)
-        .setDisabled(current?.level === level)),
-      new ButtonBuilder()
-        .setCustomId(configCustomId(ID, `level:${roleId}:remove`))
-        .setLabel("Remove")
-        .setStyle(ButtonStyle.Danger)
-        .setDisabled(!current),
-      new ButtonBuilder().setCustomId(configCustomId(ID, "back")).setLabel("Back").setStyle(ButtonStyle.Secondary),
-    );
-    return { embeds: [embed], components: [row] };
+    return configPage(META, {
+      summary: `Choose the access level for <@&${roleId}>.`,
+      fields: [
+        field("Current access", current ? permissionLabel(current.level) : "None"),
+        ...ASSIGNABLE_LEVELS.map((level) => note(permissionLabel(level), LEVEL_SUMMARY[level] ?? "")),
+      ],
+      rows: [configRow(
+        ...ASSIGNABLE_LEVELS.map((level) => actionButton(META, `${ACTIONS.level}:${roleId}:${level}`, permissionLabel(level), {
+          style: level === PermissionLevel.MANAGER ? ButtonStyle.Success : level === PermissionLevel.ADMIN ? ButtonStyle.Primary : ButtonStyle.Secondary,
+          disabled: current?.level === level,
+        })),
+        actionButton(META, `${ACTIONS.level}:${roleId}:remove`, "Remove", { style: ButtonStyle.Danger, disabled: !current }),
+        backButton(META, ACTIONS.back),
+      )],
+    });
   }
 
   async function apply(interaction: ConfigComponentInteraction, action: string): Promise<ConfigView | null> {
-    if (action === "role" && interaction.isRoleSelectMenu()) {
-      const roleId = interaction.values[0];
-      if (!roleId) userError("Choose a role");
-      return levelView(roleId);
+    if (action === ACTIONS.role && interaction.isRoleSelectMenu()) {
+      return levelView(selectedValue(interaction, "Choose a role"));
     }
-    if (action === "revoke" && interaction.isStringSelectMenu()) {
-      const roleId = interaction.values[0];
-      if (!roleId) userError("Choose a role");
-      await db.permissionRole.deleteMany({ where: { roleId } });
+    if (action === ACTIONS.revoke && interaction.isStringSelectMenu()) {
+      await db.permissionRole.deleteMany({ where: { roleId: selectedValue(interaction, "Choose a role") } });
       return null;
     }
     const selection = parsePermissionAction(action);
@@ -136,12 +114,5 @@ export function permissionsSection(db: Db, client: Client, guildId: string): Con
     return null;
   }
 
-  return {
-    id: ID,
-    label: "Role permissions",
-    emoji: "🔑",
-    description: "Grant, change, and revoke staff, admin, and manager access per role.",
-    view,
-    apply,
-  };
+  return { ...META, view, apply };
 }

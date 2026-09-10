@@ -8,7 +8,7 @@ A Node.js service that records eligible Roblox group members' play sessions in P
 - Accepts authenticated, batched Roblox events with payload validation, rate limiting, event-age checks, ordering, and idempotency.
 - Persists identities, sessions, time segments, processed events, runtime settings, Discord message references, and audit records in PostgreSQL through Prisma.
 - Publishes and periodically refreshes the full session-log message in Discord.
-- Announces each shift in the staff chat channel with one short message that mentions the member outside the embed and carries a **More info** button, then edits that same message when the shift ends.
+- Announces each shift in the staff chat channel with one short message that mentions the member outside the embed and carries a **More info** button, edits that same message when the shift ends, and takes it down five minutes later so the channel does not fill up with finished shifts.
 - Provides session history, manual session administration, and timezone-aware leaderboards.
 - Resolves Roblox and Discord identities through Bloxlink when an API key is configured.
 - Mirrors the Discord bug-report and suggestion forums onto a Taiga kanban board, keeping post tags in step with the board and announcing every change.
@@ -30,7 +30,7 @@ The code is organised as feature modules. Each feature owns its HTTP routes, sla
 - [`src/features/sessions/`](src/features/sessions/): Roblox session tracking — [ingestion route](src/features/sessions/api/routes.ts), [lifecycle service](src/features/sessions/service/session-service.ts), [Discord publisher](src/features/sessions/discord/publisher.ts), and [commands](src/features/sessions/discord/commands/).
 - [`src/features/portal/`](src/features/portal/): the store-owners portal's internal endpoints.
 - [`src/features/taiga/`](src/features/taiga/): the Taiga board integration.
-- [`src/features/config/`](src/features/config/): the `/config` panel. Features contribute their own settings pages through `Feature.configSections`.
+- [`src/features/config/`](src/features/config/): the `/config` panel. Features contribute their own settings pages through `Feature.configSections`, built from the shared presets in [`src/shared/discord/config-presets.ts`](src/shared/discord/config-presets.ts) so every page looks the same.
 - [`src/features/help/`](src/features/help/): `/help`, built from the `Feature.help` sections of everything actually composed.
 - [`prisma/schema.prisma`](prisma/schema.prisma): PostgreSQL data model.
 - [`roblox/`](roblox/): Roblox server and client sender package.
@@ -84,7 +84,7 @@ Comma-separated ID settings must not contain surrounding quotes. Roblox IDs are 
 
 The Discord server owner or another member with Discord's Administrator permission performs initial setup through `/config`. That one panel holds every server setting: session tracking, the session logs channel, the staff chat channel, role permissions, the Taiga board integration, and the verification cycle. Pick a page from the menu at the bottom of the panel. These settings are stored in PostgreSQL; channels and role assignments are not configured through environment variables.
 
-The two session channels are separate and independent. The **logs channel** keeps the complete record of every shift, refreshed while it runs. The **staff chat channel** gets one short announcement per shift that mentions the member and is edited when they finish; its **More info** button privately shows what `/session active` would. Leaving the staff chat channel unset switches announcements off without affecting the logs.
+The two session channels are separate and independent. The **logs channel** keeps the complete record of every shift, refreshed while it runs. The **staff chat channel** gets one short announcement per shift that mentions the member and is edited when they finish; its **More info** button privately shows what `/session active` would. That announcement is a notification rather than a record, so it is deleted five minutes after the shift settles — the permanent copy stays in the logs channel. Leaving the staff chat channel unset switches announcements off without affecting the logs.
 
 The role permissions page is a full editor: choose a role to grant or change staff, admin, or manager access, or revoke a role's access from the second menu. Access is cumulative, so a member gets the highest level of any role they hold, and anyone with Discord's Administrator permission always counts as a manager.
 

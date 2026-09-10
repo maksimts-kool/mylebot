@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildAnnouncementActionRow, buildSessionActionRow, DiscordPublisher } from "../../src/features/sessions/discord/publisher.js";
 
 function labelsOf(row: ReturnType<typeof buildSessionActionRow>): string[] {
@@ -19,6 +19,33 @@ function labelsFor(state: "ACTIVE" | "ENDED"): string[] {
 }
 
 const startedAt = new Date("2026-01-01T00:00:00Z");
+const endedAt = new Date("2026-01-01T02:00:00Z");
+
+/**
+ * Announcement retention is measured against the wall clock, so these fixtures
+ * only mean anything relative to a pinned "now". Only `Date` is faked; the
+ * publisher's own awaits stay real.
+ */
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-01-01T02:00:30Z"));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+/** A shift that finished at `endedAt`, with the announcement it already owns. */
+function endedSession(overrides: Record<string, unknown> = {}) {
+  return liveSession({
+    state: "ENDED",
+    endedAt,
+    lastEventAt: endedAt,
+    segments: [{ state: "ACTIVE", startedAt, endedAt }],
+    announcement: { channelId: "staff", messageId: "announcement-1" },
+    ...overrides,
+  });
+}
 
 function liveSession(overrides: Record<string, unknown> = {}) {
   return {
@@ -159,14 +186,7 @@ describe("staff chat announcement", () => {
   });
 
   it("edits the same message when the shift ends", async () => {
-    const endedAt = new Date("2026-01-01T02:00:00Z");
-    const session = liveSession({
-      state: "ENDED",
-      endedAt,
-      lastEventAt: endedAt,
-      segments: [{ state: "ACTIVE", startedAt, endedAt }],
-      announcement: { channelId: "staff", messageId: "announcement-1" },
-    });
+    const session = endedSession();
     const { publisher, db, channels, editsTo } = publisherFor(session, { staffChannelId: "staff" });
 
     await publisher.refresh("session-1");
@@ -180,12 +200,45 @@ describe("staff chat announcement", () => {
     expect(db.sessionAnnouncement.upsert).not.toHaveBeenCalled();
   });
 
+  it("stops touching the announcement once the shift has been over for the retention window", async () => {
+    vi.setSystemTime(new Date("2026-01-01T02:05:01Z"));
+    const { publisher, channels, editsTo } = publisherFor(endedSession(), { staffChannelId: "staff" });
+
+    await publisher.refresh("session-1");
+
+    expect(editsTo("announcement-1")).toBeUndefined();
+    // The channel is never even reached, so nothing is edited or posted.
+    expect(channels.has("staff")).toBe(false);
+  });
+
+  it("does not repost an announcement the cleanup already took down", async () => {
+    vi.setSystemTime(new Date("2026-01-01T04:00:00Z"));
+    const session = endedSession({ announcement: null, discordMessage: { channelId: "logs", messageId: "log-1" } });
+    const { publisher, db, channels } = publisherFor(session, { logsChannelId: "logs", staffChannelId: "staff" });
+
+    await publisher.refresh("session-1");
+
+    expect(channels.has("staff")).toBe(false);
+    expect(db.sessionAnnouncement.upsert).not.toHaveBeenCalled();
+    // The permanent record in the logs channel is still kept up to date.
+    expect(channels.get("logs")!.messages.fetch).toHaveBeenCalledWith("log-1");
+  });
+
+  it("still announces a shift that ends within the retention window", async () => {
+    vi.setSystemTime(new Date("2026-01-01T02:04:59Z"));
+    const { publisher, editsTo } = publisherFor(endedSession(), { staffChannelId: "staff" });
+
+    await publisher.refresh("session-1");
+
+    expect(editsTo("announcement-1")).toBeDefined();
+  });
+
   it("removes both messages when a completed record is shorter than one minute", async () => {
-    const endedAt = new Date("2026-01-01T00:00:30Z");
+    const briefEnd = new Date("2026-01-01T00:00:30Z");
     const session = liveSession({
       state: "ENDED",
-      endedAt,
-      segments: [{ state: "ACTIVE", startedAt, endedAt }],
+      endedAt: briefEnd,
+      segments: [{ state: "ACTIVE", startedAt, endedAt: briefEnd }],
       discordMessage: { channelId: "logs", messageId: "log-1" },
       announcement: { channelId: "staff", messageId: "announcement-1" },
     });

@@ -8,7 +8,7 @@ import type { BloxlinkService } from "../../../shared/bloxlink.js";
 import type { RuntimeSettingsService } from "../../../shared/runtime-settings.js";
 import { totalsForPeriod } from "../domain/accounting.js";
 import { calendarYearRange } from "../domain/reporting.js";
-import { MINIMUM_SESSION_MILLISECONDS, sessionMeetsMinimum } from "../domain/policy.js";
+import { MINIMUM_SESSION_MILLISECONDS, announcementRetentionElapsed, sessionMeetsMinimum } from "../domain/policy.js";
 import type { DiscordMessageReference } from "../service/session-service.js";
 import { friendlyDuration } from "./commands/format.js";
 import { statusColor, statusIcon, statusName } from "./session-embed.js";
@@ -66,11 +66,16 @@ export class DiscordPublisher {
     for (const id of ids) await this.refresh(id).catch((error) => console.error(`Discord refresh failed for ${id}`, error));
   }
 
-  async removeMessages(messages: DiscordMessageReference[]): Promise<void> {
-    if (!messages.length) return;
+  /**
+   * Takes messages down, or queues them for `restore` when Discord is not
+   * connected. The return says which happened, so a caller that is about to
+   * forget the messages can wait for a pass that actually removed them.
+   */
+  async removeMessages(messages: DiscordMessageReference[]): Promise<boolean> {
+    if (!messages.length) return true;
     if (!this.client.isReady()) {
       this.pendingMessageRemovals.push(...messages);
-      return;
+      return false;
     }
     for (const { channelId, messageId } of messages) {
       try {
@@ -81,6 +86,7 @@ export class DiscordPublisher {
         console.error(`Discord message deletion failed for ${messageId}`, error);
       }
     }
+    return true;
   }
 
   async refresh(sessionId: string, includeDeleted = false): Promise<void> {
@@ -90,7 +96,10 @@ export class DiscordPublisher {
       where: { id: sessionId }, include: { identity: true, segments: true, discordMessage: true, announcement: true },
     });
     if (!session || (session.deletedAt && !includeDeleted)) return;
-    const now = session.endedAt ?? new Date();
+    // Accounting stops at the end of the shift; the announcement's retention is
+    // measured against the wall clock, so the two instants are kept apart.
+    const at = new Date();
+    const now = session.endedAt ?? at;
     const totals = totalsForPeriod(session.segments, session.startedAt, now, now);
 
     // A record too short to count is not a record at all: take both of its
@@ -106,7 +115,7 @@ export class DiscordPublisher {
     }
 
     if (settings.logsChannelId) await this.publishLog(session, settings.logsChannelId, totals, now);
-    if (settings.staffChannelId) await this.publishAnnouncement(session, settings.staffChannelId, totals);
+    if (settings.staffChannelId) await this.publishAnnouncement(session, settings.staffChannelId, totals, at);
   }
 
   /** The full, permanent record of a shift in the session logs channel. */
@@ -175,15 +184,21 @@ export class DiscordPublisher {
    * outside the embed when their shift starts, and that same message is edited
    * when it ends. Nothing about it changes while the shift is running, so a
    * live session is left alone instead of being edited on every refresh.
+   *
+   * The announcement is temporary — the `announcement cleanup` job takes it
+   * down once the shift has been settled for its retention window — so past
+   * that point this publishes nothing rather than reposting an old shift.
    */
   private async publishAnnouncement(
     session: SessionRecord,
     staffChannelId: string,
     totals: { totalMs: number; activeMs: number },
+    now: Date,
   ): Promise<void> {
     const ended = session.state === "ENDED";
     const settled = ended || session.deletedAt !== null;
     if (session.announcement && !settled) return;
+    if (settled && announcementRetentionElapsed(session, now)) return;
 
     const discordUserId = session.identity.discordUserId ?? await this.bloxlink.discordForRoblox(session.identity.robloxUserId);
     const name = `**${session.identity.robloxUsername}**`;

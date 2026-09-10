@@ -64,6 +64,25 @@ export function createSessionsFeature(ctx: FeatureContext): Feature {
         },
       },
       {
+        // The staff chat announcement is a notification, not a record: once a
+        // shift has been over for its retention window the message comes down,
+        // leaving the permanent copy in the logs channel. Messages are removed
+        // before the rows are, so a failed removal is retried rather than
+        // leaving a message nothing owns.
+        name: "announcement cleanup",
+        intervalMs: 60_000,
+        run: async () => {
+          const expired = await sessions.expiredAnnouncements();
+          if (!expired.length) return;
+          const removed = await publisher.removeMessages(expired.map(({ channelId, messageId }) => ({ channelId, messageId })));
+          // Discord was not connected, so the removals were only queued. Keep
+          // the rows and take them down on a later pass.
+          if (!removed) return;
+          const forgotten = await sessions.forgetAnnouncements(expired.map(({ id }) => id));
+          ctx.log.info({ job: "announcement cleanup", removedAnnouncementCount: forgotten }, "Ended shift announcements removed from the staff channel");
+        },
+      },
+      {
         name: "session data cleanup",
         intervalMs: 24 * 60 * 60 * 1000,
         run: async () => {
