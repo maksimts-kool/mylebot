@@ -4,7 +4,8 @@ All notable changes are recorded here.
 
 ## Unreleased
 
-_Nothing yet._
+- Made the staff chat shift announcement temporary: five minutes after a shift ends, or after a running shift is removed, the bot deletes its announcement so the channel does not fill up with finished shifts. The full record in the session logs channel is untouched. Announcements already sitting in the staff chat from earlier shifts are cleared on the first run after this update.
+- Gave every `/config` page one shared set of presets for its embed, fields, buttons, and dropdowns, so pages contributed by different features look and behave the same. Each page now takes its title from its own menu entry, words an unconfigured setting the same way, and uses the same on/off switch, refresh button, and channel picker.
 
 ## 0.14.1 - 2026-09-10
 
