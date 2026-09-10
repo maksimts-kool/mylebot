@@ -4,6 +4,10 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+_Nothing yet._
+
+## 0.14.0 - 2026-09-10
+
 - Moved clickable verification member names from embed field titles into field values, where Discord renders Markdown links instead of showing their bracket syntax literally.
 - Merged every server setting into one `/config` panel with a page per feature, and removed the separate `/taiga` command. Features now contribute settings pages through the `Feature.configSections` contract.
 - Added a full role permission editor to `/config`: roles listed by the level they grant, with granting, changing, and revoking per role.
