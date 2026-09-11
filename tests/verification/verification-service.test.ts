@@ -28,11 +28,14 @@ function gateway(members: UnverifiedMember[]): MockVerificationGateway {
 }
 
 function logger() {
-  return {
+  const calls = {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
+    debug: vi.fn(),
+    child: vi.fn(() => calls),
   };
+  return calls;
 }
 
 function schedule(lastReminderAt: Date | null = null) {

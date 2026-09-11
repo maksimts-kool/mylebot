@@ -1,6 +1,6 @@
-import type { FastifyBaseLogger } from "fastify";
 import type { Db } from "../../../core/db.js";
 import { errorType } from "../../../core/errors.js";
+import type { Logger } from "../../../core/logger.js";
 import {
   finalWarningDueAt,
   kickDueAt,
@@ -61,12 +61,16 @@ export function finalWarningBatches(members: UnverifiedMember[], limit = 2_000):
 }
 
 export class VerificationService {
+  private readonly log: Logger;
+
   constructor(
     private readonly db: Db,
     private readonly guildId: string,
     private readonly gateway: VerificationGateway,
-    private readonly log: FastifyBaseLogger,
-  ) {}
+    log: Logger,
+  ) {
+    this.log = log.child({ category: "verify" });
+  }
 
   /** Read-only live view used by the manager status command. */
   async status(): Promise<VerificationStatus> {
@@ -160,7 +164,7 @@ export class VerificationService {
       });
     } catch (error) {
       hadOperationalFailure = true;
-      this.log.error({ feature: "verification", action: "general_reminder", errorType: errorType(error) }, "Verification reminder could not be posted");
+      this.log.error({ action: "general_reminder", err: error, errorType: errorType(error) }, "Could not post the reminder");
     }
 
     const removed: UnverifiedMember[] = [];
@@ -175,7 +179,7 @@ export class VerificationService {
         });
       } catch (error) {
         hadOperationalFailure = true;
-        this.log.warn({ feature: "verification", action: "kick", discordUserId: member.discordUserId, errorType: errorType(error) }, "Unverified member could not be removed");
+        this.log.warn({ action: "kick", discordUserId: member.discordUserId, err: error, errorType: errorType(error) }, "Could not remove an unverified member");
       }
     }
     if (removed.length) {
@@ -183,7 +187,7 @@ export class VerificationService {
         await this.gateway.postRemovedMembers(removed);
       } catch (error) {
         hadOperationalFailure = true;
-        this.log.error({ feature: "verification", action: "removal_notice", removedCount: removed.length, errorType: errorType(error) }, "Verification removal notice could not be posted");
+        this.log.error({ action: "removal_notice", removedCount: removed.length, err: error, errorType: errorType(error) }, "Could not post the removal notice");
       }
     }
 
@@ -204,17 +208,16 @@ export class VerificationService {
         });
       } catch (error) {
         hadOperationalFailure = true;
-        this.log.error({ feature: "verification", action: "final_warning", memberCount: batch.length, errorType: errorType(error) }, "Final verification warning could not be posted");
+        this.log.error({ action: "final_warning", memberCount: batch.length, err: error, errorType: errorType(error) }, "Could not post the final warning");
       }
     }
 
     this.log.info({
-      feature: "verification",
-      unverifiedCount: members.length,
-      firstObservedCount: newIds.length,
-      finalWarningCount: warningMembers.length,
-      removedCount: removed.length,
-    }, "Verification cycle completed");
+      unverified: members.length,
+      newlySeen: newIds.length,
+      finalWarnings: warningMembers.length,
+      removed: removed.length,
+    }, "Verification pass completed");
 
     if (hadOperationalFailure) throw new Error("Verification cycle completed with one or more operational failures");
     return true;

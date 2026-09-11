@@ -18,7 +18,7 @@ import { TaigaSyncService } from "./service/taiga-sync.js";
  */
 export function createTaigaFeature(ctx: FeatureContext): Feature | null {
   if (!taigaConfigured(ctx.config)) {
-    ctx.log.info({ feature: "taiga" }, "Taiga integration is not configured; skipping");
+    ctx.log.info({ category: "taiga" }, "Not configured; skipping");
     return null;
   }
 
@@ -32,10 +32,15 @@ export function createTaigaFeature(ctx: FeatureContext): Feature | null {
   return {
     name: "taiga",
     configSections: [taigaConfigSection(ctx.config, settings, sync)],
-    routes: taigaRoutes({
-      config: ctx.config,
-      onDelivery: (payload, fingerprint) => sync.handleWebhook(payload, fingerprint),
-    }),
+    // A delivery moves cards, retags forum posts and announces the change, so
+    // it can only be answered where the gateway is.
+    gatewayRoutes: {
+      plugin: taigaRoutes({
+        config: ctx.config,
+        onDelivery: (payload, fingerprint) => sync.handleWebhook(payload, fingerprint),
+      }),
+      patterns: ["/v1/taiga/*"],
+    },
     onReady: async () => {
       // Catch up on anything that moved while the bot was down.
       await sync.reconcile();
@@ -44,14 +49,14 @@ export function createTaigaFeature(ctx: FeatureContext): Feature | null {
       {
         name: "Taiga reconcile",
         intervalMs: ctx.config.TAIGA_RECONCILE_SECONDS * 1000,
-        run: () => sync.reconcile(),
+        run: async () => { await sync.reconcile(); },
       },
       {
         name: "Taiga webhook cleanup",
         intervalMs: 24 * 60 * 60 * 1000,
         run: async () => {
           const count = await sync.cleanupDeliveries(ctx.config.PROCESSED_EVENT_RETENTION_DAYS);
-          if (count) ctx.log.info({ job: "Taiga webhook cleanup", removedDeliveryCount: count }, "Expired Taiga webhook records removed");
+          return count ? `removed ${count} expired delivery records` : undefined;
         },
       },
     ],

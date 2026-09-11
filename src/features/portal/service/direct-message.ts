@@ -1,5 +1,6 @@
 import { DiscordAPIError, EmbedBuilder, type Client } from "discord.js";
 import { errorType } from "../../../core/errors.js";
+import { appLogger } from "../../../core/logger.js";
 import type { SendDirectMessage } from "../api/routes.js";
 
 /**
@@ -18,7 +19,7 @@ export function createDirectMessageSender(client: Client): SendDirectMessage {
       return { ok: true };
     } catch (error) {
       if (error instanceof DiscordAPIError && error.code === 50007) return { ok: false, status: 422, error: "dms_closed" };
-      console.warn("Site notify DM failed", { errorType: errorType(error) });
+      appLogger().warn({ category: "portal", err: error, errorType: errorType(error) }, "Could not deliver the site notification DM");
       return { ok: false, status: 502, error: "dm_send_failed" };
     }
   };

@@ -5,6 +5,7 @@ import { buildHttpServer } from "../../src/core/http.js";
 import { portalRoutes, type PortalRouteOptions } from "../../src/features/portal/api/routes.js";
 
 const baseEnv = {
+  LOG_LEVEL: "silent",
   DATABASE_URL: "postgresql://example.invalid/db",
   ROBLOX_INGESTION_SECRET: "12345678901234567890123456789012",
   ROBLOX_UNIVERSE_ID: "100",

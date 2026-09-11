@@ -19,11 +19,13 @@ Discord is a projection and administration surface, not the source of session tr
 
 Code belongs to exactly one of three layers:
 
-- `src/core/` — configuration, database client, HTTP server, Discord client, scheduler, and the `Feature` contract. Core must never import from `src/features/`.
+- `src/core/` — configuration, database client, HTTP server, Discord client, logger, scheduler, the link between the two containers, and the `Feature` contract. Core must never import from `src/features/`.
 - `src/shared/` — services more than one feature needs (Bloxlink, runtime settings, permission levels, reusable Discord components).
 - `src/features/<name>/` — one self-contained slice, with `domain/` (pure), `service/` (orchestration and persistence), `api/` (transport), `discord/` (gateway surface), and an `index.ts` exporting `create<Name>Feature(ctx): Feature`.
 
 A feature declares its routes, slash commands, background jobs, and lifecycle hooks through the `Feature` object; [`src/index.ts`](src/index.ts) only composes them. When adding a feature:
+
+- Decide which half of a split deployment each route belongs to. `Feature.routes` needs nothing but the database and runs in the `server` role; `Feature.gatewayRoutes` needs the Discord gateway, runs in the `bot` role, and lists the path patterns the server forwards there instead of answering. Getting this wrong is not a compile error — it is an endpoint that 500s only in production, in the container that cannot serve it.
 
 - Register it in [`src/index.ts`](src/index.ts), and in [`src/features/command-data.ts`](src/features/command-data.ts) if it deploys a slash command of its own — that file is what `scripts/deploy-commands.ts` deploys. Keep the two gated identically so a manual deploy cannot install a command the running bot ignores. A feature that only has settings contributes a `ConfigSection` instead of a command, and adds nothing to `command-data.ts`.
 - Namespace every component `customId` with the feature name. Features share the `interactionCreate` event, so each handler must ignore interactions it does not own.
@@ -116,6 +118,7 @@ Useful entry points:
 - Message intents are privileged and are requested only when Taiga is configured. Do not add them unconditionally — an unconfigured deployment would fail to log in.
 - Discord access is cumulative. Guild administrators have manager access; otherwise take the maximum permission level from database roles.
 - Slash-command definitions synchronize at startup. When command shapes change, keep startup synchronization, [`scripts/deploy-commands.ts`](scripts/deploy-commands.ts), tests, and README documentation aligned.
+- `DiscordPublisher.refresh` serialises per session id, and a first post claims its row with an insert on the unique `sessionId` rather than an upsert. Both halves of that matter: three independent callers drive refreshes (the sweep job, the periodic refresh job, the presence endpoint), and two arriving together used to read "no message yet", both post, and leave one message orphaned — stuck at whatever state it was posted in, next to a live one. A pass that loses the claim deletes the message it just sent. Do not turn either back into a plain upsert.
 - A session owns two independent Discord messages: the full record in the logs channel (`DiscordMessage`) and the short staff-chat announcement (`SessionAnnouncement`). Either channel may be unset. The announcement is written once when the shift starts and again when it ends or is removed — never on the periodic refresh — so live sessions are not edited every minute.
 - The staff-chat announcement is a notification, not a record. `ANNOUNCEMENT_RETENTION_MILLISECONDS` after a shift settles, the `announcement cleanup` job takes the message down and drops its row; the logs channel keeps the permanent copy. Retention runs from `endedAt ?? deletedAt`, so removing an old session never resurrects its announcement. The job removes the message before deleting the row, so a failed removal retries instead of orphaning a message. The publisher enforces the same rule, and must keep doing so, or a restore or refresh would repost a shift that is already gone.
 - Anything that removes a session's data must take both messages down: the sub-minute check in the publisher, the low-rank purge, and the retention cleanup.
@@ -131,6 +134,8 @@ Useful entry points:
 - Avoid broad catch blocks and silent recovery. Expected user errors should remain distinguishable from operational failures.
 - Do not add a production dependency when the existing stack or a small local implementation is sufficient. Ask before adding a significant dependency.
 - Never log or commit Discord tokens, Bloxlink keys, database credentials, Roblox ingestion secrets, raw authorization headers, or `.env` contents.
+- Log through [`src/core/logger.ts`](src/core/logger.ts), never `console`. Pass a `category` from the closed list and, when a line is about a person, an `actor` holding their name rather than their ID; bind both once with `log.child({ category })` where a class logs repeatedly. Write the message as a short sentence and leave numbers to the fields — the renderer owns the layout. Attach the error itself as `err` so its cause and stack are formatted for you.
+- Logs are read by a person watching `docker compose logs`, so anything that happens on a timer must stay silent when it found nothing to do: a scheduled job returns a sentence only when it acted, and routine traffic belongs at `debug`. Before adding an `info` line, ask whether it would still be worth reading on its five-hundredth repetition.
 
 ## Database and migrations
 

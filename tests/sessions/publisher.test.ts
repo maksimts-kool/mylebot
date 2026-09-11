@@ -1,5 +1,9 @@
+import { Prisma } from "@prisma/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createLogger } from "../../src/core/logger.js";
 import { buildAnnouncementActionRow, buildSessionActionRow, DiscordPublisher } from "../../src/features/sessions/discord/publisher.js";
+
+const silent = createLogger({ service: "test", level: "silent" });
 
 function labelsOf(row: ReturnType<typeof buildSessionActionRow>): string[] {
   return row.components.map((component) => {
@@ -98,8 +102,8 @@ function publisherFor(session: Record<string, unknown>, settings: Record<string,
   };
   const db = {
     session: { findUnique: vi.fn().mockResolvedValue(session), findMany: vi.fn().mockResolvedValue([]) },
-    discordMessage: { upsert: vi.fn().mockResolvedValue({}), deleteMany: vi.fn() },
-    sessionAnnouncement: { upsert: vi.fn().mockResolvedValue({}), deleteMany: vi.fn() },
+    discordMessage: { create: vi.fn().mockResolvedValue({}), upsert: vi.fn().mockResolvedValue({}), deleteMany: vi.fn() },
+    sessionAnnouncement: { create: vi.fn().mockResolvedValue({}), upsert: vi.fn().mockResolvedValue({}), deleteMany: vi.fn() },
   };
   const publisher = new DiscordPublisher(
     client as never,
@@ -107,6 +111,7 @@ function publisherFor(session: Record<string, unknown>, settings: Record<string,
     { REPORT_TIMEZONE: "Europe/Tallinn" } as never,
     { discordForRoblox: vi.fn() } as never,
     { get: vi.fn().mockResolvedValue({ trackingEnabled: true, logsChannelId: "", staffChannelId: "", ...settings }) } as never,
+    silent,
   );
   return {
     publisher,
@@ -153,7 +158,7 @@ describe("session log message", () => {
     await publisher.refresh("session-1");
 
     expect(channels.has("logs")).toBe(false);
-    expect(db.discordMessage.upsert).not.toHaveBeenCalled();
+    expect(db.discordMessage.create).not.toHaveBeenCalled();
     expect(channels.get("staff")!.send).toHaveBeenCalled();
   });
 });
@@ -172,7 +177,7 @@ describe("staff chat announcement", () => {
     const embed = payload.embeds[0]!.toJSON();
     expect(embed.title).toBe("🟢 Session started");
     expect(embed.description).toContain("Tester");
-    expect(db.sessionAnnouncement.upsert).toHaveBeenCalled();
+    expect(db.sessionAnnouncement.create).toHaveBeenCalled();
   });
 
   it("leaves the announcement untouched while the shift is still running", async () => {
@@ -197,7 +202,7 @@ describe("staff chat announcement", () => {
     expect(payload.embeds[0]!.toJSON().title).toBe("✅ Session ended");
     // Editing in place must not post a second announcement or store a new one.
     expect(channels.get("staff")!.send).not.toHaveBeenCalled();
-    expect(db.sessionAnnouncement.upsert).not.toHaveBeenCalled();
+    expect(db.sessionAnnouncement.create).not.toHaveBeenCalled();
   });
 
   it("stops touching the announcement once the shift has been over for the retention window", async () => {
@@ -219,7 +224,7 @@ describe("staff chat announcement", () => {
     await publisher.refresh("session-1");
 
     expect(channels.has("staff")).toBe(false);
-    expect(db.sessionAnnouncement.upsert).not.toHaveBeenCalled();
+    expect(db.sessionAnnouncement.create).not.toHaveBeenCalled();
     // The permanent record in the logs channel is still kept up to date.
     expect(channels.get("logs")!.messages.fetch).toHaveBeenCalledWith("log-1");
   });
@@ -250,5 +255,43 @@ describe("staff chat announcement", () => {
     expect(channels.get("staff")!.messages.delete).toHaveBeenCalledWith("announcement-1");
     expect(db.discordMessage.deleteMany).toHaveBeenCalledWith({ where: { sessionId: "session-1" } });
     expect(db.sessionAnnouncement.deleteMany).toHaveBeenCalledWith({ where: { sessionId: "session-1" } });
+  });
+});
+
+/**
+ * Two refreshes of one session used to race: the sweep job and the periodic
+ * Discord refresh both read "this session has no message yet", both posted one,
+ * and the row ended up pointing at only one of them. The other stayed in the
+ * channel frozen at whatever state it was posted in, which is how a shift that
+ * had already ended could still be showing as Active next to itself.
+ */
+describe("concurrent refreshes of one session", () => {
+  it("posts the log message once and serialises the second pass behind the first", async () => {
+    const { publisher, db, channels } = publisherFor(liveSession(), { logsChannelId: "logs" });
+    // A real database hands the next read the row the claim just wrote, which
+    // is the whole point: the second pass must see it and edit rather than post.
+    db.discordMessage.create.mockImplementation(async ({ data }: { data: { channelId: string; messageId: string } }) => {
+      db.session.findUnique.mockResolvedValue(liveSession({ discordMessage: data }));
+      return data;
+    });
+
+    await Promise.all([publisher.refresh("session-1"), publisher.refresh("session-1")]);
+
+    expect(channels.get("logs")!.send).toHaveBeenCalledTimes(1);
+    expect(db.discordMessage.create).toHaveBeenCalledTimes(1);
+    expect(channels.get("logs")!.messages.fetch).toHaveBeenCalledWith("logs-message");
+  });
+
+  it("takes its own message back down when another writer already claimed the session", async () => {
+    const { publisher, db, channels } = publisherFor(liveSession(), { logsChannelId: "logs" });
+    // What Prisma raises when the unique `sessionId` is already taken.
+    db.discordMessage.create.mockRejectedValue(
+      Object.assign(new Prisma.PrismaClientKnownRequestError("Unique constraint failed", { code: "P2002", clientVersion: "7" })),
+    );
+
+    await publisher.refresh("session-1");
+
+    expect(channels.get("logs")!.send).toHaveBeenCalledTimes(1);
+    expect(channels.get("logs")!.messages.delete).toHaveBeenCalledWith("logs-message");
   });
 });

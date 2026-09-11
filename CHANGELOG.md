@@ -4,7 +4,10 @@ All notable changes are recorded here.
 
 ## Unreleased
 
-_Nothing yet._
+- Fixed a session being announced twice. Three things refresh a session's Discord messages independently — the stale-session sweep, the periodic refresh, and the presence endpoint — and two of them arriving together both saw "this shift has no message yet" and both posted one. Only one of the two was ever edited again, so the other stayed in the channel frozen as **Active** next to the same shift showing as **Ended**. Refreshes for one session now queue behind each other, and a message that loses the race is deleted instead of left behind.
+- Rebuilt the logs. Every line is now date and time, level, category, who it is about, then a plain sentence: `2026-09-11 16:50:31  INFO   session   wolfik11111111    Session ended  total=19m19s  active=19m19s`. Shifts starting, ending, and going idle are logged by name, as are the commands staff run.
+- Stopped the logs drowning in noise. The `/health` and `/ready` probes Docker polls every 15 seconds are no longer logged unless they fail or go slow, heartbeat batches that changed nothing are silent, and a scheduled job only says something when it actually did something. `LOG_LEVEL=debug` brings all of it back, and `LOG_FORMAT=json` switches to one object per line for a log shipper.
+- Split the deployment into three containers — `server`, `bot`, and `db`. `server` stays the only published port and keeps every external URL the same: it answers the Roblox ingestion API itself and passes the endpoints that need Discord through to `bot`, which holds the gateway and runs the scheduled jobs. Migrations run in `server` alone, so the two can never race each other. Set `INTERNAL_SECRET` before deploying; a single-container deployment still works with `APP_ROLE=all`.
 
 ## 0.14.2 - 2026-09-10
 

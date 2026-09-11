@@ -140,6 +140,9 @@ describe("ingestion validation", () => {
     const stale = {
       id: "session-1", state: "ACTIVE", lastEventAt: new Date("2026-01-01T00:00:00Z"),
       lastStateAt: new Date("2026-01-01T00:00:00Z"), reconnectDeadline: null,
+      activeMilliseconds: 0n, inactiveMilliseconds: 0n,
+      // The sweep reads the player's name so it can say whose shift it closed.
+      identity: { robloxUsername: "Tester" },
     };
     const transaction = {
       session: { findFirst: vi.fn().mockResolvedValue(stale), update: vi.fn().mockResolvedValue(stale) },
@@ -182,6 +185,9 @@ describe("ingestion validation", () => {
     const stale = {
       id: "session-1", state: "ACTIVE", lastEventAt: new Date("2026-01-01T00:00:00Z"),
       lastStateAt: new Date("2026-01-01T00:00:00Z"), reconnectDeadline: null,
+      activeMilliseconds: 0n, inactiveMilliseconds: 0n,
+      // The sweep reads the player's name so it can say whose shift it closed.
+      identity: { robloxUsername: "Tester" },
     };
     const transaction = {
       session: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn(), update: vi.fn() },

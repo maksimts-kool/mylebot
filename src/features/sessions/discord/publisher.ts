@@ -1,9 +1,11 @@
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, DiscordAPIError, EmbedBuilder, type TextChannel,
 } from "discord.js";
-import type { SessionState } from "@prisma/client";
+import { Prisma, type SessionState } from "@prisma/client";
 import type { Config } from "../../../core/config.js";
 import type { Db } from "../../../core/db.js";
+import { errorType } from "../../../core/errors.js";
+import type { Logger } from "../../../core/logger.js";
 import type { BloxlinkService } from "../../../shared/bloxlink.js";
 import type { RuntimeSettingsService } from "../../../shared/runtime-settings.js";
 import { totalsForPeriod } from "../domain/accounting.js";
@@ -17,6 +19,18 @@ type MessagePayload = {
   content: string;
   embeds: EmbedBuilder[];
   components: ActionRowBuilder<ButtonBuilder>[];
+};
+
+/**
+ * How a session remembers the message it owns in one channel. `claim` is the
+ * race-safe half: the row's `sessionId` is unique, so exactly one writer can
+ * claim it, and whoever loses knows the message it just sent is a duplicate.
+ */
+type MessageStore = {
+  /** Records a message posted where the session had none. False means another writer won. */
+  claim: (channelId: string, messageId: string) => Promise<boolean>;
+  /** Points the session at a replacement for a message that is already gone. */
+  replace: (channelId: string, messageId: string) => Promise<void>;
 };
 
 function formatClock(milliseconds: number): string {
@@ -53,6 +67,14 @@ export function buildAnnouncementActionRow(sessionId: string): ActionRowBuilder<
 
 export class DiscordPublisher {
   private readonly pendingMessageRemovals: DiscordMessageReference[] = [];
+  /**
+   * One refresh per session at a time. Three callers drive this independently —
+   * the sweep job, the periodic refresh job and the presence endpoint — and two
+   * of them arriving together used to read "no message yet", both post, and
+   * leave one of the two orphaned at whatever state it was posted in.
+   */
+  private readonly inFlight = new Map<string, Promise<void>>();
+  private readonly log: Logger;
 
   constructor(
     private readonly client: Client,
@@ -60,10 +82,17 @@ export class DiscordPublisher {
     private readonly config: Config,
     private readonly bloxlink: BloxlinkService,
     private readonly settings: RuntimeSettingsService,
-  ) {}
+    log: Logger,
+  ) {
+    this.log = log.child({ category: "discord" });
+  }
 
   async refreshMany(ids: string[]): Promise<void> {
-    for (const id of ids) await this.refresh(id).catch((error) => console.error(`Discord refresh failed for ${id}`, error));
+    for (const id of ids) {
+      await this.refresh(id).catch((error: unknown) => {
+        this.log.error({ err: error, errorType: errorType(error), sessionId: id }, "Session message refresh failed");
+      });
+    }
   }
 
   /**
@@ -83,13 +112,30 @@ export class DiscordPublisher {
         await channel.messages.delete(messageId);
       } catch (error) {
         if (error instanceof DiscordAPIError && error.code === 10008) continue;
-        console.error(`Discord message deletion failed for ${messageId}`, error);
+        this.log.error({ err: error, errorType: errorType(error), messageId }, "Message removal failed");
       }
     }
     return true;
   }
 
+  /**
+   * Brings a session's messages up to date, one refresh at a time per session.
+   * Callers queue behind each other rather than racing, so the message a
+   * session owns is read after the previous pass has finished writing it.
+   */
   async refresh(sessionId: string, includeDeleted = false): Promise<void> {
+    const queued = (this.inFlight.get(sessionId) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => this.publishSession(sessionId, includeDeleted));
+    this.inFlight.set(sessionId, queued);
+    try {
+      await queued;
+    } finally {
+      if (this.inFlight.get(sessionId) === queued) this.inFlight.delete(sessionId);
+    }
+  }
+
+  private async publishSession(sessionId: string, includeDeleted: boolean): Promise<void> {
     const settings = await this.settings.get();
     if (!this.client.isReady() || (!settings.logsChannelId && !settings.staffChannelId)) return;
     const session = await this.db.session.findUnique({
@@ -171,11 +217,16 @@ export class DiscordPublisher {
       // The log message carries no mention; an empty content also clears one
       // left behind by an earlier build.
       { content: "", embeds: [embed], components: session.deletedAt ? [] : [buildSessionActionRow(session)] },
-      (channelId, messageId) => this.db.discordMessage.upsert({
-        where: { sessionId: session.id },
-        create: { sessionId: session.id, channelId, messageId },
-        update: { channelId, messageId },
-      }).then(() => undefined),
+      {
+        claim: (channelId, messageId) => this.claim(
+          () => this.db.discordMessage.create({ data: { sessionId: session.id, channelId, messageId } }),
+        ),
+        replace: (channelId, messageId) => this.db.discordMessage.upsert({
+          where: { sessionId: session.id },
+          create: { sessionId: session.id, channelId, messageId },
+          update: { channelId, messageId },
+        }).then(() => undefined),
+      },
     );
   }
 
@@ -230,27 +281,54 @@ export class DiscordPublisher {
         embeds: [embed],
         components: session.deletedAt ? [] : [buildAnnouncementActionRow(session.id)],
       },
-      (channelId, messageId) => this.db.sessionAnnouncement.upsert({
-        where: { sessionId: session.id },
-        create: { sessionId: session.id, channelId, messageId },
-        update: { channelId, messageId },
-      }).then(() => undefined),
+      {
+        claim: (channelId, messageId) => this.claim(
+          () => this.db.sessionAnnouncement.create({ data: { sessionId: session.id, channelId, messageId } }),
+        ),
+        replace: (channelId, messageId) => this.db.sessionAnnouncement.upsert({
+          where: { sessionId: session.id },
+          create: { sessionId: session.id, channelId, messageId },
+          update: { channelId, messageId },
+        }).then(() => undefined),
+      },
     );
+  }
+
+  /**
+   * Runs an insert whose unique `sessionId` decides the winner. A duplicate-key
+   * failure is the answer, not an error: somebody else already owns the
+   * session's message in that channel.
+   */
+  private async claim(insert: () => Promise<unknown>): Promise<boolean> {
+    try {
+      await insert();
+      return true;
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") return false;
+      throw error;
+    }
   }
 
   /**
    * Edits the message the session already owns, or posts a new one. A message
    * that moved channel, or that somebody deleted, is replaced rather than
    * treated as an error.
+   *
+   * A fresh post is only kept if the session had no message to begin with and
+   * this pass wins the claim on it. Losing means a concurrent pass posted one
+   * too, so ours is taken straight back down instead of being left in the
+   * channel with nothing pointing at it.
    */
   private async publish(
     existing: { channelId: string; messageId: string } | null,
     channelId: string,
     payload: MessagePayload,
-    save: (channelId: string, messageId: string) => Promise<void>,
+    store: MessageStore,
   ): Promise<void> {
     const channel = await this.client.channels.fetch(channelId) as TextChannel;
+    let replacing = false;
     if (existing) {
+      replacing = true;
       if (existing.channelId !== channel.id) {
         await this.removeMessages([{ channelId: existing.channelId, messageId: existing.messageId }]);
       } else {
@@ -264,7 +342,10 @@ export class DiscordPublisher {
       }
     }
     const message = await channel.send(payload);
-    await save(channel.id, message.id);
+    if (replacing) return store.replace(channel.id, message.id);
+    if (await store.claim(channel.id, message.id)) return;
+    this.log.debug({ messageId: message.id }, "Discarded a duplicate session message");
+    await this.removeMessages([{ channelId: channel.id, messageId: message.id }]);
   }
 
   async restore(): Promise<void> {

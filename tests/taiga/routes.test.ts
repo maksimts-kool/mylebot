@@ -7,6 +7,7 @@ import { portalRoutes } from "../../src/features/portal/api/routes.js";
 import { taigaRoutes, type TaigaDelivery } from "../../src/features/taiga/api/routes.js";
 
 const config = loadConfig({
+  LOG_LEVEL: "silent",
   DATABASE_URL: "postgresql://example.invalid/db",
   ROBLOX_INGESTION_SECRET: "12345678901234567890123456789012",
   ROBLOX_UNIVERSE_ID: "100",
@@ -128,7 +129,8 @@ describe("Taiga webhook endpoint", () => {
 
   it("is disabled without a webhook secret", async () => {
     const disabled = loadConfig({
-      DATABASE_URL: "postgresql://example.invalid/db",
+      LOG_LEVEL: "silent",
+  DATABASE_URL: "postgresql://example.invalid/db",
       ROBLOX_INGESTION_SECRET: "12345678901234567890123456789012",
       ROBLOX_UNIVERSE_ID: "100",
       ROBLOX_GROUP_ID: "200",

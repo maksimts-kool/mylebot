@@ -25,7 +25,7 @@ A Node.js service that records eligible Roblox group members' play sessions in P
 
 The code is organised as feature modules. Each feature owns its HTTP routes, slash commands, gateway listeners, and background jobs, and [`src/index.ts`](src/index.ts) only composes them:
 
-- [`src/core/`](src/core/): configuration, database client, HTTP server, Discord client, job scheduler, and the `Feature` contract.
+- [`src/core/`](src/core/): configuration, database client, HTTP server, Discord client, [logger](src/core/logger.ts), job scheduler, the [link between the two containers](src/core/bot-link.ts), and the `Feature` contract.
 - [`src/shared/`](src/shared/): cross-feature services — Bloxlink, runtime settings, permission levels, reusable components.
 - [`src/features/sessions/`](src/features/sessions/): Roblox session tracking — [ingestion route](src/features/sessions/api/routes.ts), [lifecycle service](src/features/sessions/service/session-service.ts), [Discord publisher](src/features/sessions/discord/publisher.ts), and [commands](src/features/sessions/discord/commands/).
 - [`src/features/portal/`](src/features/portal/): the store-owners portal's internal endpoints.
@@ -153,6 +153,17 @@ Enabling the integration stamps an activation time, and **posts older than that 
 
 Every change is announced in the notifications channel. Taiga webhooks drive updates in real time; a reconcile sweep re-reads the board every `TAIGA_RECONCILE_SECONDS` and repairs anything a missed delivery dropped, including while the bot was restarting. The sweep only treats a card as deleted when the whole board was read successfully, so a failed API call cannot mass-decline the forums.
 
+### Roles and logging
+
+| Variable | Purpose |
+| --- | --- |
+| `APP_ROLE` | `all` for a single process doing everything, or `server` / `bot` for the two-container split. Compose sets this per service, so you rarely set it yourself. |
+| `BOT_INTERNAL_URL` | Where the `server` role reaches the `bot` role on the container network. Required when `APP_ROLE=server`. |
+| `INTERNAL_SECRET` | Shared secret the two halves authenticate to each other with. Required whenever `APP_ROLE` is not `all`. At least 16 characters. |
+| `LOG_LEVEL` | `debug`, `info` (default), `warn`, `error`, or `silent`. `debug` adds heartbeat batches, scheduled-job ticks and health probes. |
+| `LOG_FORMAT` | `pretty` (default) for humans, or `json` for one object per line. |
+| `LOG_COLOR` | `auto` (default, colour only on a terminal), `always`, or `never`. Compose sets `always`, since a container has no terminal. |
+
 ### Server and timing
 
 | Variable | Purpose |
@@ -229,12 +240,19 @@ docker compose ps
 Invoke-WebRequest http://127.0.0.1:3000/ready
 ```
 
-The default [`compose.yml`](compose.yml) configuration:
+The stack is three containers built from one image:
 
-- binds the application only to `127.0.0.1:3000` unless `APP_BIND_IP` or `APP_PORT` is changed;
-- does not publish PostgreSQL to the host;
-- stores PostgreSQL data in the `postgres_data` named volume;
-- waits for PostgreSQL readiness and runs Prisma deployment migrations during application startup.
+| Container | Runs | Published |
+| --- | --- | --- |
+| `server` | The HTTP surface, and the Prisma migrations. | `127.0.0.1:3000` by default |
+| `bot` | The Discord gateway: slash commands, session messages, every scheduled job. | nothing |
+| `db` | PostgreSQL 17, data in the `postgres_data` named volume. | nothing |
+
+`server` is the only entry point, so no external URL changes when you split: it answers the Roblox ingestion API itself, and forwards the endpoints that need Discord — `/internal/*` and `/v1/taiga/*` — to `bot` over the container network, byte for byte, so the Taiga webhook's signature still verifies at the far end. After recording a change it also tells `bot` which sessions to refresh, so Discord updates immediately rather than on the next poll. If `bot` is down, those forwarded endpoints answer `503` and everything else keeps working.
+
+Migrations run in `server` and nowhere else, and `bot` waits for `server` to report healthy before it starts, so two containers can never race each other over the same migration.
+
+To run it as a single process instead, set `APP_ROLE=all` and start one container; that is also what `npm run dev` does.
 
 Place a TLS-terminating reverse proxy in front of the application for Roblox traffic. If the proxy runs on the same host, the default loopback binding and `TRUST_PROXY=loopback` are appropriate. Deliberately set `APP_BIND_IP=0.0.0.0` only when external host access is required and protected by network controls.
 
@@ -244,9 +262,23 @@ Place a TLS-terminating reverse proxy in front of the application for Roblox tra
 
 ### Operational logs
 
-The application writes structured JSON logs to standard output. Startup, initial session sweeping, Discord bootstrap, and scheduled-job registration, completion, and failure are logged with phase, job, duration, or aggregate-count fields as applicable. Successful authenticated ingestion batches log only aggregate event outcomes and changed-session/message counts.
+Every line is date and time, level, category, who it is about, then what happened, with any remaining detail as a dim `key=value` tail:
 
-Fastify request logging redacts authorization, cookie, API-key, and response-cookie values. Batch payloads, player identifiers, and credentials are not included in the application completion logs. View container logs with `docker compose logs --follow app`. If the app health check cannot reach `/ready`, Docker records a concise `readiness check failed` diagnostic in the container health-check output; the check continues to depend only on API readiness and PostgreSQL, not Discord.
+```
+2026-09-11 16:28:04  INFO   startup   bot               MyLE Bot starting  version=0.14.2  role=bot  env=production
+2026-09-11 16:28:06  INFO   discord   MyLE Bot          Signed in
+2026-09-11 16:31:12  INFO   session   wolfik11111111    Session started  rank=[LE] Lift Engineer
+2026-09-11 16:50:31  INFO   session   wolfik11111111    Session ended  total=19m19s  active=19m19s
+2026-09-11 17:02:10  INFO   command   Pepovinea         /session active
+2026-09-11 17:10:00  INFO   job       bot               announcement cleanup took down 2 ended shift announcements  84ms
+2026-09-11 17:12:33  WARN   http      server            POST /v1/roblox/presence/batch → 401  2ms
+```
+
+The **who** column carries the person a line is about — the Roblox or Discord name, never an ID — and falls back to the container's role when the line is not about anybody. Categories are `startup`, `http`, `db`, `discord`, `session`, `command`, `taiga`, `verify`, `portal`, `config` and `job`, so `docker compose logs bot | grep " session "` gives you the shift history on its own. Timestamps are rendered in `REPORT_TIMEZONE`, so they line up with what staff read in Discord.
+
+What is deliberately *not* logged at `info`: the `/health` and `/ready` probes an orchestrator polls every few seconds (unless one fails or takes over a second), heartbeat batches that changed nothing, and scheduled jobs that found nothing to do. `LOG_LEVEL=debug` brings all of it back. Errors print their type, message and cause on the line and their stack indented underneath.
+
+Credentials, batch payloads and player identifiers are never logged — request lines carry the method, path, status and duration only. Set `LOG_FORMAT=json` for one object per line if you ship logs somewhere. View container logs with `docker compose logs --follow bot` or `... server`. If a health check cannot reach `/ready`, Docker records a concise `readiness check failed` diagnostic in the container health-check output; the check depends only on API readiness and PostgreSQL, never on Discord.
 
 ## Roblox setup
 

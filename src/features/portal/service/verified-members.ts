@@ -1,6 +1,7 @@
 import type { Client } from "discord.js";
 import type { Config } from "../../../core/config.js";
 import { errorType } from "../../../core/errors.js";
+import { appLogger } from "../../../core/logger.js";
 import type { VerifiedGuildMember } from "../api/routes.js";
 
 const VERIFIED_MEMBER_CACHE_MS = 5 * 60 * 1000;
@@ -37,7 +38,7 @@ export class VerifiedMemberDirectory {
       const roles = await guild.roles.fetch();
       const verifiedRole = roles.find((role) => role.name.trim().toLowerCase() === "verified");
       if (!verifiedRole) {
-        console.warn("Verified member list failed", { reason: "verified_role_missing" });
+        appLogger().warn({ category: "portal" }, "Cannot list verified members: the verified role is missing");
         return [];
       }
 
@@ -61,7 +62,7 @@ export class VerifiedMemberDirectory {
 
       return members.sort((a, b) => a.discordName.localeCompare(b.discordName));
     } catch (error) {
-      console.warn("Verified member list failed", { errorType: errorType(error) });
+      appLogger().warn({ category: "portal", err: error, errorType: errorType(error) }, "Could not list verified members");
       return [];
     }
   }

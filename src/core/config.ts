@@ -5,6 +5,27 @@ const csv = z.string().default("").transform((value) => value.split(",").map((v)
 
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  /**
+   * Which half of the application this process runs. `all` is one container
+   * doing both, which is how a single-container deployment stays working;
+   * `server` answers HTTP, `bot` talks to Discord and runs the scheduled jobs.
+   */
+  APP_ROLE: z.enum(["all", "server", "bot"]).default("all"),
+  /**
+   * Where the `server` role reaches the `bot` role, on the private container
+   * network — `http://bot:3000`. Unused when one process runs both halves.
+   */
+  BOT_INTERNAL_URL: z.string().url().or(z.literal("")).default(""),
+  /** Shared secret for the endpoints only the two containers talk to. */
+  INTERNAL_SECRET: z
+    .string()
+    .default("")
+    .refine((value) => value === "" || value.length >= 16, "INTERNAL_SECRET must be at least 16 characters when set"),
+  LOG_LEVEL: z.enum(["debug", "info", "warn", "error", "silent"]).default("info"),
+  /** `json` for a log shipper; `pretty` for a human reading `docker logs`. */
+  LOG_FORMAT: z.enum(["pretty", "json"]).default("pretty"),
+  /** Containers have no TTY, so `auto` drops colour there; `always` keeps it. */
+  LOG_COLOR: z.enum(["auto", "always", "never"]).default("auto"),
   DATABASE_URL: z.string().min(1),
   DISCORD_TOKEN: z.string().default(""),
   DISCORD_APPLICATION_ID: z.string().default(""),
@@ -71,6 +92,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     new Intl.DateTimeFormat("en", { timeZone: parsed.REPORT_TIMEZONE }).format();
   } catch {
     throw new Error(`Invalid REPORT_TIMEZONE: ${parsed.REPORT_TIMEZONE}`);
+  }
+  // A split deployment only works if each half knows how to reach the other.
+  if (parsed.APP_ROLE !== "all" && !parsed.INTERNAL_SECRET) {
+    throw new Error("INTERNAL_SECRET must be set when APP_ROLE is 'server' or 'bot'");
+  }
+  if (parsed.APP_ROLE === "server" && !parsed.BOT_INTERNAL_URL) {
+    throw new Error("BOT_INTERNAL_URL must point at the bot container when APP_ROLE is 'server'");
   }
   const taigaFields = [parsed.TAIGA_USERNAME, parsed.TAIGA_PASSWORD, parsed.TAIGA_PROJECT_SLUG];
   if (taigaFields.some(Boolean) && !taigaFields.every(Boolean)) {

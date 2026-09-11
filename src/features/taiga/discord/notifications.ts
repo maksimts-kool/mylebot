@@ -4,6 +4,7 @@ import {
 } from "discord.js";
 import type { TaigaCard, TaigaCardKind } from "@prisma/client";
 import { errorType } from "../../../core/errors.js";
+import { appLogger } from "../../../core/logger.js";
 import type { TaigaClient } from "../client.js";
 import { TaigaColumn, sameName } from "../domain/mapping.js";
 import { discordThreadUrl } from "../domain/story.js";
@@ -52,7 +53,7 @@ export class TaigaNotifier {
       const components = buttons.length ? [new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons)] : [];
       await channel.send({ embeds: [embed], components });
     } catch (error) {
-      console.warn("Taiga notification failed", { errorType: errorType(error) });
+      appLogger().warn({ category: "taiga", err: error, errorType: errorType(error) }, "Could not post to the notifications channel");
     }
   }
 

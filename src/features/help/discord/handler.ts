@@ -4,6 +4,7 @@ import {
 import type { Config } from "../../../core/config.js";
 import type { Db } from "../../../core/db.js";
 import { UserFacingError, errorType, userError } from "../../../core/errors.js";
+import { appLogger } from "../../../core/logger.js";
 import { BRAND_COLOR } from "../../../shared/discord/colors.js";
 import type { HelpSection } from "../../../shared/discord/help.js";
 import { permissionLabel, permissionLevelFor, PermissionLevel } from "../../../shared/permissions.js";
@@ -24,13 +25,13 @@ export class HelpCommandHandler {
   register(): void {
     this.client.on("interactionCreate", (interaction) => void this.handle(interaction).catch(async (error: unknown) => {
       const message = error instanceof UserFacingError ? error.message : "The command list could not be loaded. Please try again later.";
-      if (!(error instanceof UserFacingError)) console.error("Help interaction failed", { errorType: errorType(error) });
+      if (!(error instanceof UserFacingError)) appLogger().error({ category: "command", err: error, errorType: errorType(error) }, "/help failed");
       if (!interaction.isRepliable()) return;
       try {
         if (interaction.deferred && !interaction.replied) await interaction.editReply({ content: `Error: ${message}` });
         else await interaction.reply({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
       } catch (replyError) {
-        console.error("Failed to deliver help interaction error", { errorType: errorType(replyError) });
+        appLogger().error({ category: "command", err: replyError, errorType: errorType(replyError) }, "Could not tell the user /help failed");
       }
     }));
   }

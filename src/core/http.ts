@@ -1,11 +1,18 @@
 import { timingSafeEqual } from "node:crypto";
 import rateLimit from "@fastify/rate-limit";
-import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyReply } from "fastify";
+import Fastify, { LogController, type FastifyBaseLogger, type FastifyInstance, type FastifyReply } from "fastify";
 import { ZodError } from "zod";
 import type { Config } from "./config.js";
 import { errorType } from "./errors.js";
+import { createAppLogger, type Logger } from "./logger.js";
 
 export type Readiness = () => Promise<void>;
+
+/** Probes the orchestrator polls constantly. They are only worth a line when they fail. */
+const PROBE_PATHS = new Set(["/health", "/ready"]);
+
+/** A request slower than this is worth reading about even if it succeeded. */
+const SLOW_REQUEST_MS = 1000;
 
 /** Constant-time comparison of a `Bearer <secret>` header against a shared secret. */
 export function secretMatches(header: string | undefined, expected: string): boolean {
@@ -22,7 +29,7 @@ export function secretMatches(header: string | undefined, expected: string): boo
  */
 export function replyWithDefaultError(log: FastifyBaseLogger, error: unknown, reply: FastifyReply): FastifyReply {
   if (error instanceof ZodError) return reply.code(400).send({ error: "invalid_payload", details: error.flatten() });
-  log.error({ operation: "request_handling", errorType: errorType(error) }, "Unhandled request error");
+  log.error({ category: "http", err: error, errorType: errorType(error) }, "Unhandled request error");
   return reply.code(500).send({ error: "internal_error" });
 }
 
@@ -31,19 +38,29 @@ export function replyWithDefaultError(log: FastifyBaseLogger, error: unknown, re
  * default error contract. Features add their own routes afterwards with
  * `app.register(...)`, each in its own encapsulated scope.
  */
-export async function buildHttpServer(config: Config, readiness: Readiness = async () => undefined): Promise<FastifyInstance> {
+export async function buildHttpServer(
+  config: Config,
+  readiness: Readiness = async () => undefined,
+  log: Logger = createAppLogger(config),
+): Promise<FastifyInstance> {
   const app = Fastify({
-    logger: {
-      level: "info",
-      redact: {
-        paths: ["req.headers", "res.headers['set-cookie']"],
-        censor: "[REDACTED]",
-      },
-    },
+    loggerInstance: log as unknown as FastifyBaseLogger,
+    // Fastify's own pair of lines per request carries nothing a reader wants:
+    // the `onResponse` hook below logs one line, and only when it says something.
+    logController: new LogController({ disableRequestLogging: true }),
     bodyLimit: 256 * 1024,
     trustProxy: config.TRUST_PROXY === "loopback" ? "127.0.0.1/8" : false,
   });
   await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
+
+  app.addHook("onResponse", async (request, reply) => {
+    const durationMs = reply.elapsedTime;
+    const path = request.url.split("?")[0] ?? request.url;
+    const healthy = reply.statusCode < 400;
+    if (PROBE_PATHS.has(path) && healthy && durationMs < SLOW_REQUEST_MS) return;
+    const level = reply.statusCode >= 500 ? "error" : reply.statusCode >= 400 ? "warn" : "info";
+    log[level]({ category: "http", durationMs }, `${request.method} ${path} → ${reply.statusCode}`);
+  });
 
   app.get("/health", async () => ({ status: "ok" }));
   app.get("/ready", async (_request, reply) => {
@@ -51,7 +68,7 @@ export async function buildHttpServer(config: Config, readiness: Readiness = asy
       await readiness();
       return { status: "ready" };
     } catch (error) {
-      app.log.error({ operation: "readiness_check", errorType: errorType(error) }, "Readiness check failed");
+      log.error({ category: "db", err: error, errorType: errorType(error) }, "Readiness check failed");
       return reply.code(503).send({ status: "not_ready" });
     }
   });

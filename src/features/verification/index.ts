@@ -9,7 +9,7 @@ import { VerificationService } from "./service/verification-service.js";
 /** Discord-only reminders and removal for members who remain Unverified. */
 export function createVerificationFeature(ctx: FeatureContext): Feature | null {
   if (!verificationConfigured(ctx.config)) {
-    ctx.log.info({ feature: "verification" }, "Verification reminders are not configured; skipping");
+    ctx.log.info({ category: "verify" }, "Not configured; skipping");
     return null;
   }
 
@@ -24,7 +24,7 @@ export function createVerificationFeature(ctx: FeatureContext): Feature | null {
     configSections: [verificationConfigSection(ctx.config, service)],
     onReady: async () => { await service.run(); },
     jobs: [{
-      name: "Discord verification reminder",
+      name: "verification reminder",
       // Check hourly so a restart cannot shift or stretch the persisted
       // three-day posting cadence.
       intervalMs: VERIFICATION_CHECK_INTERVAL_MS,

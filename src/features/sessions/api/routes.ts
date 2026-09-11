@@ -46,11 +46,10 @@ export function sessionRoutes({ config, sessions, onChanged }: SessionRouteOptio
       }
       if (removedMessages.length) await onChanged([...changed], removedMessages);
       else await onChanged([...changed]);
-      const outcomes = results.reduce<Record<string, number>>((counts, result) => {
-        counts[result.status] = (counts[result.status] ?? 0) + 1;
-        return counts;
-      }, {});
-      app.log.info({ eventCount: batch.events.length, changedSessionCount: changed.size, removedMessageCount: removedMessages.length, outcomes }, "Authenticated presence batch completed");
+      // Heartbeats arrive every few seconds and almost never change anything,
+      // so the batch itself is not news. What a batch actually did to a shift
+      // is logged by the session lifecycle, one line per real change.
+      app.log.debug({ category: "session", events: batch.events.length, changed: changed.size }, "Presence batch accepted");
       return reply.code(202).send({ results });
     });
   };

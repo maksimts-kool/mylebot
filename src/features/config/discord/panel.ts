@@ -5,6 +5,7 @@ import {
 import type { Config } from "../../../core/config.js";
 import type { Db } from "../../../core/db.js";
 import { UserFacingError, errorType, userError } from "../../../core/errors.js";
+import { appLogger } from "../../../core/logger.js";
 import { BRAND_COLOR } from "../../../shared/discord/colors.js";
 import type { ConfigComponentInteraction, ConfigRow, ConfigSection, ConfigView } from "../../../shared/discord/config-section.js";
 import { PermissionLevel, hasPermission } from "../../../shared/permissions.js";
@@ -30,14 +31,14 @@ export class ConfigPanelHandler {
   register(): void {
     this.client.on("interactionCreate", (interaction) => void this.handle(interaction).catch(async (error: unknown) => {
       const message = error instanceof UserFacingError ? error.message : "The configuration panel could not be updated. Please try again later.";
-      if (!(error instanceof UserFacingError)) console.error("Configuration interaction failed", { errorType: errorType(error) });
+      if (!(error instanceof UserFacingError)) appLogger().error({ category: "config", err: error, errorType: errorType(error) }, "Configuration panel failed");
       if (!interaction.isRepliable()) return;
       try {
         if (interaction.deferred && !interaction.replied) await interaction.editReply({ content: `Error: ${message}` });
         else if (interaction.replied) await interaction.followUp({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
         else await interaction.reply({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
       } catch (replyError) {
-        console.error("Failed to deliver configuration interaction error", { errorType: errorType(replyError) });
+        appLogger().error({ category: "config", err: replyError, errorType: errorType(replyError) }, "Could not tell the user the panel failed");
       }
     }));
   }

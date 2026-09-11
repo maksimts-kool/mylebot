@@ -5,7 +5,8 @@ import {
 } from "discord.js";
 import type { Config } from "../../../../core/config.js";
 import type { Db } from "../../../../core/db.js";
-import { UserFacingError, userError } from "../../../../core/errors.js";
+import { UserFacingError, errorType, userError } from "../../../../core/errors.js";
+import { appLogger } from "../../../../core/logger.js";
 import type { BloxlinkService } from "../../../../shared/bloxlink.js";
 import { PublicComponentTracker } from "../../../../shared/discord/components.js";
 import { PermissionLevel, hasPermission, permissionLabel } from "../../../../shared/permissions.js";
@@ -57,13 +58,16 @@ export class SessionCommandHandler {
   register(): void {
     this.client.on("interactionCreate", (interaction) => void this.handle(interaction).catch(async (error: unknown) => {
       const message = error instanceof UserFacingError ? error.message : "The request could not be completed. Please try again later.";
-      if (!(error instanceof UserFacingError)) console.error("Discord interaction failed", {
-        error,
-        command: interaction.isCommand() ? interaction.commandName : undefined,
-        customId: interaction.isMessageComponent() || interaction.isModalSubmit() ? interaction.customId : undefined,
-        guildId: interaction.guildId,
-        userId: interaction.user.id,
-      });
+      if (!(error instanceof UserFacingError)) {
+        appLogger().error({
+          category: "command",
+          actor: interaction.user.username,
+          err: error,
+          errorType: errorType(error),
+          command: interaction.isCommand() ? interaction.commandName : undefined,
+          customId: interaction.isMessageComponent() || interaction.isModalSubmit() ? interaction.customId : undefined,
+        }, "Command failed");
+      }
       if (interaction.isRepliable()) {
         // Delivering the error can itself fail (e.g. the interaction already
         // expired with a 10062). Swallow that so it never crashes the process.
@@ -72,7 +76,7 @@ export class SessionCommandHandler {
           else if (interaction.replied) await interaction.followUp({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
           else await interaction.reply({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
         } catch (replyError) {
-          console.error("Failed to deliver interaction error message", { replyError, userId: interaction.user.id });
+          appLogger().error({ category: "command", actor: interaction.user.username, err: replyError }, "Could not tell the user the command failed");
         }
       }
     }));
@@ -97,6 +101,11 @@ export class SessionCommandHandler {
   }
 
   private async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+    const subcommand = interaction.options.getSubcommand(false);
+    appLogger().info(
+      { category: "command", actor: interaction.user.username },
+      `/${interaction.commandName}${subcommand ? ` ${subcommand}` : ""}`,
+    );
     if (interaction.commandName === "leaderboard") {
       await interaction.deferReply();
       const period = interaction.options.getString("period") ?? "month";
@@ -168,7 +177,7 @@ export class SessionCommandHandler {
     if (access === "not-owner") userError("Only the person who ran this command can use these controls");
     if (access === "expired") {
       await interaction.message.edit({ components: [] }).catch((error: unknown) => {
-        console.error("Failed to remove expired public controls", { error, messageId: interaction.message.id });
+        appLogger().error({ category: "command", err: error, messageId: interaction.message.id }, "Could not remove expired controls");
       });
       userError("These controls have expired. Run the command again");
     }

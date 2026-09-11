@@ -1,10 +1,18 @@
-import type { FastifyBaseLogger } from "fastify";
 import { errorType } from "./errors.js";
+import type { Logger } from "./logger.js";
+
+/**
+ * What a run has to say for itself. A job that returns nothing did nothing
+ * worth reading about, and stays silent at `info` — most ticks of a sweep or a
+ * poll are exactly that. Anything a job does return is appended to its name,
+ * so phrase it as a verb: `"ended 2 stale sessions"`.
+ */
+export type JobOutcome = string | undefined | void;
 
 export type ScheduledJob = {
   name: string;
   intervalMs: number;
-  run: () => Promise<void>;
+  run: () => Promise<JobOutcome>;
 };
 
 /**
@@ -16,25 +24,27 @@ export class Scheduler {
   private readonly timers: NodeJS.Timeout[] = [];
   private stopping = false;
 
-  constructor(private readonly log: FastifyBaseLogger) {}
+  constructor(private readonly log: Logger) {}
 
   register(job: ScheduledJob): void {
     const timer: NodeJS.Timeout = setTimeout(async () => {
       if (this.stopping) return;
       const startedAt = Date.now();
       try {
-        await job.run();
-        this.log.info({ job: job.name, durationMs: Date.now() - startedAt }, "Scheduled job completed");
+        const outcome = await job.run();
+        const durationMs = Date.now() - startedAt;
+        if (outcome) this.log.info({ category: "job", durationMs }, `${job.name} ${outcome}`);
+        else this.log.debug({ category: "job", durationMs }, `${job.name} completed`);
       } catch (error) {
-        this.log.error({ job: job.name, errorType: errorType(error), durationMs: Date.now() - startedAt }, "Scheduled job failed");
+        this.log.error({ category: "job", err: error, errorType: errorType(error), durationMs: Date.now() - startedAt }, `${job.name} failed`);
       } finally {
         if (!this.stopping) timer.refresh();
-        const duration = Date.now() - startedAt;
-        if (duration > job.intervalMs) this.log.warn({ job: job.name, durationMs: duration, intervalMs: job.intervalMs }, "Scheduled job exceeded its interval");
+        const durationMs = Date.now() - startedAt;
+        if (durationMs > job.intervalMs) this.log.warn({ category: "job", durationMs, intervalMs: job.intervalMs }, `${job.name} ran longer than its interval`);
       }
     }, job.intervalMs);
     this.timers.push(timer);
-    this.log.info({ job: job.name, intervalMs: job.intervalMs }, "Scheduled job registered");
+    this.log.debug({ category: "job", intervalMs: job.intervalMs }, `${job.name} registered`);
   }
 
   stop(): void {

@@ -1,45 +1,75 @@
+x-app: &app
+  build:
+    context: .
+  restart: unless-stopped
+  environment: &app-env
+    DATABASE_URL: postgresql://${POSTGRES_USER:-session_tracker}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-session_tracker}?schema=public
+    API_HOST: 0.0.0.0
+    API_PORT: 3000
+    INTERNAL_SECRET: ${INTERNAL_SECRET:?set INTERNAL_SECRET}
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    # Containers have no terminal, so colour is opt-in rather than detected.
+    LOG_COLOR: ${LOG_COLOR:-always}
+    LOG_FORMAT: ${LOG_FORMAT:-pretty}
+    DISCORD_TOKEN: ${DISCORD_TOKEN:?set DISCORD_TOKEN}
+    DISCORD_APPLICATION_ID: ${DISCORD_APPLICATION_ID:?set DISCORD_APPLICATION_ID}
+    DISCORD_GUILD_ID: ${DISCORD_GUILD_ID:?set DISCORD_GUILD_ID}
+    VERIFICATION_CHANNEL_ID: ${VERIFICATION_CHANNEL_ID:-}
+    VERIFICATION_UNVERIFIED_ROLE_ID: ${VERIFICATION_UNVERIFIED_ROLE_ID:-}
+    SITE_NOTIFY_SECRET: ${SITE_NOTIFY_SECRET:?set SITE_NOTIFY_SECRET}
+    BLOXLINK_API_KEY: ${BLOXLINK_API_KEY:-}
+    ROBLOX_INGESTION_SECRET: ${ROBLOX_INGESTION_SECRET:?set ROBLOX_INGESTION_SECRET}
+    ROBLOX_UNIVERSE_ID: ${ROBLOX_UNIVERSE_ID:?set ROBLOX_UNIVERSE_ID}
+    ROBLOX_GROUP_ID: ${ROBLOX_GROUP_ID:?set ROBLOX_GROUP_ID}
+    ROBLOX_ALLOWED_PLACE_IDS: ${ROBLOX_ALLOWED_PLACE_IDS:?set ROBLOX_ALLOWED_PLACE_IDS}
+    ROBLOX_MIN_RANK: ${ROBLOX_MIN_RANK:-1}
+    ROBLOX_MAX_RANK: ${ROBLOX_MAX_RANK:-255}
+    TAIGA_BASE_URL: ${TAIGA_BASE_URL:-https://api.taiga.io}
+    TAIGA_WEB_URL: ${TAIGA_WEB_URL:-https://tree.taiga.io}
+    TAIGA_USERNAME: ${TAIGA_USERNAME:-}
+    TAIGA_PASSWORD: ${TAIGA_PASSWORD:-}
+    TAIGA_PROJECT_SLUG: ${TAIGA_PROJECT_SLUG:-}
+    TAIGA_WEBHOOK_SECRET: ${TAIGA_WEBHOOK_SECRET:-}
+    TAIGA_RECONCILE_SECONDS: ${TAIGA_RECONCILE_SECONDS:-600}
+    REPORT_TIMEZONE: ${REPORT_TIMEZONE:-Europe/Tallinn}
+    TRUST_PROXY: ${TRUST_PROXY:-loopback}
+
+x-healthcheck: &healthcheck
+  test: [ "CMD", "node", "-e", "fetch('http://127.0.0.1:3000/ready').then(r=>{if(!r.ok){console.error('readiness check failed: status='+r.status);process.exit(1)}}).catch(()=>{console.error('readiness check failed: unavailable');process.exit(1)})" ]
+  interval: 15s
+  timeout: 5s
+  retries: 5
+  start_period: 30s
+
 services:
-  app:
-    build:
-      context: .
-    restart: unless-stopped
+  # The only published port, and the only container that applies migrations.
+  # The Discord-backed endpoints are forwarded to the bot over this network.
+  server:
+    <<: *app
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-session_tracker}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-session_tracker}?schema=public
-      API_HOST: 0.0.0.0
-      API_PORT: 3000
-      DISCORD_TOKEN: ${DISCORD_TOKEN:?set DISCORD_TOKEN}
-      DISCORD_APPLICATION_ID: ${DISCORD_APPLICATION_ID:?set DISCORD_APPLICATION_ID}
-      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID:?set DISCORD_GUILD_ID}
-      VERIFICATION_CHANNEL_ID: ${VERIFICATION_CHANNEL_ID:-}
-      VERIFICATION_UNVERIFIED_ROLE_ID: ${VERIFICATION_UNVERIFIED_ROLE_ID:-}
-      SITE_NOTIFY_SECRET: ${SITE_NOTIFY_SECRET:?set SITE_NOTIFY_SECRET}
-      BLOXLINK_API_KEY: ${BLOXLINK_API_KEY:-}
-      ROBLOX_INGESTION_SECRET: ${ROBLOX_INGESTION_SECRET:?set ROBLOX_INGESTION_SECRET}
-      ROBLOX_UNIVERSE_ID: ${ROBLOX_UNIVERSE_ID:?set ROBLOX_UNIVERSE_ID}
-      ROBLOX_GROUP_ID: ${ROBLOX_GROUP_ID:?set ROBLOX_GROUP_ID}
-      ROBLOX_ALLOWED_PLACE_IDS: ${ROBLOX_ALLOWED_PLACE_IDS:?set ROBLOX_ALLOWED_PLACE_IDS}
-      ROBLOX_MIN_RANK: ${ROBLOX_MIN_RANK:-1}
-      ROBLOX_MAX_RANK: ${ROBLOX_MAX_RANK:-255}
-      TAIGA_BASE_URL: ${TAIGA_BASE_URL:-https://api.taiga.io}
-      TAIGA_WEB_URL: ${TAIGA_WEB_URL:-https://tree.taiga.io}
-      TAIGA_USERNAME: ${TAIGA_USERNAME:-}
-      TAIGA_PASSWORD: ${TAIGA_PASSWORD:-}
-      TAIGA_PROJECT_SLUG: ${TAIGA_PROJECT_SLUG:-}
-      TAIGA_WEBHOOK_SECRET: ${TAIGA_WEBHOOK_SECRET:-}
-      TAIGA_RECONCILE_SECONDS: ${TAIGA_RECONCILE_SECONDS:-600}
-      REPORT_TIMEZONE: ${REPORT_TIMEZONE:-Europe/Tallinn}
-      TRUST_PROXY: ${TRUST_PROXY:-loopback}
+      <<: *app-env
+      APP_ROLE: server
+      BOT_INTERNAL_URL: http://bot:3000
     ports:
       - "${APP_BIND_IP:-127.0.0.1}:${APP_PORT:-3000}:3000"
     depends_on:
       db:
         condition: service_healthy
-    healthcheck:
-      test: [ "CMD", "node", "-e", "fetch('http://127.0.0.1:3000/ready').then(r=>{if(!r.ok){console.error('readiness check failed: status='+r.status);process.exit(1)}}).catch(()=>{console.error('readiness check failed: unavailable');process.exit(1)})" ]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+    healthcheck: *healthcheck
+
+  # Holds the Discord gateway and runs the scheduled jobs. No published port.
+  bot:
+    <<: *app
+    environment:
+      <<: *app-env
+      APP_ROLE: bot
+    depends_on:
+      db:
+        condition: service_healthy
+      server:
+        condition: service_healthy
+    healthcheck: *healthcheck
+
   db:
     image: postgres:17-alpine
     restart: unless-stopped

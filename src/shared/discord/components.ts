@@ -1,4 +1,5 @@
 import { ActionRowBuilder, TextInputBuilder, TextInputStyle } from "discord.js";
+import { appLogger } from "../../core/logger.js";
 
 export const PUBLIC_COMPONENT_LIFETIME_MS = 15 * 60_000;
 
@@ -27,7 +28,7 @@ export class PublicComponentTracker {
       timeout: setTimeout(() => {
         if (this.registrations.get(messageId) !== registration) return;
         this.registrations.delete(messageId);
-        void onExpire().catch((error: unknown) => console.error("Failed to disable expired public controls", { error, messageId }));
+        void onExpire().catch((error: unknown) => appLogger().error({ category: "command", err: error, messageId }, "Could not disable expired message controls"));
       }, this.lifetimeMs),
     };
     registration.timeout.unref();

@@ -6,6 +6,7 @@ import { sessionRoutes, type SessionsChanged } from "../../src/features/sessions
 import type { SessionService } from "../../src/features/sessions/service/session-service.js";
 
 const config = loadConfig({
+  LOG_LEVEL: "silent",
   DATABASE_URL: "postgresql://example.invalid/db",
   ROBLOX_INGESTION_SECRET: "12345678901234567890123456789012",
   ROBLOX_UNIVERSE_ID: "100",
@@ -48,16 +49,12 @@ describe("ingestion API", () => {
   it("accepts an authenticated event and reports changed sessions", async () => {
     const process = vi.fn().mockResolvedValue({ eventId: validEvent.eventId, status: "accepted", sessionId: "session-1", changed: true });
     const changed = vi.fn(); const app = await buildApp({ process } as never, changed);
-    const info = vi.spyOn(app.log, "info");
+    // The batch itself is routine traffic, so it only reaches the log at debug.
+    const debug = vi.spyOn(app.log, "debug");
     const response = await app.inject({ method: "POST", url: "/v1/roblox/presence/batch", headers: { authorization: `Bearer ${config.ROBLOX_INGESTION_SECRET}` }, payload: { events: [validEvent] } });
     expect(response.statusCode).toBe(202); expect(process).toHaveBeenCalledOnce(); expect(changed).toHaveBeenCalledWith(["session-1"]);
-    expect(info).toHaveBeenCalledWith({
-      eventCount: 1,
-      changedSessionCount: 1,
-      removedMessageCount: 0,
-      outcomes: { accepted: 1 },
-    }, "Authenticated presence batch completed");
-    const completion = info.mock.calls.find(([, message]) => message === "Authenticated presence batch completed");
+    expect(debug).toHaveBeenCalledWith({ category: "session", events: 1, changed: 1 }, "Presence batch accepted");
+    const completion = debug.mock.calls.find(([, message]) => message === "Presence batch accepted");
     expect(JSON.stringify(completion)).not.toContain(config.ROBLOX_INGESTION_SECRET);
     expect(JSON.stringify(completion)).not.toContain(validEvent.player.userId);
   });

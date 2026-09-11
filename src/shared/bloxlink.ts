@@ -1,9 +1,15 @@
 import type { Config } from "../core/config.js";
 import type { Db } from "../core/db.js";
+import { appLogger } from "../core/logger.js";
 
 type RobloxMapping = { userId: bigint; username: string };
 
 const ROBLOX_MAPPING_CACHE_MS = 10 * 60 * 1_000;
+
+/** Every line from here is about a Roblox/Discord identity lookup. */
+function log() {
+  return appLogger().child({ category: "discord" });
+}
 
 export class BloxlinkService {
   private readonly robloxMappingCache = new Map<string, { expiresAt: number; value: RobloxMapping }>();
@@ -25,13 +31,13 @@ export class BloxlinkService {
         signal: AbortSignal.timeout(5_000),
       });
       if (!response.ok) {
-        console.warn("Roblox username lookup failed", { status: response.status, robloxUserId });
+        log().warn({ status: response.status, robloxUserId }, "Roblox turned down a username lookup");
         return null;
       }
       const body = await response.json() as { name?: unknown };
       return typeof body.name === "string" && body.name.trim() ? body.name.trim() : null;
     } catch (error) {
-      console.warn("Roblox username lookup errored", { error, robloxUserId });
+      log().warn({ err: error, robloxUserId }, "Roblox username lookup failed");
       return null;
     }
   }
@@ -46,7 +52,7 @@ export class BloxlinkService {
       const url = `${this.config.BLOXLINK_BASE_URL}/guilds/${this.config.DISCORD_GUILD_ID}/roblox-to-discord/${robloxUserId}`;
       const response = await this.request(url);
       if (!response.ok) {
-        console.warn("Bloxlink Roblox-to-Discord request failed", { status: response.status, robloxUserId: robloxUserId.toString() });
+        log().warn({ status: response.status, robloxUserId: robloxUserId.toString() }, "Bloxlink turned down a Roblox-to-Discord lookup");
         return identity?.discordUserId ?? null;
       }
       const body = await response.json() as { discordIDs?: string[] };
@@ -54,7 +60,7 @@ export class BloxlinkService {
       await this.db.identity.update({ where: { robloxUserId }, data: { discordUserId, mappingCheckedAt: new Date() } });
       return discordUserId;
     } catch (error) {
-      console.warn("Bloxlink Roblox-to-Discord request errored", { error, robloxUserId: robloxUserId.toString() });
+      log().warn({ err: error, robloxUserId: robloxUserId.toString() }, "Bloxlink Roblox-to-Discord lookup failed");
       return identity?.discordUserId ?? null;
     }
   }
@@ -89,7 +95,7 @@ export class BloxlinkService {
       const url = `${this.config.BLOXLINK_BASE_URL}/guilds/${this.config.DISCORD_GUILD_ID}/discord-to-roblox/${discordUserId}`;
       const response = await this.request(url);
       if (!response.ok) {
-        console.warn("Bloxlink Discord-to-Roblox request failed", { status: response.status, discordUserId });
+        log().warn({ status: response.status, discordUserId }, "Bloxlink turned down a Discord-to-Roblox lookup");
         return null;
       }
       const body = await response.json() as {
@@ -103,7 +109,7 @@ export class BloxlinkService {
       const username = body.resolved?.roblox?.name?.trim() || await this.usernameForRobloxId(id);
       return { userId: BigInt(id), username: username ?? `Roblox ${id}` };
     } catch (error) {
-      console.warn("Bloxlink Discord-to-Roblox request errored", { error, discordUserId });
+      log().warn({ err: error, discordUserId }, "Bloxlink Discord-to-Roblox lookup failed");
       return null;
     }
   }

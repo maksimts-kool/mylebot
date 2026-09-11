@@ -1,9 +1,15 @@
+import { botInternalRoutes } from "../../core/bot-link.js";
 import type { Feature, FeatureContext } from "../../core/feature.js";
 import { sessionRoutes } from "./api/routes.js";
 import { sessionCommandData, sessionHelp } from "./discord/commands/definitions.js";
 import { SessionCommandHandler } from "./discord/commands/handler.js";
 import { DiscordPublisher } from "./discord/publisher.js";
-import { SessionService } from "./service/session-service.js";
+import { SessionService, type DiscordMessageReference } from "./service/session-service.js";
+
+/** `1 session` / `3 sessions`, so the log lines read as English. */
+function plural(count: number, noun: string, many = `${noun}s`): string {
+  return `${count} ${count === 1 ? noun : many}`;
+}
 
 /**
  * Roblox play-session tracking: HTTP ingestion, the session lifecycle, and the
@@ -11,37 +17,41 @@ import { SessionService } from "./service/session-service.js";
  * session truth.
  */
 export function createSessionsFeature(ctx: FeatureContext): Feature {
-  const sessions = new SessionService(ctx.db, ctx.config, ctx.settings);
-  const publisher = new DiscordPublisher(ctx.client, ctx.db, ctx.config, ctx.bloxlink, ctx.settings);
-  new SessionCommandHandler(ctx.client, ctx.db, ctx.config, publisher, ctx.bloxlink, ctx.settings).register();
+  const log = ctx.log.child({ category: "session" });
+  const sessions = new SessionService(ctx.db, ctx.config, ctx.settings, log);
+  const publisher = new DiscordPublisher(ctx.client, ctx.db, ctx.config, ctx.bloxlink, ctx.settings, ctx.log);
+  // Slash commands answer on the gateway, so they are only worth wiring up in
+  // the process that holds one.
+  if (!ctx.bot) new SessionCommandHandler(ctx.client, ctx.db, ctx.config, publisher, ctx.bloxlink, ctx.settings).register();
+
+  /** Brings Discord up to date, here or in the container that can. */
+  const publish = async (ids: string[], removedMessages?: DiscordMessageReference[]): Promise<void> => {
+    if (ctx.bot) return ctx.bot.sessionsChanged(ids, removedMessages);
+    await publisher.refreshMany(ids);
+    if (removedMessages) await publisher.removeMessages(removedMessages);
+  };
 
   return {
     name: "sessions",
     commands: sessionCommandData,
     help: sessionHelp,
-    routes: sessionRoutes({
-      config: ctx.config,
-      sessions,
-      onChanged: async (ids, removedMessages) => {
-        await publisher.refreshMany(ids);
-        if (removedMessages) await publisher.removeMessages(removedMessages);
-      },
-    }),
+    routes: sessionRoutes({ config: ctx.config, sessions, onChanged: publish }),
+    // The API half records the change and then asks this half to show it.
+    internalRoutes: botInternalRoutes({ config: ctx.config, onSessionsChanged: publish }),
     onStart: async () => {
       const cleanup = await sessions.cleanupSessionData();
       await publisher.removeMessages(cleanup.removedMessages);
-      ctx.log.info({
-        phase: "initial_session_cleanup",
-        removedSessionCount: cleanup.removedSessionCount,
-        removedIdentityCount: cleanup.removedIdentityCount,
-        removedMessageCount: cleanup.removedMessages.length,
-      }, "Initial session data cleanup completed");
+      if (cleanup.removedSessionCount || cleanup.removedIdentityCount) {
+        log.info(
+          { sessions: cleanup.removedSessionCount, identities: cleanup.removedIdentityCount, messages: cleanup.removedMessages.length },
+          "Cleared expired session data",
+        );
+      }
       // A failure here is fatal on purpose: starting up with a stale lifecycle
       // state would publish wrong session times.
-      ctx.log.info({ phase: "initial_session_sweep" }, "Initial session sweep started");
       const ids = await sessions.sweep();
       await publisher.refreshMany(ids);
-      ctx.log.info({ phase: "initial_session_sweep", affectedSessionCount: ids.length }, "Initial session sweep completed");
+      if (ids.length) log.info(`Closed ${plural(ids.length, "session")} left open by the last shutdown`);
     },
     onReady: async () => {
       await publisher.restore();
@@ -53,6 +63,7 @@ export function createSessionsFeature(ctx: FeatureContext): Feature {
         run: async () => {
           const ids = await sessions.sweep();
           await publisher.refreshMany(ids);
+          return ids.length ? `ended ${plural(ids.length, "stale session")}` : undefined;
         },
       },
       {
@@ -79,7 +90,7 @@ export function createSessionsFeature(ctx: FeatureContext): Feature {
           // the rows and take them down on a later pass.
           if (!removed) return;
           const forgotten = await sessions.forgetAnnouncements(expired.map(({ id }) => id));
-          ctx.log.info({ job: "announcement cleanup", removedAnnouncementCount: forgotten }, "Ended shift announcements removed from the staff channel");
+          return forgotten ? `took down ${plural(forgotten, "ended shift announcement")}` : undefined;
         },
       },
       {
@@ -88,14 +99,8 @@ export function createSessionsFeature(ctx: FeatureContext): Feature {
         run: async () => {
           const cleanup = await sessions.cleanupSessionData();
           await publisher.removeMessages(cleanup.removedMessages);
-          if (cleanup.removedSessionCount || cleanup.removedIdentityCount) {
-            ctx.log.info({
-              job: "session data cleanup",
-              removedSessionCount: cleanup.removedSessionCount,
-              removedIdentityCount: cleanup.removedIdentityCount,
-              removedMessageCount: cleanup.removedMessages.length,
-            }, "Expired and below-minimum session data removed");
-          }
+          if (!cleanup.removedSessionCount && !cleanup.removedIdentityCount) return;
+          return `removed ${plural(cleanup.removedSessionCount, "session")} and ${plural(cleanup.removedIdentityCount, "identity", "identities")}`;
         },
       },
       {
@@ -103,7 +108,7 @@ export function createSessionsFeature(ctx: FeatureContext): Feature {
         intervalMs: 24 * 60 * 60 * 1000,
         run: async () => {
           const count = await sessions.cleanupProcessedEvents();
-          if (count) ctx.log.info({ job: "processed-event cleanup", removedEventCount: count }, "Expired processed events removed");
+          return count ? `removed ${plural(count, "expired event")}` : undefined;
         },
       },
     ],

@@ -41,7 +41,7 @@ export function taigaRoutes({ config, onDelivery }: TaigaRouteOptions): FastifyP
       } catch (error) {
         // Answer 202 anyway: a retry carries the same body and is deduplicated,
         // so the reconcile sweep is what actually repairs a failed delivery.
-        app.log.error({ feature: "taiga", action: result.data.action, type: result.data.type, errorType: errorType(error) }, "Taiga webhook processing failed");
+        app.log.error({ category: "taiga", err: error, errorType: errorType(error), action: result.data.action, type: result.data.type }, "Webhook could not be processed");
         return reply.code(202).send({ status: "deferred" });
       }
     });

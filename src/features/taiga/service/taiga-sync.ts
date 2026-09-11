@@ -1,8 +1,8 @@
 import { Prisma, type TaigaCard, type TaigaCardKind } from "@prisma/client";
 import { ChannelType, type AnyThreadChannel, type Client } from "discord.js";
-import type { FastifyBaseLogger } from "fastify";
 import type { Db } from "../../../core/db.js";
 import { errorType } from "../../../core/errors.js";
+import type { Logger } from "../../../core/logger.js";
 import { TaigaApiError, type TaigaClient, type TaigaEpic } from "../client.js";
 import {
   DECLINED_TAGS, INITIAL_COLUMN, KNOWN_COLUMNS, KNOWN_FORUM_TAGS, isKnownColumn, isShippedColumn,
@@ -24,14 +24,18 @@ export type HealthReport = {
 };
 
 export class TaigaSyncService {
+  private readonly log: Logger;
+
   constructor(
     private readonly db: Db,
     private readonly client: Client,
     private readonly taiga: TaigaClient,
     private readonly settings: TaigaSettingsService,
     private readonly notifier: TaigaNotifier,
-    private readonly log: FastifyBaseLogger,
-  ) {}
+    log: Logger,
+  ) {
+    this.log = log.child({ category: "taiga" });
+  }
 
   // ---------------------------------------------------------------- Discord → Taiga
 
@@ -54,13 +58,13 @@ export class TaigaSyncService {
     const starter = await thread.fetchStarterMessage().catch(() => null);
     const author = starter?.author ?? (thread.ownerId ? await this.client.users.fetch(thread.ownerId).catch(() => null) : null);
     if (!author) {
-      this.log.warn({ feature: "taiga", threadId: thread.id }, "Forum post has no resolvable author; skipping card creation");
+      this.log.warn({ threadId: thread.id }, "Forum post has no resolvable author; skipping card creation");
       return;
     }
     if (starter && !starter.content) {
       // Empty content on a real message means the privileged MessageContent
       // intent is missing or the post genuinely had only attachments.
-      this.log.warn({ feature: "taiga", threadId: thread.id }, "Forum post starter message had no readable content");
+      this.log.warn({ threadId: thread.id }, "Forum post starter message had no readable content");
     }
 
     const statusId = await this.statusIdFor(INITIAL_COLUMN);
@@ -90,7 +94,7 @@ export class TaigaSyncService {
         authorName: author.displayName || author.username,
       },
     });
-    this.log.info({ feature: "taiga", threadId: thread.id, taigaRef: story.ref, kind }, "Taiga card created for forum post");
+    this.log.info({ actor: card.authorName, card: `#${story.ref}`, kind }, "Card created from a forum post");
     await this.applyColumnToPost(card, INITIAL_COLUMN);
     await this.notifier.cardCreated(card);
   }
@@ -107,13 +111,13 @@ export class TaigaSyncService {
     } catch (error) {
       // A 404 means it is already gone, which is the state we wanted.
       if (!(error instanceof TaigaApiError) || error.status !== 404) {
-        this.log.error({ feature: "taiga", threadId, errorType: errorType(error) }, "Deleting the Taiga card failed");
+        this.log.error({ err: error, errorType: errorType(error), threadId }, "Could not delete the card");
         await this.db.taigaCard.update({ where: { id: card.id }, data: { deleting: false } });
         return;
       }
     }
     await this.db.taigaCard.delete({ where: { id: card.id } });
-    this.log.info({ feature: "taiga", threadId, taigaRef: card.taigaRef }, "Taiga card removed with its forum post");
+    this.log.info({ actor: card.authorName, card: `#${card.taigaRef}` }, "Card removed with its forum post");
     await this.notifier.postRemoved(card);
   }
 
@@ -150,13 +154,13 @@ export class TaigaSyncService {
       // Clearing a shipped card off the board is housekeeping, not a rejection:
       // the post keeps its Approved tag and we simply stop tracking it.
       await this.db.taigaCard.delete({ where: { id: card.id } });
-      this.log.info({ feature: "taiga", taigaRef: card.taigaRef }, "Shipped Taiga card removed from the board");
+      this.log.info({ actor: card.authorName, card: `#${card.taigaRef}` }, "Shipped card cleared off the board");
       await this.notifier.shippedCardRemoved(card);
       return;
     }
     const updated = await this.db.taigaCard.update({ where: { id: card.id }, data: { declinedAt: new Date() } });
     await this.applyPostState(updated, DECLINED_TAGS, true);
-    this.log.info({ feature: "taiga", taigaRef: card.taigaRef, lastColumn: card.statusName }, "Taiga card deleted; post marked declined");
+    this.log.info({ actor: card.authorName, card: `#${card.taigaRef}`, lastColumn: card.statusName }, "Card deleted; the post is now marked declined");
     await this.notifier.cardDeclined(updated);
   }
 
@@ -164,7 +168,7 @@ export class TaigaSyncService {
     const from = card.statusName;
     const updated = await this.db.taigaCard.update({ where: { id: card.id }, data: { statusName: column } });
     await this.applyColumnToPost(updated, column);
-    this.log.info({ feature: "taiga", taigaRef: card.taigaRef, from, to: column }, "Taiga card moved");
+    this.log.info({ actor: card.authorName, card: `#${card.taigaRef}` }, `Card moved from ${from} to ${column}`);
     await this.notifier.cardMoved(updated, from, column);
   }
 
@@ -225,7 +229,7 @@ export class TaigaSyncService {
       if (!stories.length) return [];
       return this.db.taigaCard.findMany({ where: { taigaStoryId: { in: stories.map(({ id }) => id) } } });
     } catch (error) {
-      this.log.warn({ feature: "taiga", epicId, errorType: errorType(error) }, "Listing epic user stories failed");
+      this.log.warn({ err: error, errorType: errorType(error), epicId }, "Could not list the stories of an epic");
       return [];
     }
   }
@@ -245,7 +249,7 @@ export class TaigaSyncService {
     try {
       remote = await this.taiga.listUserStories();
     } catch (error) {
-      this.log.warn({ feature: "taiga", errorType: errorType(error) }, "Reading the Taiga board failed; skipping deletion checks");
+      this.log.warn({ err: error, errorType: errorType(error) }, "Board unreachable; skipping deletion checks");
     }
 
     const actions = reconcileCards(
@@ -260,10 +264,10 @@ export class TaigaSyncService {
         if (action.type === "moved") await this.applyColumnChange(card, action.to);
         else await this.handleCardDeleted(card);
       } catch (error) {
-        this.log.error({ feature: "taiga", taigaRef: card.taigaRef, action: action.type, errorType: errorType(error) }, "Taiga reconcile action failed");
+        this.log.error({ err: error, errorType: errorType(error), card: `#${card.taigaRef}`, action: action.type }, "Reconcile step failed");
       }
     }
-    if (actions.length) this.log.info({ feature: "taiga", repairedCount: actions.length }, "Taiga reconcile repaired card state");
+    if (actions.length) this.log.info({ repaired: actions.length }, "Reconcile repaired card state");
 
     await this.reconcileEpics(settings.epicsSeededAt !== null);
   }
@@ -273,7 +277,7 @@ export class TaigaSyncService {
     try {
       epics = await this.taiga.listEpics();
     } catch (error) {
-      this.log.warn({ feature: "taiga", errorType: errorType(error) }, "Reading Taiga epics failed");
+      this.log.warn({ err: error, errorType: errorType(error) }, "Could not read the epics");
       return;
     }
     for (const epic of epics) {
@@ -302,12 +306,12 @@ export class TaigaSyncService {
       const statuses = await this.taiga.statuses();
       const match = statuses.find((status) => sameName(status.name, columnName));
       if (!match) {
-        this.log.warn({ feature: "taiga", column: columnName }, "Taiga board has no column with this name");
+        this.log.warn({ column: columnName }, "The board has no column with this name");
         return undefined;
       }
       return match.id;
     } catch (error) {
-      this.log.warn({ feature: "taiga", column: columnName, errorType: errorType(error) }, "Reading Taiga statuses failed");
+      this.log.warn({ err: error, errorType: errorType(error), column: columnName }, "Could not read the board statuses");
       return undefined;
     }
   }
@@ -315,7 +319,7 @@ export class TaigaSyncService {
   private async applyColumnToPost(card: TaigaCard, column: string): Promise<void> {
     const tags = tagsForColumn(column);
     if (!tags) {
-      this.log.warn({ feature: "taiga", column, taigaRef: card.taigaRef }, "Unknown Taiga column; leaving the post's tags alone");
+      this.log.warn({ card: `#${card.taigaRef}`, column }, "Unknown column; leaving the post's tags alone");
       return;
     }
     await this.applyPostState(card, tags, shouldArchiveForColumn(column));
@@ -326,13 +330,13 @@ export class TaigaSyncService {
       const forum = await fetchForumChannel(this.client, card.channelId);
       const thread = await this.client.channels.fetch(card.threadId).catch(() => null);
       if (!forum || !thread || thread.type !== ChannelType.PublicThread) {
-        this.log.warn({ feature: "taiga", threadId: card.threadId }, "Forum post is no longer reachable; skipping tag update");
+        this.log.warn({ threadId: card.threadId }, "Forum post is no longer reachable; skipping tag update");
         return;
       }
       const { missing } = await applyForumState(thread, forum, { tags, archived });
-      if (missing.length) this.log.warn({ feature: "taiga", channelId: card.channelId, missingTags: missing }, "Forum is missing tags the board maps to");
+      if (missing.length) this.log.warn({ channelId: card.channelId, missingTags: missing }, "Forum is missing tags the board maps to");
     } catch (error) {
-      this.log.error({ feature: "taiga", threadId: card.threadId, errorType: errorType(error) }, "Updating the forum post failed");
+      this.log.error({ threadId: card.threadId, err: error, errorType: errorType(error) }, "Updating the forum post failed");
     }
   }
 

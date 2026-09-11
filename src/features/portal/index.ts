@@ -9,13 +9,15 @@ import { VerifiedMemberDirectory } from "./service/verified-members.js";
  */
 export function createPortalFeature(ctx: FeatureContext): Feature {
   const directory = new VerifiedMemberDirectory(ctx.client, ctx.config);
+  const plugin = portalRoutes({
+    config: ctx.config,
+    sendDirectMessage: createDirectMessageSender(ctx.client),
+    resolveRobloxUsername: async (discordId) => (await ctx.bloxlink.robloxForDiscord(discordId))?.username ?? null,
+    listVerifiedGuildMembers: () => directory.list(),
+  });
   return {
     name: "portal",
-    routes: portalRoutes({
-      config: ctx.config,
-      sendDirectMessage: createDirectMessageSender(ctx.client),
-      resolveRobloxUsername: async (discordId) => (await ctx.bloxlink.robloxForDiscord(discordId))?.username ?? null,
-      listVerifiedGuildMembers: () => directory.list(),
-    }),
+    // Every one of these ends in a Discord call: a DM, or the guild's members.
+    gatewayRoutes: { plugin, patterns: ["/internal/*"] },
   };
 }

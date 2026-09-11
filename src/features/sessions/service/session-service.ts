@@ -1,6 +1,7 @@
 import { Prisma, type Session, type SessionState } from "@prisma/client";
 import type { Config } from "../../../core/config.js";
 import type { Db } from "../../../core/db.js";
+import { formatDuration, type LogFields, type Logger } from "../../../core/logger.js";
 import type { RuntimeSettingsService } from "../../../shared/runtime-settings.js";
 import type { PresenceEvent } from "../domain/events.js";
 import { announcementRetentionCutoff, recordedTimeMeetsSessionMinimum, sessionRetentionCutoff } from "../domain/policy.js";
@@ -22,6 +23,13 @@ export type SessionDataCleanupResult = {
   removedIdentityCount: number;
   removedMessages: DiscordMessageReference[];
 };
+
+/**
+ * One line about a shift, held back until the transaction that produced it has
+ * committed. Logging inside a serializable transaction would repeat itself
+ * every time the transaction retried.
+ */
+type SessionActivity = { actor: string; message: string; details?: LogFields };
 
 export type EventResult = {
   eventId: string;
@@ -46,7 +54,20 @@ export class SessionService {
     private readonly db: Db,
     private readonly config: Config,
     private readonly settings?: RuntimeSettingsService,
+    private readonly log?: Logger,
   ) {}
+
+  private announce(activity: SessionActivity | undefined): void {
+    if (activity) this.log?.info({ actor: activity.actor, ...activity.details }, activity.message);
+  }
+
+  /** The shift's recorded time once its final segment has been credited. */
+  private static totals(session: Session): LogFields {
+    return {
+      total: formatDuration(Number(session.activeMilliseconds + session.inactiveMilliseconds)),
+      active: formatDuration(Number(session.activeMilliseconds)),
+    };
+  }
 
   private validateSource(event: PresenceEvent, now = new Date()): void {
     if (event.universeId !== this.config.ROBLOX_UNIVERSE_ID) throw new Error("Unknown universe ID");
@@ -86,9 +107,10 @@ export class SessionService {
     this.validateSource(event);
     if (event.player.rankNumber < this.config.ROBLOX_MIN_RANK) return this.purgeLowRankPlayer(event);
     this.validateRank(event);
-    return this.withSerializableRetry(() => this.db.$transaction(async (tx) => {
+    type Outcome = { result: EventResult; activity?: SessionActivity };
+    const { result, activity } = await this.withSerializableRetry(() => this.db.$transaction(async (tx): Promise<Outcome> => {
       const prior = await tx.processedEvent.findUnique({ where: { eventId: event.eventId } });
-      if (prior) return { eventId: event.eventId, status: "duplicate", sessionId: prior.sessionId ?? undefined, changed: false };
+      if (prior) return { result: { eventId: event.eventId, status: "duplicate", sessionId: prior.sessionId ?? undefined, changed: false } };
 
       const occurredAt = new Date(event.occurredAt);
       const identity = await tx.identity.upsert({
@@ -102,10 +124,11 @@ export class SessionService {
       });
       if (session && occurredAt <= session.lastEventAt) {
         await tx.processedEvent.create({ data: { eventId: event.eventId, kind: event.kind, occurredAt, sessionId: session.id } });
-        return { eventId: event.eventId, status: "out_of_order", sessionId: session.id, changed: false };
+        return { result: { eventId: event.eventId, status: "out_of_order", sessionId: session.id, changed: false } };
       }
 
       let changed = false;
+      let activity: SessionActivity | undefined;
       if (!session && (event.kind === "JOIN" || event.kind === "HEARTBEAT")) {
         const state: SessionState = event.player.active ? "ACTIVE" : "INACTIVE";
         session = await tx.session.create({
@@ -116,6 +139,7 @@ export class SessionService {
           },
         });
         changed = true;
+        activity = { actor: event.player.username, message: "Session started", details: { rank: event.player.rankName } };
       } else if (session) {
         const teardown = event.kind === "LEAVE" || event.kind === "SHUTDOWN";
         if (teardown && session.jobId !== event.jobId) {
@@ -123,7 +147,7 @@ export class SessionService {
           // the old one they left. Ignore it so their shift keeps running (and its
           // server id keeps tracking the newest server) instead of ending early.
           await tx.processedEvent.create({ data: { eventId: event.eventId, kind: event.kind, occurredAt, sessionId: session.id } });
-          return { eventId: event.eventId, status: "out_of_order", sessionId: session.id, changed: false };
+          return { result: { eventId: event.eventId, status: "out_of_order", sessionId: session.id, changed: false } };
         }
         // A departure or shutdown ends the shift there and then: there is no
         // grace period, so the next join starts a new session.
@@ -133,6 +157,9 @@ export class SessionService {
         if (session.state !== desired) {
           session = await this.transition(tx, session, desired, occurredAt, event);
           changed = true;
+          activity = desired === "ENDED"
+            ? { actor: event.player.username, message: "Session ended", details: SessionService.totals(session) }
+            : { actor: event.player.username, message: desired === "INACTIVE" ? "Went inactive" : "Back to active" };
         } else {
           session = await tx.session.update({
             where: { id: session.id },
@@ -147,8 +174,10 @@ export class SessionService {
       await tx.processedEvent.create({
         data: { eventId: event.eventId, kind: event.kind, occurredAt, sessionId: session?.id ?? null },
       });
-      return { eventId: event.eventId, status: "accepted", sessionId: session?.id, changed };
+      return { result: { eventId: event.eventId, status: "accepted", sessionId: session?.id, changed }, ...(activity ? { activity } : {}) };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+    this.announce(activity);
+    return result;
   }
 
   private async purgeLowRankPlayer(event: PresenceEvent): Promise<EventResult> {
@@ -173,6 +202,13 @@ export class SessionService {
       await tx.identity.delete({ where: { id: identity.id } });
       return messages;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    if (removedMessages.length) {
+      this.announce({
+        actor: event.player.username,
+        message: "Sessions removed; the player's rank is no longer tracked",
+        details: { rank: event.player.rankName },
+      });
+    }
     return { eventId: event.eventId, status: "removed_low_rank", removedMessages, changed: false };
   }
 
@@ -210,17 +246,25 @@ export class SessionService {
     if (this.settings && !(await this.settings.get()).trackingEnabled) return [];
     const changed: string[] = [];
     const staleBefore = new Date(now.getTime() - this.config.HEARTBEAT_STALE_SECONDS * 1000);
-    const stale = await this.db.session.findMany({ where: { state: { in: ["ACTIVE", "INACTIVE"] }, lastEventAt: { lt: staleBefore }, deletedAt: null } });
+    const stale = await this.db.session.findMany({
+      where: { state: { in: ["ACTIVE", "INACTIVE"] }, lastEventAt: { lt: staleBefore }, deletedAt: null },
+      include: { identity: { select: { robloxUsername: true } } },
+    });
     for (const session of stale) {
-      const didChange = await this.withSerializableRetry(() => this.db.$transaction(async (tx) => {
+      const ended = await this.withSerializableRetry(() => this.db.$transaction(async (tx) => {
         const current = await tx.session.findFirst({
           where: { id: session.id, state: { in: ["ACTIVE", "INACTIVE"] }, lastEventAt: session.lastEventAt, deletedAt: null },
         });
-        if (!current) return false;
-        await this.transition(tx, current, "ENDED", new Date(current.lastEventAt.getTime() + this.config.HEARTBEAT_STALE_SECONDS * 1000));
-        return true;
+        if (!current) return null;
+        return this.transition(tx, current, "ENDED", new Date(current.lastEventAt.getTime() + this.config.HEARTBEAT_STALE_SECONDS * 1000));
       }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
-      if (didChange) changed.push(session.id);
+      if (!ended) continue;
+      changed.push(session.id);
+      this.announce({
+        actor: session.identity.robloxUsername,
+        message: "Session ended after the player stopped reporting",
+        details: SessionService.totals(ended),
+      });
     }
     changed.push(...await this.closeLegacyReconnectingSessions());
     return changed;
