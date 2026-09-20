@@ -11,6 +11,9 @@ describe("staff ladder", () => {
     expect(levelForGroupRank(9)).toBe(201);
     expect(levelForGroupRank(10)).toBe(250);
     expect(levelForGroupRank(254)).toBe(250);
+    // The group owner, who has no Adonis entry because the game gives them
+    // everything through IsPlaceOwner.
+    expect(levelForGroupRank(255)).toBe(250);
     // Ranks between the listed ones hold no tier, exactly as in Adonis.
     expect(levelForGroupRank(8)).toBe(0);
     expect(levelForGroupRank(0)).toBe(0);

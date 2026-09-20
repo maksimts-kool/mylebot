@@ -2,15 +2,20 @@
  * The staff ladder, mirrored from the place's Adonis settings so Discord and
  * the game agree on who outranks whom.
  *
- * Adonis matches `Group:<id>:<rank>` on the exact rank number, which is why
- * Managers lists two ranks rather than a range. Change these together with
+ * Adonis matches `Group:<id>:<rank>` on the exact rank number, which is why a
+ * tier lists ranks rather than a range. Change these together with
  * `Adonis_Loader.Config.Settings` — they are two copies of one ladder, and a
  * rank that is missing here simply holds no staff tier.
+ *
+ * Rank 255, the group owner, is the one deliberate difference from those
+ * settings. In game the owner never needs a group entry, because Adonis grants
+ * them everything through `IsPlaceOwner`; pressing a button in Discord has no
+ * such shortcut, so the owner is named here as a Manager.
  */
 export const STAFF_TIERS = [
   { level: 101, name: "Engineers", groupRanks: [7] },
   { level: 201, name: "Supervisors", groupRanks: [9] },
-  { level: 250, name: "Managers", groupRanks: [10, 254] },
+  { level: 250, name: "Managers", groupRanks: [10, 254, 255] },
 ] as const;
 
 /**
