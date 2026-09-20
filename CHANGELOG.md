@@ -4,6 +4,10 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+_Nothing yet._
+
+## 0.15.1 - 2026-09-20
+
 - Counted group rank 255, the group owner, as a Manager in the command-log staff ladder. Adonis never lists that rank because the game gives the owner everything through `IsPlaceOwner`, so without it the owner could not press **Disable access 15m** on anything.
 
 ## 0.15.0 - 2026-09-20
