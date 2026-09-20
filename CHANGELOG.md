@@ -4,6 +4,10 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+_Nothing yet._
+
+## 0.15.5 - 2026-09-20
+
 - Joined the command logs to the session tracking, so the two records of the same shift read against each other. A session's log message and its **More info** reply now carry a **Commands** section — how many Adonis commands were run during that shift, the worst risk any of them carried, and the ones run most often. A command record says how far into their shift it was run, or that it was run off shift, measured against the instant the command happened rather than against now. A server panel marks who inside it is on shift and for how long. Neither side claims to know more than it does: somebody the session tracker has never seen gets no shift line rather than being called off shift, and a shift old enough for its command records to have been cleaned up shows no Commands section instead of a zero.
 
 ## 0.15.4 - 2026-09-20
