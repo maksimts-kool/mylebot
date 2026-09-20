@@ -8,6 +8,7 @@ _Nothing yet._
 
 ## 0.15.3 - 2026-09-20
 
+- Dropped the server and job ID fields from the command records. The panel the thread hangs off states both once, so every record underneath was repeating it.
 - Moved the command log's controls out of the individual records and onto a panel per Roblox server. The log channel is now a board of the servers running right now: each one has a message listing the staff inside it and the tier they hold, with **Join server** and menus for taking somebody's command access away or giving it back, and the thread hanging off that message holds that server's command records. The records themselves carry no buttons any more — the same two under every one of them read as clutter and invited acting on a command from minutes ago rather than on the server as it is now. Every press leaves a line in the thread saying who moved whose access. The Roblox plugin now reports who is in the server every minute; a server that stops reporting has its panel closed after five minutes. Reinstall [`roblox/adonis/Server-CommandLogs.lua`](roblox/adonis/Server-CommandLogs.lua) in every place.
 - Trimmed the command log embed's footer to just the time the command ran. The command name was already the title and the place ID is on the thread's own header, so `kill · kill · place 5228421097` said nothing twice.
 

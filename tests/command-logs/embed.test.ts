@@ -45,15 +45,22 @@ describe("command log embed", () => {
     expect(json.timestamp).toBe(occurredAt.toISOString());
   });
 
-  it("names the staff member, their rank, the risk, the server and the job", () => {
+  it("names the staff member, their rank, the risk and who it hit", () => {
     const embed = commandLogEmbed(entry(), { discordUserId: "discord-1" });
     expect(fieldNamed(embed, "Staff")).toContain("MaksimTs");
     expect(fieldNamed(embed, "Staff")).toContain("<@discord-1>");
     expect(fieldNamed(embed, "Rank")).toContain("rank 9 · level 201");
     expect(fieldNamed(embed, "Risk")).toContain("requires 201");
-    expect(fieldNamed(embed, "Server")).toContain("Public · 14/30");
     expect(fieldNamed(embed, "Ran on")).toBe("Kiryoku");
-    expect(fieldNamed(embed, "Job ID")).toContain(entry().jobId);
+  });
+
+  it("repeats nothing the server's panel already says", () => {
+    const embed = commandLogEmbed(entry(), { discordUserId: null });
+    const rendered = JSON.stringify(embed.toJSON());
+    expect(fieldNamed(embed, "Server")).toBeUndefined();
+    expect(fieldNamed(embed, "Job ID")).toBeUndefined();
+    expect(rendered).not.toContain(entry().jobId);
+    expect(rendered).not.toContain("14/30");
   });
 
   it("leaves out the Discord mention and the targets when there are none", () => {
@@ -66,11 +73,6 @@ describe("command log embed", () => {
     const targets = ["One", "Two", "Three", "Four", "Five", "Six"];
     const embed = commandLogEmbed(entry({ targets }), { discordUserId: null });
     expect(fieldNamed(embed, "Ran on")).toBe("One, Two, Three, Four and 2 more");
-  });
-
-  it("says a Studio playtest is one, because there is no server to report", () => {
-    const embed = commandLogEmbed(entry({ serverType: "STUDIO" }), { discordUserId: null });
-    expect(fieldNamed(embed, "Server")).toContain("Studio");
   });
 
   it("stays a plain record: the controls belong to the server's panel", () => {

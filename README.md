@@ -293,7 +293,7 @@ A panel shows the population, the place and job IDs, and every staff member curr
 
 Each menu offers only the people it can act on, so neither ever appears with nothing in it. Every press leaves a line in the thread saying who moved whose access, because the panel shows the current state while the thread is where it is remembered.
 
-The command records in the thread carry no buttons of their own. The command is the embed's title, with the staff member and their linked Discord account, their group rank and Adonis level, the risk, the server type and population, the job ID, and whoever the command was run on. The embed's colour and its risk field come from the Adonis permission level the command demands — raising a command's level in `Server-Command_Restrictor` raises its risk here too, so no separate list has to be maintained.
+The command records in the thread carry no buttons of their own, and repeat nothing the panel above them already says: no server type, no population, no job ID. The command is the embed's title, with the staff member and their linked Discord account, their group rank and Adonis level, the risk, and whoever the command was run on. The embed's colour and its risk field come from the Adonis permission level the command demands — raising a command's level in `Server-Command_Restrictor` raises its risk here too, so no separate list has to be maintained.
 
 The plugin reports its roster every minute and whenever somebody joins or leaves, and says goodbye when the server shuts down. A server that dies without saying so is closed by a sweep five minutes after its last report: the panel turns grey, says when the server closed, and drops its controls. The thread stays as the record.
 

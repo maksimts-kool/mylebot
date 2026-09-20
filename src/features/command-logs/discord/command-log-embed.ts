@@ -3,12 +3,6 @@ import type { CommandLogEntry } from "@prisma/client";
 import { riskColor, riskLabel } from "../domain/risk.js";
 import { tierName } from "../domain/staff-ladder.js";
 
-/** `Public · 14/30`, or just `Studio` for a playtest that has no player limit. */
-function serverValue(entry: CommandLogEntry): string {
-  if (entry.serverType === "STUDIO") return "🧪 Studio playtest";
-  return `🌐 Public · ${entry.playerCount}/${entry.maxPlayers}`;
-}
-
 /** Who the command resolved to, or nothing when it took no players. */
 function targetsValue(targets: string[]): string {
   if (targets.length <= 4) return targets.join(", ");
@@ -22,13 +16,14 @@ export type CommandLogView = {
 
 /**
  * One command run. The command itself is the title, because that is what a
- * reader scanning a thread is looking for; everything that qualifies it — who,
- * what rank, how risky, which server — sits underneath in one row of fields.
+ * reader scanning a thread is looking for; who ran it, at what rank, how risky
+ * it was and who it hit sit underneath in one row of fields.
  *
- * It carries no buttons. Every record in a thread would have shown the same
- * two, which reads as clutter and invites acting on a command from minutes ago
- * rather than on the server as it is now; the panel the thread hangs off owns
- * the controls instead.
+ * Which server this was is deliberately absent, as is the job id: every record
+ * in the thread would repeat what the panel the thread hangs off already says
+ * once. For the same reason the record carries no buttons — the panel owns
+ * every control, so nobody acts on a command from minutes ago when they mean
+ * to act on the server as it is now.
  */
 export function commandLogEmbed(entry: CommandLogEntry, view: CommandLogView): EmbedBuilder {
   const staff = view.discordUserId
@@ -42,11 +37,9 @@ export function commandLogEmbed(entry: CommandLogEntry, view: CommandLogView): E
       { name: "👤 Staff", value: staff, inline: true },
       { name: "📎 Rank", value: `${entry.rankName}\nrank ${entry.rankNumber} · level ${entry.adminLevel}`, inline: true },
       { name: "⚠️ Risk", value: `${riskLabel(entry.risk)}\nrequires ${entry.requiredLevel}`, inline: true },
-      { name: "🖥️ Server", value: serverValue(entry), inline: true },
       ...(entry.targets.length
-        ? [{ name: "🎯 Ran on", value: targetsValue(entry.targets), inline: true }]
+        ? [{ name: "🎯 Ran on", value: targetsValue(entry.targets), inline: false }]
         : []),
-      { name: "🆔 Job ID", value: `\`${entry.jobId}\``, inline: false },
     )
     // Nothing else belongs in the footer: the command is already the title, and
     // the place is on the server's own panel. The timestamp is what a reader
