@@ -4,7 +4,7 @@ All notable changes are recorded here.
 
 ## Unreleased
 
-_Nothing yet._
+- Fixed staff showing as `Creators · Not in group` on a server panel. The plugin asked Adonis for the group rank, which answers from a cache that is not always warm when the first roster goes out, and the failure was then printed as though it were the rank's name. Ranks are now read from Roblox directly, a rank that once resolved survives a later failed lookup, and an unknown rank shows the Adonis tier alone instead of a phrase standing in for a rank.
 
 ## 0.15.3 - 2026-09-20
 

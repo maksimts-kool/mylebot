@@ -36,7 +36,10 @@ export type BlockedUntil = Map<string, Date>;
 
 function staffLine(member: StoredStaff, blockedUntil: BlockedUntil): string {
   const blocked = blockedUntil.get(member.userId);
-  const tier = `${tierName(member.adminLevel)} · ${member.rankName}`;
+  // The Adonis tier is what their access actually is; the group role is only
+  // ever a nicer name for it, so an unknown one is left out rather than
+  // announced. Nobody needs to read "Creators · Not in group".
+  const tier = member.rankName ? `${tierName(member.adminLevel)} · ${member.rankName}` : tierName(member.adminLevel);
   return blocked
     ? `🔒 **${member.username}** — ${tier} · blocked until ${timestamp(blocked, "t")}`
     : `**${member.username}** — ${tier}`;
@@ -95,7 +98,7 @@ function pickMenu(action: string, placeholder: string, staff: StoredStaff[], blo
         value: member.userId,
         description: (blocked
           ? `${tierName(member.adminLevel)} · blocked until ${blocked.toISOString().slice(11, 16)} UTC`
-          : `${tierName(member.adminLevel)} · ${member.rankName}`).slice(0, 100),
+          : member.rankName ? `${tierName(member.adminLevel)} · ${member.rankName}` : tierName(member.adminLevel)).slice(0, 100),
       };
     }));
 }

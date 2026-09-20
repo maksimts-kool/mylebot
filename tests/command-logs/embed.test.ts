@@ -54,6 +54,11 @@ describe("command log embed", () => {
     expect(fieldNamed(embed, "Ran on")).toBe("Kiryoku");
   });
 
+  it("shows the level alone when the group rank could not be read", () => {
+    const embed = commandLogEmbed(entry({ rankNumber: 0, rankName: "", adminLevel: 1000 }), { discordUserId: null });
+    expect(fieldNamed(embed, "Rank")).toBe("level 1000");
+  });
+
   it("repeats nothing the server's panel already says", () => {
     const embed = commandLogEmbed(entry(), { discordUserId: null });
     const rendered = JSON.stringify(embed.toJSON());

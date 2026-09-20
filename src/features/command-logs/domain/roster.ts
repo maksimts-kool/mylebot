@@ -11,7 +11,8 @@ export const staffPresenceSchema = z.object({
   userId: robloxId,
   username: z.string().min(1).max(64),
   rankNumber: z.number().int().min(0).max(255),
-  rankName: z.string().min(1).max(100),
+  /** Empty when the group rank could not be read; never a stand-in phrase. */
+  rankName: z.string().max(100).default(""),
   adminLevel: z.number().int().min(1).max(1000),
 });
 

@@ -55,6 +55,18 @@ describe("the server panel", () => {
     expect(json.fields?.[0]?.value).toContain(`<t:${Math.floor(blockedUntil.getTime() / 1000)}:t>`);
   });
 
+  it("shows the Adonis tier alone when the group rank is unknown", () => {
+    const unknown: StoredStaff[] = [
+      { userId: "999", username: "1MaksimTs", rankNumber: 0, rankName: "", adminLevel: 1000 },
+    ];
+    const json = serverPanelEmbed(server(), unknown, new Map()).toJSON();
+    // Never "Creators · Not in group": a failed lookup is not a rank name.
+    expect(json.fields?.[0]?.value).toBe("**1MaksimTs** — Creators");
+
+    const menu = serverPanelComponents(server(), unknown, new Map())[1]!.components[0]!.toJSON();
+    expect("options" in menu && menu.options?.[0]?.description).toBe("Creators");
+  });
+
   it("says so plainly when no staff are in the server", () => {
     const json = serverPanelEmbed(server(), [], new Map()).toJSON();
     expect(json.fields?.[0]?.value).toBe("Nobody with Adonis access is in this server.");

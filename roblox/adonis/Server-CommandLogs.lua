@@ -204,14 +204,40 @@ return function(Vargs)
 		return string.lower(tostring(first or "unknown"))
 	end
 
+	--[[ Somebody's rank in the staff group, asked of Roblox directly rather than
+		through Adonis: Adonis answers from a cache that is not always warm when
+		the first roster goes out, and a staff member showing as rankless for the
+		first minute is worse than one extra call.
+
+		A rank that once resolved is remembered for as long as the player is here,
+		so a failed lookup leaves the last known rank standing instead of blanking
+		it. An empty name means "unknown", and nothing downstream prints it. ]]
+	local rankCache = {}
+
 	local function rankOf(player)
-		if groupId == 0 then return 0, "No group configured" end
-		local ok, group = pcall(server.Admin.GetPlayerGroup, player, groupId)
-		if ok and type(group) == "table" and type(group.Rank) == "number" then
-			return group.Rank, tostring(group.Role or ("Rank " .. group.Rank))
+		if groupId == 0 then return 0, "" end
+
+		local ok, rankNumber = pcall(player.GetRankInGroup, player, groupId)
+		if ok and type(rankNumber) == "number" then
+			if rankNumber == 0 then
+				-- Roblox says they are not in the group, which is an answer.
+				rankCache[player.UserId] = { 0, "" }
+				return 0, ""
+			end
+			local roleOk, roleName = pcall(player.GetRoleInGroup, player, groupId)
+			local resolved = { rankNumber, (roleOk and roleName) or ("Rank " .. rankNumber) }
+			rankCache[player.UserId] = resolved
+			return resolved[1], resolved[2]
 		end
-		return 0, "Not in group"
+
+		local cached = rankCache[player.UserId]
+		if cached then return cached[1], cached[2] end
+		return 0, ""
 	end
+
+	Players.PlayerRemoving:Connect(function(player)
+		rankCache[player.UserId] = nil
+	end)
 
 	service.Events.CommandRan:Connect(function(player, data)
 		-- Commands the server runs itself have no staff member behind them, and

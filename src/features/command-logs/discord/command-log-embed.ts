@@ -3,6 +3,18 @@ import type { CommandLogEntry } from "@prisma/client";
 import { riskColor, riskLabel } from "../domain/risk.js";
 import { tierName } from "../domain/staff-ladder.js";
 
+/**
+ * Their group rank, and the Adonis level it earns them. An unknown rank — the
+ * lookup failed, or they hold their access some other way — shows the level
+ * alone rather than a phrase standing in for a rank name.
+ */
+function rankValue(entry: CommandLogEntry): string {
+  const level = entry.rankNumber
+    ? `rank ${entry.rankNumber} · level ${entry.adminLevel}`
+    : `level ${entry.adminLevel}`;
+  return entry.rankName ? `${entry.rankName}\n${level}` : level;
+}
+
 /** Who the command resolved to, or nothing when it took no players. */
 function targetsValue(targets: string[]): string {
   if (targets.length <= 4) return targets.join(", ");
@@ -35,7 +47,7 @@ export function commandLogEmbed(entry: CommandLogEntry, view: CommandLogView): E
     .setColor(riskColor(entry.risk))
     .addFields(
       { name: "👤 Staff", value: staff, inline: true },
-      { name: "📎 Rank", value: `${entry.rankName}\nrank ${entry.rankNumber} · level ${entry.adminLevel}`, inline: true },
+      { name: "📎 Rank", value: rankValue(entry), inline: true },
       { name: "⚠️ Risk", value: `${riskLabel(entry.risk)}\nrequires ${entry.requiredLevel}`, inline: true },
       ...(entry.targets.length
         ? [{ name: "🎯 Ran on", value: targetsValue(entry.targets), inline: false }]
