@@ -7,6 +7,7 @@ import type { Db } from "../../../core/db.js";
 import { errorType } from "../../../core/errors.js";
 import type { Logger } from "../../../core/logger.js";
 import type { BloxlinkService } from "../../../shared/bloxlink.js";
+import { shiftStatusAt, shiftStatusFor } from "../../../shared/staff-activity.js";
 import type { ServerRoster } from "../domain/roster.js";
 import type { CommandLogService } from "../service/command-log-service.js";
 import type { CommandLogSettingsService } from "../service/settings.js";
@@ -69,12 +70,19 @@ export class CommandLogPublisher {
     return channel as TextChannel;
   }
 
-  /** The panel's current look, built from the server row and the live blocks. */
+  /**
+   * The panel's current look, built from the server row, the live blocks, and
+   * the shifts the session tracker has running for the people in it.
+   */
   private async render(server: CommandLogThread) {
     const staff = this.service.staffOf(server);
-    const blockedUntil = await this.service.blockedUntil(staff.map((member) => BigInt(member.userId)));
+    const robloxUserIds = staff.map((member) => BigInt(member.userId));
+    const [blockedUntil, shifts] = await Promise.all([
+      this.service.blockedUntil(robloxUserIds),
+      shiftStatusAt(this.db, robloxUserIds, server.lastSeenAt),
+    ]);
     return {
-      embeds: [serverPanelEmbed(server, staff, blockedUntil)],
+      embeds: [serverPanelEmbed(server, staff, blockedUntil, shifts)],
       components: serverPanelComponents(server, staff, blockedUntil),
     };
   }
@@ -225,9 +233,13 @@ export class CommandLogPublisher {
 
     const thread = await this.thread(server);
     if (!thread) return;
-    const message = await thread.send({
-      embeds: [commandLogEmbed(entry, { discordUserId: await this.bloxlink.discordForRoblox(entry.robloxUserId) })],
-    });
+    const [discordUserId, shift] = await Promise.all([
+      this.bloxlink.discordForRoblox(entry.robloxUserId),
+      // Asked about the instant the command ran, not about now: a run that
+      // reaches us late still belongs to whatever shift was open at the time.
+      shiftStatusFor(this.db, entry.robloxUserId, entry.occurredAt),
+    ]);
+    const message = await thread.send({ embeds: [commandLogEmbed(entry, { discordUserId, shift })] });
     await this.service.recordMessage(entry.id, thread.id, message.id);
     await this.db.commandLogThread.update({
       where: { jobId: entry.jobId },

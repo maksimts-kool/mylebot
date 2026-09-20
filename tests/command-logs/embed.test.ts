@@ -1,7 +1,7 @@
 import type { CommandLogEntry } from "@prisma/client";
 import { describe, expect, it } from "vitest";
-import { commandLogEmbed } from "../../src/features/command-logs/discord/command-log-embed.js";
-import { riskColor } from "../../src/features/command-logs/domain/risk.js";
+import { commandLogEmbed, type CommandLogView } from "../../src/features/command-logs/discord/command-log-embed.js";
+import { riskColor } from "../../src/shared/discord/risk.js";
 
 const occurredAt = new Date("2026-09-20T18:42:00Z");
 
@@ -33,20 +33,25 @@ function entry(overrides: Partial<CommandLogEntry> = {}): CommandLogEntry {
   } as CommandLogEntry;
 }
 
+/** By default the runner is somebody the session tracker has never seen. */
+function view(overrides: Partial<CommandLogView> = {}): CommandLogView {
+  return { discordUserId: null, shift: { tracked: false }, ...overrides };
+}
+
 function fieldNamed(embed: ReturnType<typeof commandLogEmbed>, name: string): string | undefined {
   return embed.toJSON().fields?.find((field) => field.name.includes(name))?.value;
 }
 
 describe("command log embed", () => {
   it("puts the command in the title and colours the embed by risk", () => {
-    const json = commandLogEmbed(entry(), { discordUserId: "discord-1" }).toJSON();
+    const json = commandLogEmbed(entry(), view({ discordUserId: "discord-1" })).toJSON();
     expect(json.title).toBe(":kick Kiryoku spamming the lift queue");
     expect(json.color).toBe(riskColor("MEDIUM"));
     expect(json.timestamp).toBe(occurredAt.toISOString());
   });
 
   it("names the staff member, their rank, the risk and who it hit", () => {
-    const embed = commandLogEmbed(entry(), { discordUserId: "discord-1" });
+    const embed = commandLogEmbed(entry(), view({ discordUserId: "discord-1" }));
     expect(fieldNamed(embed, "Staff")).toContain("MaksimTs");
     expect(fieldNamed(embed, "Staff")).toContain("<@discord-1>");
     expect(fieldNamed(embed, "Rank")).toContain("rank 9 · level 201");
@@ -55,12 +60,12 @@ describe("command log embed", () => {
   });
 
   it("shows the level alone when the group rank could not be read", () => {
-    const embed = commandLogEmbed(entry({ rankNumber: 0, rankName: "", adminLevel: 1000 }), { discordUserId: null });
+    const embed = commandLogEmbed(entry({ rankNumber: 0, rankName: "", adminLevel: 1000 }), view());
     expect(fieldNamed(embed, "Rank")).toBe("level 1000");
   });
 
   it("repeats nothing the server's panel already says", () => {
-    const embed = commandLogEmbed(entry(), { discordUserId: null });
+    const embed = commandLogEmbed(entry(), view());
     const rendered = JSON.stringify(embed.toJSON());
     expect(fieldNamed(embed, "Server")).toBeUndefined();
     expect(fieldNamed(embed, "Job ID")).toBeUndefined();
@@ -69,19 +74,36 @@ describe("command log embed", () => {
   });
 
   it("leaves out the Discord mention and the targets when there are none", () => {
-    const embed = commandLogEmbed(entry({ targets: [] }), { discordUserId: null });
+    const embed = commandLogEmbed(entry({ targets: [] }), view());
     expect(fieldNamed(embed, "Staff")).toBe("**MaksimTs**");
     expect(fieldNamed(embed, "Ran on")).toBeUndefined();
   });
 
   it("summarises a command run on more players than fit", () => {
     const targets = ["One", "Two", "Three", "Four", "Five", "Six"];
-    const embed = commandLogEmbed(entry({ targets }), { discordUserId: null });
+    const embed = commandLogEmbed(entry({ targets }), view());
     expect(fieldNamed(embed, "Ran on")).toBe("One, Two, Three, Four and 2 more");
   });
 
+  it("says how far into their shift the command was run", () => {
+    const embed = commandLogEmbed(entry(), view({
+      shift: { tracked: true, shift: { id: "session-1", startedAt: new Date("2026-09-20T17:30:00Z"), endedAt: null } },
+    }));
+    expect(fieldNamed(embed, "Shift")).toBe("On shift · 1h 12m in");
+  });
+
+  it("marks a command run by somebody the tracker knows but has no shift for", () => {
+    const embed = commandLogEmbed(entry(), view({ shift: { tracked: true, shift: null } }));
+    expect(fieldNamed(embed, "Shift")).toBe("Not on shift");
+  });
+
+  it("says nothing about shifts for somebody the session tracker has never seen", () => {
+    const embed = commandLogEmbed(entry(), view());
+    expect(fieldNamed(embed, "Shift")).toBeUndefined();
+  });
+
   it("stays a plain record: the controls belong to the server's panel", () => {
-    const json = commandLogEmbed(entry(), { discordUserId: null }).toJSON();
+    const json = commandLogEmbed(entry(), view()).toJSON();
     expect(json.footer).toBeUndefined();
     expect(JSON.stringify(json)).not.toContain("cmdlog:");
   });

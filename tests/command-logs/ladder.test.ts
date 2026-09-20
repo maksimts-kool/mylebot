@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { isQuietCommand } from "../../src/features/command-logs/domain/policy.js";
-import { riskForLevel, riskLabel } from "../../src/features/command-logs/domain/risk.js";
+import { riskForLevel } from "../../src/features/command-logs/domain/risk.js";
+import { riskLabel } from "../../src/shared/discord/risk.js";
 import {
   MINIMUM_RESTORE_LEVEL, STAFF_TIERS, TOP_TIER_LEVEL, levelForGroupRank, minimumPresserLevel, tierName,
 } from "../../src/features/command-logs/domain/staff-ladder.js";

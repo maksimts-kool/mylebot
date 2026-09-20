@@ -5,6 +5,7 @@ import {
   PANEL_ACTIONS, accessNotice, parsePanelCustomId, serverPanelComponents, serverPanelEmbed, threadName,
 } from "../../src/features/command-logs/discord/server-panel.js";
 import type { StoredStaff } from "../../src/features/command-logs/domain/roster.js";
+import type { ShiftStatus } from "../../src/shared/staff-activity.js";
 
 const lastSeenAt = new Date("2026-09-20T18:42:00Z");
 const blockedUntil = new Date("2026-09-20T18:57:00Z");
@@ -65,6 +66,33 @@ describe("the server panel", () => {
 
     const menu = serverPanelComponents(server(), unknown, new Map())[1]!.components[0]!.toJSON();
     expect("options" in menu && menu.options?.[0]?.description).toBe("Creators");
+  });
+
+  it("says who is on a tracked shift and how long they have been on it", () => {
+    // Shifts are measured to the server's last report, which is what the panel
+    // claims to show.
+    const shifts = new Map<string, ShiftStatus>([
+      ["999", { tracked: true, shift: { id: "session-1", startedAt: new Date("2026-09-20T17:30:00Z"), endedAt: null } }],
+      ["1000", { tracked: true, shift: null }],
+    ]);
+    const value = serverPanelEmbed(server(), staff, new Map(), shifts).toJSON().fields?.[0]?.value;
+    expect(value).toContain("**MaksimTs** — Supervisors · Engineers Supervisor · on shift 1h 12m");
+    expect(value).toContain("**Kiryoku** — Engineers · Lift Engineer · off shift");
+  });
+
+  it("says nothing about a shift for somebody the session tracker has never seen", () => {
+    const shifts = new Map<string, ShiftStatus>([["999", { tracked: false }]]);
+    const value = serverPanelEmbed(server(), staff, new Map(), shifts).toJSON().fields?.[0]?.value;
+    expect(value).toContain("**MaksimTs** — Supervisors · Engineers Supervisor\n");
+    expect(value).not.toContain("shift");
+  });
+
+  it("keeps a blocked staff member's shift and their block on one line", () => {
+    const shifts = new Map<string, ShiftStatus>([
+      ["999", { tracked: true, shift: { id: "session-1", startedAt: new Date("2026-09-20T18:00:00Z"), endedAt: null } }],
+    ]);
+    const value = serverPanelEmbed(server(), staff, new Map([["999", blockedUntil]]), shifts).toJSON().fields?.[0]?.value;
+    expect(value).toContain(`🔒 **MaksimTs** — Supervisors · Engineers Supervisor · on shift 42m · blocked until ${`<t:${Math.floor(blockedUntil.getTime() / 1000)}:t>`}`);
   });
 
   it("says so plainly when no staff are in the server", () => {

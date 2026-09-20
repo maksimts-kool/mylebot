@@ -12,6 +12,7 @@ A Node.js service that records eligible Roblox group members' play sessions in P
 - Provides session history, manual session administration, and timezone-aware leaderboards.
 - Resolves Roblox and Discord identities through Bloxlink when an API key is configured.
 - Logs every Adonis command staff run into Discord, one embed per command inside a thread named after the Roblox server it ran in, and lets the tier above the person who ran it take their command access away for fifteen minutes.
+- Reads the two records against each other: a shift says which commands were run during it and how risky the worst of them was, a command record says how far into their shift the person was when they ran it, and a server panel says who inside it is on shift.
 - Mirrors the Discord bug-report and suggestion forums onto a Taiga kanban board, keeping post tags in step with the board and announcing every change.
 - Includes Docker Compose definitions for local deployment and Portainer stacks.
 - Includes server and client Lua components for each Roblox place.
@@ -27,7 +28,7 @@ A Node.js service that records eligible Roblox group members' play sessions in P
 The code is organised as feature modules. Each feature owns its HTTP routes, slash commands, gateway listeners, and background jobs, and [`src/index.ts`](src/index.ts) only composes them:
 
 - [`src/core/`](src/core/): configuration, database client, HTTP server, Discord client, [logger](src/core/logger.ts), job scheduler, the [link between the two containers](src/core/bot-link.ts), and the `Feature` contract.
-- [`src/shared/`](src/shared/): cross-feature services — Bloxlink, runtime settings, permission levels, reusable components.
+- [`src/shared/`](src/shared/): cross-feature services — Bloxlink, runtime settings, permission levels, reusable components, and [the join between shifts and command runs](src/shared/staff-activity.ts), which is the only place that reads both features' tables.
 - [`src/features/sessions/`](src/features/sessions/): Roblox session tracking — [ingestion route](src/features/sessions/api/routes.ts), [lifecycle service](src/features/sessions/service/session-service.ts), [Discord publisher](src/features/sessions/discord/publisher.ts), and [commands](src/features/sessions/discord/commands/).
 - [`src/features/portal/`](src/features/portal/): the store-owners portal's internal endpoints.
 - [`src/features/taiga/`](src/features/taiga/): the Taiga board integration.
@@ -302,6 +303,16 @@ The ladder lives in [`src/features/command-logs/domain/staff-ladder.ts`](src/fea
 Private and reserved servers are never read. Studio playtests are logged while **Studio playtests** is on in `/config`, so the plugin can be tested without publishing a place. Lookup-only commands such as `:cmds`, `:players` and `:view` are dropped rather than logged; the list is [`QUIET_COMMANDS`](src/features/command-logs/domain/policy.ts).
 
 Configure the channel and the switches on the **Command logs** page of `/config`. The feature has no environment variables of its own — it shares `ROBLOX_INGESTION_SECRET` with presence ingestion — and posts nothing until a channel is chosen and logging is switched on. The bot needs **Create Public Threads** and **Send Messages in Threads** in that channel.
+
+### Shifts and commands
+
+Session tracking and the command log are two records of the same people, so each one says what the other knows:
+
+- A **session** — the log message, and the **More info** reply behind it — gains a **Commands** section for the shift's own window: how many Adonis commands were run, the worst risk any of them carried, and the handful run most often.
+- A **command record** says how far into their shift it was run — `On shift · 1h 12m in` — or `Not on shift` when no shift was open at that instant. A run that reaches Discord late is still measured against the shift that was open when it happened, not against now.
+- A **server panel** marks each staff member inside as `on shift 1h 12m` or `off shift`, measured to that server's last report.
+
+Neither surface invents what it does not know. Somebody the session tracker has never seen — below the configured rank, or tracked before the feature was set up — gets no shift line at all rather than being called off shift, and a shift whose command records have aged out past `PROCESSED_EVENT_RETENTION_DAYS` shows no Commands section rather than a zero that would read like idleness.
 
 ## Roblox setup
 

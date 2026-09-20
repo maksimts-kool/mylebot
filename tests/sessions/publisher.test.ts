@@ -72,7 +72,11 @@ function liveSession(overrides: Record<string, unknown> = {}) {
 }
 
 /** A publisher wired to in-memory channels, one per configured channel id. */
-function publisherFor(session: Record<string, unknown>, settings: Record<string, string>) {
+function publisherFor(
+  session: Record<string, unknown>,
+  settings: Record<string, string>,
+  commandGroups: Array<{ commandName: string; risk: string; _count: { _all: number } }> = [],
+) {
   const channels = new Map<string, {
     id: string;
     send: ReturnType<typeof vi.fn>;
@@ -104,6 +108,7 @@ function publisherFor(session: Record<string, unknown>, settings: Record<string,
     session: { findUnique: vi.fn().mockResolvedValue(session), findMany: vi.fn().mockResolvedValue([]) },
     discordMessage: { create: vi.fn().mockResolvedValue({}), upsert: vi.fn().mockResolvedValue({}), deleteMany: vi.fn() },
     sessionAnnouncement: { create: vi.fn().mockResolvedValue({}), upsert: vi.fn().mockResolvedValue({}), deleteMany: vi.fn() },
+    commandLogEntry: { groupBy: vi.fn().mockResolvedValue(commandGroups) },
   };
   const publisher = new DiscordPublisher(
     client as never,
@@ -150,6 +155,39 @@ describe("session log message", () => {
     const embed = payload.embeds[0]!.toJSON();
     expect(embed.title).toBe("Staff session · session-1");
     expect(embed.fields?.map((field) => field.name)).toContain("Total time");
+  });
+
+  it("says what the shift's commands were when the command log has any", async () => {
+    const { publisher, db, channels } = publisherFor(endedSession(), { logsChannelId: "logs" }, [
+      { commandName: "Kick", risk: "MEDIUM", _count: { _all: 4 } },
+      { commandName: "Ban", risk: "HIGH", _count: { _all: 1 } },
+    ]);
+
+    await publisher.refresh("session-1");
+
+    // Only what this person ran between the shift's own two instants.
+    expect(db.commandLogEntry.groupBy).toHaveBeenCalledWith(expect.objectContaining({
+      where: { robloxUserId: 1n, occurredAt: { gte: startedAt, lte: endedAt } },
+    }));
+    const payload = channels.get("logs")!.send.mock.calls[0]![0] as {
+      embeds: Array<{ toJSON(): { fields?: Array<{ name: string; value: string }> } }>;
+    };
+    const fields = payload.embeds[0]!.toJSON().fields ?? [];
+    expect(fields.find((field) => field.name === "Commands run")?.value).toBe("5");
+    expect(fields.find((field) => field.name === "Highest risk")?.value).toContain("High");
+    expect(fields.find((field) => field.name === "Most used")?.value).toBe("Kick ×4 · Ban ×1");
+  });
+
+  it("leaves the commands section off a shift the command log knows nothing about", async () => {
+    const { publisher, channels } = publisherFor(endedSession(), { logsChannelId: "logs" });
+
+    await publisher.refresh("session-1");
+
+    const payload = channels.get("logs")!.send.mock.calls[0]![0] as {
+      embeds: Array<{ toJSON(): { fields?: Array<{ name: string }> } }>;
+    };
+    // A shift whose records have aged out must not be made to look idle.
+    expect(payload.embeds[0]!.toJSON().fields?.map((field) => field.name)).not.toContain("Commands run");
   });
 
   it("is not published at all when only the staff channel is configured", async () => {

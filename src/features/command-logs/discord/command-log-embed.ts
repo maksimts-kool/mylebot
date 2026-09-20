@@ -1,6 +1,7 @@
 import { EmbedBuilder } from "discord.js";
 import type { CommandLogEntry } from "@prisma/client";
-import { riskColor, riskLabel } from "../domain/risk.js";
+import { riskColor, riskLabel } from "../../../shared/discord/risk.js";
+import { compactDuration, timeIntoShift, type ShiftStatus } from "../../../shared/staff-activity.js";
 import { tierName } from "../domain/staff-ladder.js";
 
 /**
@@ -24,7 +25,20 @@ function targetsValue(targets: string[]): string {
 export type CommandLogView = {
   /** The Discord account the runner is linked to, when Bloxlink knows one. */
   discordUserId: string | null;
+  /** Whether they were on a tracked shift when they ran it. */
+  shift: ShiftStatus;
 };
+
+/**
+ * Whether this was run on shift, worded from what is actually known. Somebody
+ * the session tracker has never seen gets no line at all: they are not "off
+ * shift", they are simply not tracked, and a record must not imply otherwise.
+ */
+function shiftValue(status: ShiftStatus, at: Date): string | null {
+  if (!status.tracked) return null;
+  const elapsed = timeIntoShift(status, at);
+  return elapsed === null ? "Not on shift" : `On shift · ${compactDuration(elapsed)} in`;
+}
 
 /**
  * One command run. The command itself is the title, because that is what a
@@ -38,6 +52,7 @@ export type CommandLogView = {
  * to act on the server as it is now.
  */
 export function commandLogEmbed(entry: CommandLogEntry, view: CommandLogView): EmbedBuilder {
+  const shift = shiftValue(view.shift, entry.occurredAt);
   const staff = view.discordUserId
     ? `**${entry.robloxUsername}**\n<@${view.discordUserId}>`
     : `**${entry.robloxUsername}**`;
@@ -49,6 +64,7 @@ export function commandLogEmbed(entry: CommandLogEntry, view: CommandLogView): E
       { name: "👤 Staff", value: staff, inline: true },
       { name: "📎 Rank", value: rankValue(entry), inline: true },
       { name: "⚠️ Risk", value: `${riskLabel(entry.risk)}\nrequires ${entry.requiredLevel}`, inline: true },
+      ...(shift ? [{ name: "🕒 Shift", value: shift, inline: true }] : []),
       ...(entry.targets.length
         ? [{ name: "🎯 Ran on", value: targetsValue(entry.targets), inline: false }]
         : []),

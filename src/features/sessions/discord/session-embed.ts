@@ -1,6 +1,8 @@
 import { EmbedBuilder } from "discord.js";
 import type { SessionState } from "@prisma/client";
 import { ACTIVE_COLOR, ENDED_COLOR, INACTIVE_COLOR } from "../../../shared/discord/colors.js";
+import { riskLabel } from "../../../shared/discord/risk.js";
+import { topCommandsLine, type CommandActivity } from "../../../shared/staff-activity.js";
 import { totalsForPeriod, type SegmentLike } from "../domain/accounting.js";
 import { friendlyDuration } from "./commands/format.js";
 
@@ -47,6 +49,12 @@ export type SessionDetail = {
   rankName: string;
   segments: SegmentLike[];
   identity: { robloxUsername: string; discordUserId: string | null };
+  /**
+   * The Adonis commands run during the shift, when the command log has any.
+   * A shift whose command records have aged out answers nothing here, so the
+   * line is left off entirely rather than claiming a zero.
+   */
+  commands?: CommandActivity;
 };
 
 export function discordTimestamp(date: Date, style: "f" | "R"): string {
@@ -78,6 +86,13 @@ export function sessionDetailEmbed(session: SessionDetail, now = new Date()): Em
         ? { name: "🏁 Ended", value: discordTimestamp(session.endedAt, "R"), inline: true }
         : { name: "🖥️ Server", value: `\`${session.jobId}\``, inline: true },
       { name: "📎 Rank", value: session.rankName, inline: true },
+      ...(session.commands?.total && session.commands.highestRisk
+        ? [{
+          name: "🛡️ Commands",
+          value: `${session.commands.total} run · ${riskLabel(session.commands.highestRisk)} at worst\n${topCommandsLine(session.commands)}`,
+          inline: false,
+        }]
+        : []),
       {
         name: session.endedAt ? "⏱️ Time recorded" : "⏱️ Time so far",
         value: `${friendlyDuration(totals.totalMs)} total · ${friendlyDuration(totals.activeMs)} active · ${friendlyDuration(totals.inactiveMs)} inactive`,

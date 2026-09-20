@@ -7,7 +7,9 @@ import type { Db } from "../../../core/db.js";
 import { errorType } from "../../../core/errors.js";
 import type { Logger } from "../../../core/logger.js";
 import type { BloxlinkService } from "../../../shared/bloxlink.js";
+import { riskLabel } from "../../../shared/discord/risk.js";
 import type { RuntimeSettingsService } from "../../../shared/runtime-settings.js";
+import { commandActivityDuring, topCommandsLine } from "../../../shared/staff-activity.js";
 import { totalsForPeriod } from "../domain/accounting.js";
 import { calendarYearRange } from "../domain/reporting.js";
 import { MINIMUM_SESSION_MILLISECONDS, announcementRetentionElapsed, sessionMeetsMinimum } from "../domain/policy.js";
@@ -185,6 +187,21 @@ export class DiscordPublisher {
       { name: "Active time", value: formatClock(totals.activeMs), inline: true },
       { name: "Inactive time", value: formatClock(totals.inactiveMs), inline: true },
     ];
+    // What they actually did on the shift, from the Adonis command log. A
+    // deployment not running command logging, and a shift old enough for its
+    // records to have aged out, both answer nothing — and nothing is what the
+    // record then says, rather than a zero that reads like idleness.
+    const commands = await commandActivityDuring(this.db, {
+      robloxUserId: session.identity.robloxUserId, from: session.startedAt, to: now,
+    });
+    if (commands.total && commands.highestRisk) {
+      fields.push(
+        { name: "Commands", value: "\u200b", inline: false },
+        { name: "Commands run", value: String(commands.total), inline: true },
+        { name: "Highest risk", value: riskLabel(commands.highestRisk), inline: true },
+        { name: "Most used", value: topCommandsLine(commands), inline: true },
+      );
+    }
     if (session.state === "ENDED") {
       const year = calendarYearRange(now, this.config.REPORT_TIMEZONE);
       const reportYear = new Intl.DateTimeFormat("en", { timeZone: this.config.REPORT_TIMEZONE, year: "numeric" }).format(now);

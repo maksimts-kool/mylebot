@@ -4,6 +4,7 @@ import {
 } from "discord.js";
 import type { CommandLogThread } from "@prisma/client";
 import { BRAND_COLOR, ENDED_COLOR } from "../../../shared/discord/colors.js";
+import { compactDuration, timeIntoShift, type ShiftStatus } from "../../../shared/staff-activity.js";
 import { BLOCK_MINUTES } from "../domain/policy.js";
 import type { StoredStaff } from "../domain/roster.js";
 import { tierName } from "../domain/staff-ladder.js";
@@ -34,15 +35,32 @@ function timestamp(date: Date, style: "f" | "R" | "t"): string {
 /** When each blocked person gets their commands back, by Roblox user ID. */
 export type BlockedUntil = Map<string, Date>;
 
-function staffLine(member: StoredStaff, blockedUntil: BlockedUntil): string {
+/** Whether each of them is on a tracked shift, by Roblox user ID. */
+export type Shifts = Map<string, ShiftStatus>;
+
+/**
+ * Whether somebody in the server is on shift, as the roster says it. Only
+ * people the session tracker knows are described at all — an unknown Roblox
+ * account is not "off shift", and a server full of untracked staff should read
+ * no differently from one where the feature was never set up.
+ */
+function shiftPart(status: ShiftStatus | undefined, at: Date): string | null {
+  if (!status?.tracked) return null;
+  const elapsed = timeIntoShift(status, at);
+  return elapsed === null ? "off shift" : `on shift ${compactDuration(elapsed)}`;
+}
+
+function staffLine(member: StoredStaff, blockedUntil: BlockedUntil, shifts: Shifts, at: Date): string {
   const blocked = blockedUntil.get(member.userId);
   // The Adonis tier is what their access actually is; the group role is only
   // ever a nicer name for it, so an unknown one is left out rather than
   // announced. Nobody needs to read "Creators · Not in group".
   const tier = member.rankName ? `${tierName(member.adminLevel)} · ${member.rankName}` : tierName(member.adminLevel);
-  return blocked
-    ? `🔒 **${member.username}** — ${tier} · blocked until ${timestamp(blocked, "t")}`
-    : `**${member.username}** — ${tier}`;
+  const parts = [tier];
+  const shift = shiftPart(shifts.get(member.userId), at);
+  if (shift) parts.push(shift);
+  if (blocked) parts.push(`blocked until ${timestamp(blocked, "t")}`);
+  return `${blocked ? "🔒 " : ""}**${member.username}** — ${parts.join(" · ")}`;
 }
 
 /**
@@ -55,6 +73,7 @@ export function serverPanelEmbed(
   server: CommandLogThread,
   staff: StoredStaff[],
   blockedUntil: BlockedUntil,
+  shifts: Shifts = new Map(),
 ): EmbedBuilder {
   const studio = server.serverType === "STUDIO";
   const embed = new EmbedBuilder()
@@ -80,7 +99,9 @@ export function serverPanelEmbed(
     .addFields({
       name: `👮 Staff in this server (${staff.length})`,
       value: staff.length
-        ? staff.map((member) => staffLine(member, blockedUntil)).join("\n").slice(0, 1024)
+        // The panel shows the server as of its last report, so a shift is
+        // measured to that instant rather than to whenever this was rendered.
+        ? staff.map((member) => staffLine(member, blockedUntil, shifts, server.lastSeenAt)).join("\n").slice(0, 1024)
         : "Nobody with Adonis access is in this server.",
       inline: false,
     });

@@ -6,6 +6,7 @@ import { userError } from "../../../../core/errors.js";
 import { BRAND_COLOR, SUCCESS_COLOR } from "../../../../shared/discord/colors.js";
 import { textInputRow } from "../../../../shared/discord/components.js";
 import { PermissionLevel } from "../../../../shared/permissions.js";
+import { commandActivityDuring, type CommandActivity } from "../../../../shared/staff-activity.js";
 import { assertDurationInvariant, formatDuration, totalsForPeriod } from "../../domain/accounting.js";
 import { recordedTimeMeetsSessionMinimum } from "../../domain/policy.js";
 import { sessionDetailEmbed, sessionOwner, statusIcon, statusLabel } from "../session-embed.js";
@@ -15,6 +16,21 @@ import { replyHistory } from "./history.js";
 
 /** How many live sessions the roster lists before it stops and counts the rest. */
 const ACTIVE_ROSTER_LIMIT = 15;
+
+/**
+ * The Adonis commands run during a shift. A shift still running is asked about
+ * up to this moment, so the reply counts everything typed so far.
+ */
+async function commandsDuring(
+  ctx: SessionCommandContext,
+  session: { startedAt: Date; endedAt: Date | null; identity: { robloxUserId: bigint } },
+): Promise<CommandActivity> {
+  return commandActivityDuring(ctx.db, {
+    robloxUserId: session.identity.robloxUserId,
+    from: session.startedAt,
+    to: session.endedAt ?? new Date(),
+  });
+}
 
 export async function showAdd(ctx: SessionCommandContext, interaction: ChatInputCommandInteraction): Promise<void> {
   const user = interaction.options.getUser("user", true);
@@ -88,7 +104,7 @@ export async function showActive(ctx: SessionCommandContext, interaction: ChatIn
     orderBy: { startedAt: "desc" },
   });
   if (!session) userError(isSelf ? "You have no active session right now" : `${identity.robloxUsername} has no active session right now`);
-  await interaction.editReply({ embeds: [sessionDetailEmbed(session)] });
+  await interaction.editReply({ embeds: [sessionDetailEmbed({ ...session, commands: await commandsDuring(ctx, session) })] });
 }
 
 /**
@@ -130,7 +146,7 @@ export async function showSessionDetails(ctx: SessionCommandContext, interaction
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const session = await ctx.db.session.findUnique({ where: { id }, include: { identity: true, segments: true } });
   if (!session || session.deletedAt) userError("Session not found");
-  await interaction.editReply({ embeds: [sessionDetailEmbed(session)] });
+  await interaction.editReply({ embeds: [sessionDetailEmbed({ ...session, commands: await commandsDuring(ctx, session) })] });
 }
 
 export async function addSession(ctx: SessionCommandContext, interaction: ModalSubmitInteraction): Promise<void> {
