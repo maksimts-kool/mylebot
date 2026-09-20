@@ -134,3 +134,11 @@ describe("command log buttons", () => {
     expect(restoreRequirement()).toContain("Managers");
   });
 });
+
+describe("what the embed leaves out", () => {
+  it("keeps the footer to the time it ran", () => {
+    const json = commandLogEmbed(entry(), { discordUserId: null }).toJSON();
+    expect(json.footer).toBeUndefined();
+    expect(json.timestamp).toBe(occurredAt.toISOString());
+  });
+});

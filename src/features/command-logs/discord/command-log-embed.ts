@@ -68,7 +68,9 @@ export function commandLogEmbed(entry: CommandLogEntry, view: CommandLogView): E
         : []),
       { name: "🆔 Job ID", value: `\`${entry.jobId}\``, inline: false },
     )
-    .setFooter({ text: `${entry.commandAlias} · ${entry.commandName} · place ${entry.placeId}` })
+    // Nothing else belongs in the footer: the command is already the title, and
+    // the place is on the thread's own header. The timestamp is what a reader
+    // scanning a thread actually needs, rendered in their own timezone.
     .setTimestamp(entry.occurredAt);
   if (view.blockedUntil) {
     embed.addFields({

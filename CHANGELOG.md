@@ -4,7 +4,7 @@ All notable changes are recorded here.
 
 ## Unreleased
 
-_Nothing yet._
+- Trimmed the command log embed's footer to just the time the command ran. The command name was already the title and the place ID is on the thread's own header, so `kill · kill · place 5228421097` said nothing twice.
 
 ## 0.15.2 - 2026-09-20
 
