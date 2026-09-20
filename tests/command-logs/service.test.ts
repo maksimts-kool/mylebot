@@ -41,7 +41,8 @@ function event(overrides: Partial<CommandEvent> = {}): CommandEvent {
 function build(settings: Partial<CommandLogSettings> = {}, create = vi.fn().mockResolvedValue({ id: "entry-1" })) {
   const db = {
     commandLogEntry: { create },
-    commandBlock: { findUnique: vi.fn().mockResolvedValue(null), upsert: vi.fn(), deleteMany: vi.fn() },
+    commandBlock: { findUnique: vi.fn().mockResolvedValue(null), upsert: vi.fn(), deleteMany: vi.fn(), findMany: vi.fn() },
+    commandLogThread: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn(), update: vi.fn() },
   };
   const settingsService = {
     get: vi.fn().mockResolvedValue({ enabled: true, channelId: "channel-1", includeStudio: true, ...settings }),
@@ -114,7 +115,6 @@ describe("command blocks", () => {
       robloxUsername: "MaksimTs",
       byDiscordUserId: "discord-1",
       byDiscordName: "presser",
-      entryId: "entry-1",
     }, now);
     expect(expiresAt.getTime() - now.getTime()).toBe(15 * 60 * 1000);
     expect(db.commandBlock.upsert).toHaveBeenCalledWith(expect.objectContaining({
@@ -144,5 +144,46 @@ describe("command blocks", () => {
     // Two people pressing at once, or a block that simply ran its course.
     db.commandBlock.deleteMany.mockResolvedValue({ count: 0 });
     expect(await service.unblock(999n, by)).toBe(false);
+  });
+});
+
+describe("live servers", () => {
+  it("shows a roster only while the feature is on and has a channel", async () => {
+    const roster = {
+      universeId: 100n, placeId: 300n, jobId: "job-1", serverType: "PUBLIC" as const,
+      playerCount: 14, maxPlayers: 30, closed: false, staff: [],
+    };
+    expect(await build().service.rosterAllowed(roster)).toBe(true);
+    expect(await build({ enabled: false }).service.rosterAllowed(roster)).toBe(false);
+    expect(await build({ channelId: "" }).service.rosterAllowed(roster)).toBe(false);
+    expect(await build({ includeStudio: false }).service.rosterAllowed({ ...roster, serverType: "STUDIO" })).toBe(false);
+    // And a roster from somewhere else is refused outright, like a command run.
+    await expect(build().service.rosterAllowed({ ...roster, placeId: 999n })).rejects.toThrow(/place/);
+  });
+
+  it("closes servers that stopped reporting, and empties their roster", async () => {
+    const { service, db } = build();
+    const now = new Date("2026-09-20T18:42:00Z");
+    const stale = { jobId: "job-1", lastSeenAt: new Date("2026-09-20T18:30:00Z"), staff: [{ userId: "999" }] };
+    db.commandLogThread.findMany.mockResolvedValue([stale]);
+    const closed = await service.closeSilentServers(5 * 60 * 1000, now);
+    expect(db.commandLogThread.findMany).toHaveBeenCalledWith({
+      where: { closedAt: null, lastSeenAt: { lt: new Date("2026-09-20T18:37:00Z") } },
+    });
+    expect(closed).toEqual([{ ...stale, closedAt: now, staff: [] }]);
+  });
+
+  it("says nothing when every server is still reporting", async () => {
+    const { service, db } = build();
+    db.commandLogThread.findMany.mockResolvedValue([]);
+    expect(await service.closeSilentServers(5 * 60 * 1000)).toEqual([]);
+    expect(db.commandLogThread.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("reads back only what still looks like a staff member", async () => {
+    const { service } = build();
+    const member = { userId: "999", username: "MaksimTs", rankNumber: 9, rankName: "Supervisor", adminLevel: 201 };
+    const server = { staff: [member, { username: "corrupt" }, "nonsense", null] } as never;
+    expect(service.staffOf(server)).toEqual([member]);
   });
 });

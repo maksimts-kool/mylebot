@@ -283,15 +283,19 @@ Credentials, batch payloads and player identifiers are never logged — request 
 
 ## Adonis command logs
 
-Every Adonis command staff run is posted to Discord as its own embed, inside a thread named after the Roblox server the command ran in, so one server's story can be read without the other servers interleaved.
+The log channel is a board of the Roblox servers that are running right now. Each server gets one message — its **panel** — that the bot keeps up to date, and the thread hanging off that panel holds every command run in that server.
 
-An embed carries the command as its title, the staff member and their linked Discord account, their group rank and Adonis level, the risk, the server type and population, the job ID, and whoever the command was run on. The embed's colour and its risk field come from the Adonis permission level the command demands — raising a command's level in `Server-Command_Restrictor` raises its risk here too, so no separate list has to be maintained.
-
-Two buttons sit under each embed:
+A panel shows the population, the place and job IDs, and every staff member currently inside with the tier Adonis gives them. Its controls are:
 
 - **Join server** links straight into that job ID, exactly as the session messages do. A Studio playtest has nothing to join, so the button is left off.
-- **Disable access 15m** takes the runner's Adonis command access away, in every server, for fifteen minutes. Pressing requires one staff tier above the run — an Engineers run needs a Supervisor, a Supervisors run needs a Manager — resolved through Bloxlink and then through the group rank, so Discord and the game use one ladder. Managers are the top staffed tier, so a Manager's run is disabled by another Manager. The Roblox plugin polls the block list every fifteen seconds, which needs no Open Cloud key and works in Studio.
-- **Restore access** replaces that button while a block is in force and gives command access back early. It takes a Manager whatever tier the original run was: taking access away follows the ladder, but handing it back overrules whoever took it, so a Supervisor who blocked somebody by mistake asks a Manager to undo it. The embed keeps saying that access was disabled and who gave it back.
+- **Disable command access for 15 minutes** picks a staff member from a menu and takes their Adonis command access away, in every server. Pressing requires one staff tier above the person being acted on — an Engineer needs a Supervisor, a Supervisor needs a Manager — resolved through Bloxlink and then through the group rank, so Discord and the game use one ladder. Managers are the top staffed tier, so a Manager is blocked by another Manager.
+- **Give command access back** appears only while somebody in that server is blocked, and lifts it early. That takes a Manager whatever tier the person is: taking access away follows the ladder, but handing it back overrules whoever took it.
+
+Each menu offers only the people it can act on, so neither ever appears with nothing in it. Every press leaves a line in the thread saying who moved whose access, because the panel shows the current state while the thread is where it is remembered.
+
+The command records in the thread carry no buttons of their own. The command is the embed's title, with the staff member and their linked Discord account, their group rank and Adonis level, the risk, the server type and population, the job ID, and whoever the command was run on. The embed's colour and its risk field come from the Adonis permission level the command demands — raising a command's level in `Server-Command_Restrictor` raises its risk here too, so no separate list has to be maintained.
+
+The plugin reports its roster every minute and whenever somebody joins or leaves, and says goodbye when the server shuts down. A server that dies without saying so is closed by a sweep five minutes after its last report: the panel turns grey, says when the server closed, and drops its controls. The thread stays as the record.
 
 The ladder lives in [`src/features/command-logs/domain/staff-ladder.ts`](src/features/command-logs/domain/staff-ladder.ts) and mirrors `Adonis_Loader.Config.Settings`: group rank 7 is Engineers (level 101), rank 9 is Supervisors (201), and ranks 10, 254 and 255 are Managers (250). Change the two together. Rank 255 is the one deliberate difference: the group owner has no Adonis entry because the game gives them everything through `IsPlaceOwner`, and a Discord button has no such shortcut.
 

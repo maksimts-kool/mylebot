@@ -33,9 +33,13 @@ const validEvent = {
 const apps: FastifyInstance[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
 
-async function buildApp(service: Partial<CommandLogService>, onRecorded = vi.fn()): Promise<FastifyInstance> {
+async function buildApp(
+  service: Partial<CommandLogService>,
+  onRecorded = vi.fn(),
+  onReported = vi.fn(),
+): Promise<FastifyInstance> {
   const app = await buildHttpServer(config);
-  await app.register(commandRunRoutes({ config, service: service as CommandLogService, onRecorded }));
+  await app.register(commandRunRoutes({ config, service: service as CommandLogService, onRecorded, onReported }));
   await app.register(commandBlockRoutes({ config, service: service as CommandLogService }));
   apps.push(app);
   return app;
@@ -98,6 +102,44 @@ describe("command run ingestion", () => {
     });
     expect(rejected.statusCode).toBe(400);
     expect(rejected.json().error).toBe("rejected_event");
+  });
+});
+
+describe("server rosters", () => {
+  const roster = {
+    universeId: "100", placeId: "300", jobId: "job-1", serverType: "PUBLIC",
+    playerCount: 14, maxPlayers: 30,
+    staff: [{ userId: "999", username: "MaksimTs", rankNumber: 9, rankName: "Supervisor", adminLevel: 201 }],
+  };
+
+  it("draws a panel for a roster the feature is willing to show", async () => {
+    const onReported = vi.fn();
+    const app = await buildApp({ rosterAllowed: vi.fn().mockResolvedValue(true) }, vi.fn(), onReported);
+    const response = await app.inject({
+      method: "POST", url: "/v1/roblox/commands/roster", headers: authorized, payload: roster,
+    });
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({ status: "shown" });
+    expect(onReported).toHaveBeenCalledWith(expect.objectContaining({ jobId: "job-1", closed: false }));
+  });
+
+  it("accepts but ignores a roster while the feature is switched off", async () => {
+    const onReported = vi.fn();
+    const app = await buildApp({ rosterAllowed: vi.fn().mockResolvedValue(false) }, vi.fn(), onReported);
+    const response = await app.inject({
+      method: "POST", url: "/v1/roblox/commands/roster", headers: authorized, payload: roster,
+    });
+    // The plugin keeps reporting either way; telling it off is the bot's job.
+    expect(response.json()).toEqual({ status: "ignored" });
+    expect(onReported).not.toHaveBeenCalled();
+  });
+
+  it("needs the ingestion secret", async () => {
+    const rosterAllowed = vi.fn();
+    const app = await buildApp({ rosterAllowed });
+    const response = await app.inject({ method: "POST", url: "/v1/roblox/commands/roster", payload: roster });
+    expect(response.statusCode).toBe(401);
+    expect(rosterAllowed).not.toHaveBeenCalled();
   });
 });
 

@@ -1,9 +1,10 @@
-import { Prisma, type CommandBlock, type CommandLogEntry } from "@prisma/client";
+import { Prisma, type CommandBlock, type CommandLogEntry, type CommandLogThread } from "@prisma/client";
 import type { Config } from "../../../core/config.js";
 import type { Db } from "../../../core/db.js";
 import type { Logger } from "../../../core/logger.js";
 import { BLOCK_MINUTES, isQuietCommand } from "../domain/policy.js";
 import type { CommandEvent } from "../domain/events.js";
+import { readStoredStaff, toStoredStaff, type ServerRoster, type StoredStaff } from "../domain/roster.js";
 import { riskForLevel } from "../domain/risk.js";
 import type { CommandLogSettingsService } from "./settings.js";
 
@@ -22,7 +23,6 @@ export type BlockRequest = {
   robloxUsername: string;
   byDiscordUserId: string;
   byDiscordName: string;
-  entryId: string;
 };
 
 /**
@@ -52,7 +52,7 @@ export class CommandLogService {
    * on the plugin's shutdown flush — is still exactly the record somebody will
    * want to read. The embed carries the instant it happened.
    */
-  private assertSource(event: CommandEvent): void {
+  private assertSource(event: { universeId: bigint; placeId: bigint }): void {
     if (event.universeId !== this.config.ROBLOX_UNIVERSE_ID) {
       throw new Error(`Unexpected universe ${event.universeId}`);
     }
@@ -104,6 +104,73 @@ export class CommandLogService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Checks a roster the way a command run is checked, and answers whether this
+   * server should be shown at all. The panel is the same projection as the log,
+   * so it obeys the same switches.
+   */
+  async rosterAllowed(roster: ServerRoster): Promise<boolean> {
+    this.assertSource(roster);
+    const settings = await this.settings.get();
+    if (!settings.enabled || !settings.channelId) return false;
+    return roster.serverType !== "STUDIO" || settings.includeStudio;
+  }
+
+  async server(jobId: string): Promise<CommandLogThread | null> {
+    return this.db.commandLogThread.findUnique({ where: { jobId } });
+  }
+
+  async serverByPanel(panelMessageId: string): Promise<CommandLogThread | null> {
+    return this.db.commandLogThread.findFirst({ where: { panelMessageId } });
+  }
+
+  /** The staff a server last reported, read back out of its JSON column. */
+  staffOf(server: CommandLogThread): StoredStaff[] {
+    return readStoredStaff(server.staff);
+  }
+
+  /** Replaces a server's reported state with what the plugin just sent. */
+  async saveRoster(roster: ServerRoster, now = new Date()): Promise<CommandLogThread> {
+    return this.db.commandLogThread.update({
+      where: { jobId: roster.jobId },
+      data: {
+        playerCount: roster.playerCount,
+        maxPlayers: roster.maxPlayers,
+        staff: toStoredStaff(roster.staff),
+        lastSeenAt: now,
+        closedAt: roster.closed ? now : null,
+      },
+    });
+  }
+
+  /**
+   * Closes servers that stopped reporting. A server that shuts down says so,
+   * but one that crashes or loses HTTP never does, and its panel would
+   * otherwise keep offering to join a server that is not there.
+   */
+  async closeSilentServers(staleMs: number, now = new Date()): Promise<CommandLogThread[]> {
+    const cutoff = new Date(now.getTime() - staleMs);
+    const stale = await this.db.commandLogThread.findMany({
+      where: { closedAt: null, lastSeenAt: { lt: cutoff } },
+    });
+    if (!stale.length) return [];
+    await this.db.commandLogThread.updateMany({
+      where: { jobId: { in: stale.map(({ jobId }) => jobId) } },
+      data: { closedAt: now, staff: [] },
+    });
+    return stale.map((server) => ({ ...server, closedAt: now, staff: [] }));
+  }
+
+  /** When each of these people gets their commands back, keyed by Roblox ID. */
+  async blockedUntil(robloxUserIds: bigint[], now = new Date()): Promise<Map<string, Date>> {
+    if (!robloxUserIds.length) return new Map();
+    const blocks = await this.db.commandBlock.findMany({
+      where: { robloxUserId: { in: robloxUserIds }, expiresAt: { gt: now } },
+      select: { robloxUserId: true, expiresAt: true },
+    });
+    return new Map(blocks.map((block) => [block.robloxUserId.toString(), block.expiresAt]));
   }
 
   async entry(id: string): Promise<CommandLogEntry | null> {
@@ -165,19 +232,27 @@ export class CommandLogService {
   }
 
   /** What the `/config` page reports about the feature's current state. */
-  async stats(now = new Date()): Promise<{ threads: number; blocks: number; runsToday: number }> {
+  async stats(now = new Date()): Promise<{ servers: number; blocks: number; runsToday: number }> {
     const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    const [threads, blocks, runsToday] = await Promise.all([
-      this.db.commandLogThread.count(),
+    const [servers, blocks, runsToday] = await Promise.all([
+      this.db.commandLogThread.count({ where: { closedAt: null } }),
       this.db.commandBlock.count({ where: { expiresAt: { gt: now } } }),
       this.db.commandLogEntry.count({ where: { occurredAt: { gte: dayAgo } } }),
     ]);
-    return { threads, blocks, runsToday };
+    return { servers, blocks, runsToday };
   }
 
   /** Drops blocks that have run out. Nothing enforces them any more by then. */
   async cleanupExpiredBlocks(now = new Date()): Promise<number> {
     const { count } = await this.db.commandBlock.deleteMany({ where: { expiresAt: { lte: now } } });
+    return count;
+  }
+
+  /** Closed servers are dropped once their records are, and never come back:
+   * a job id belongs to one server for its lifetime. */
+  async cleanupClosedServers(retentionDays: number, now = new Date()): Promise<number> {
+    const cutoff = new Date(now.getTime() - retentionDays * 24 * 60 * 60 * 1000);
+    const { count } = await this.db.commandLogThread.deleteMany({ where: { closedAt: { lt: cutoff } } });
     return count;
   }
 

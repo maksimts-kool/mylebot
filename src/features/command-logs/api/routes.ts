@@ -4,15 +4,21 @@ import { ZodError } from "zod";
 import type { Config } from "../../../core/config.js";
 import { replyWithDefaultError, secretMatches } from "../../../core/http.js";
 import { commandBatchSchema } from "../domain/events.js";
+import { rosterSchema } from "../domain/roster.js";
+import type { ServerRoster } from "../domain/roster.js";
 import type { CommandLogService } from "../service/command-log-service.js";
 
 /** Called once a batch has been stored, so Discord can post what is new. */
 export type CommandRunsRecorded = (entries: CommandLogEntry[]) => Promise<void>;
 
+/** Called for a roster the feature is willing to show. */
+export type ServerReported = (roster: ServerRoster) => Promise<void>;
+
 export type CommandRunRouteOptions = {
   config: Config;
   service: CommandLogService;
   onRecorded: CommandRunsRecorded;
+  onReported: ServerReported;
 };
 
 export type CommandBlockRouteOptions = {
@@ -24,7 +30,7 @@ export type CommandBlockRouteOptions = {
  * Where the Adonis plugin reports command runs. Posting them needs the Discord
  * gateway, so this half only runs where the gateway is.
  */
-export function commandRunRoutes({ config, service, onRecorded }: CommandRunRouteOptions): FastifyPluginAsync {
+export function commandRunRoutes({ config, service, onRecorded, onReported }: CommandRunRouteOptions): FastifyPluginAsync {
   return async (app) => {
     // A batch from the wrong universe or place is the caller's problem, not a
     // server fault. Payload-shape errors are checked first, as they do for
@@ -62,6 +68,19 @@ export function commandRunRoutes({ config, service, onRecorded }: CommandRunRout
       if (recorded.length) await onRecorded(recorded);
       app.log.debug({ category: "command", events: batch.events.length, posted: recorded.length }, "Command batch accepted");
       return reply.code(202).send({ results });
+    });
+
+    // Who is in a server right now. This arrives on a timer and whenever staff
+    // come and go, and it is what the server's panel is drawn from.
+    app.post("/v1/roblox/commands/roster", async (request, reply) => {
+      if (!secretMatches(request.headers.authorization, config.ROBLOX_INGESTION_SECRET)) {
+        return reply.code(401).send({ error: "invalid_authentication" });
+      }
+      const roster = rosterSchema.parse(request.body);
+      const shown = await service.rosterAllowed(roster);
+      if (shown) await onReported(roster);
+      app.log.debug({ category: "command", jobId: roster.jobId, staff: roster.staff.length }, "Server roster accepted");
+      return reply.code(202).send({ status: shown ? "shown" : "ignored" });
     });
   };
 }

@@ -16,5 +16,6 @@ return {
 	CommandLogsEnabled = true,
 	CommandLogFlushSeconds = 5,
 	CommandBlockPollSeconds = 15,
+	CommandRosterSeconds = 60,
 	CommandLogMaximumPending = 200,
 }

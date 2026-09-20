@@ -3,8 +3,9 @@
 	Server-CommandLogs
 
 	Reports every Adonis command staff run to the bot, which posts it as an
-	embed in a Discord thread named after this server, and enforces the
-	fifteen-minute command blocks pressed from those embeds.
+	embed in this server's Discord thread; reports who is in the server so the
+	bot can keep that server's panel up to date; and enforces the fifteen-minute
+	command blocks pressed from that panel.
 
 	Place this ModuleScript in Adonis_Loader > Config > Plugins and name it
 	"Server-CommandLogs". Configuration is read from
@@ -20,6 +21,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local CONFIG_WAIT_SECONDS = 30
 local DEFAULT_FLUSH_SECONDS = 5
 local DEFAULT_BLOCK_POLL_SECONDS = 15
+local DEFAULT_ROSTER_SECONDS = 60
 local DEFAULT_MAXIMUM_PENDING = 200
 local DEFAULT_RETRY_BASE_SECONDS = 2
 local DEFAULT_RETRY_MAXIMUM_SECONDS = 60
@@ -63,6 +65,7 @@ return function(Vargs)
 	local groupId = Config.GroupId or 0
 	local flushSeconds = Config.CommandLogFlushSeconds or DEFAULT_FLUSH_SECONDS
 	local pollSeconds = Config.CommandBlockPollSeconds or DEFAULT_BLOCK_POLL_SECONDS
+	local rosterSeconds = Config.CommandRosterSeconds or DEFAULT_ROSTER_SECONDS
 	local maximumPending = Config.CommandLogMaximumPending or DEFAULT_MAXIMUM_PENDING
 	local retryBaseSeconds = Config.RetryBaseSeconds or DEFAULT_RETRY_BASE_SECONDS
 	local retryMaximumSeconds = Config.RetryMaximumSeconds or DEFAULT_RETRY_MAXIMUM_SECONDS
@@ -249,6 +252,57 @@ return function(Vargs)
 		})
 	end)
 
+	--[[ Who is in the server that can run commands. Players with no Adonis level
+		are not staff, and this is a staff panel. ]]
+	local function currentStaff()
+		local staff = {}
+		for _, player in Players:GetPlayers() do
+			local ok, level = pcall(server.Admin.GetLevel, player)
+			if ok and type(level) == "number" and level > 0 then
+				local rankNumber, rankName = rankOf(player)
+				table.insert(staff, {
+					userId = tostring(player.UserId),
+					username = player.Name,
+					rankNumber = rankNumber,
+					rankName = rankName,
+					adminLevel = level,
+				})
+			end
+		end
+		return staff
+	end
+
+	--[[ The panel is a live picture of this server, so it is reported on a timer
+		as well as whenever somebody arrives or leaves. `closed` is this server
+		saying goodbye; without it the bot has to guess from silence. ]]
+	local function reportRoster(closed)
+		local staff = (not closed) and currentStaff() or {}
+		request("/v1/roblox/commands/roster", "POST", {
+			universeId = tostring(game.GameId),
+			placeId = tostring(game.PlaceId),
+			jobId = jobId,
+			serverType = serverType,
+			playerCount = #Players:GetPlayers(),
+			maxPlayers = Players.MaxPlayers,
+			closed = closed and true or false,
+			staff = staff,
+		})
+	end
+
+	local rosterQueued = false
+	--[[ Several players can land in the same instant; one report covers them. ]]
+	local function requestRoster()
+		if rosterQueued or closing then return end
+		rosterQueued = true
+		task.delay(2, function()
+			rosterQueued = false
+			reportRoster(false)
+		end)
+	end
+
+	Players.PlayerAdded:Connect(requestRoster)
+	Players.PlayerRemoving:Connect(requestRoster)
+
 	--[[ Blocks are pulled rather than pushed: the bot has no way into a running
 		server without an Open Cloud key, and polling also works in Studio. ]]
 	local function pollBlocks()
@@ -306,6 +360,13 @@ return function(Vargs)
 
 	task.spawn(function()
 		while not closing do
+			reportRoster(false)
+			task.wait(rosterSeconds)
+		end
+	end)
+
+	task.spawn(function()
+		while not closing do
 			task.wait(flushSeconds)
 			if #pending > 0 then flush() end
 		end
@@ -313,6 +374,7 @@ return function(Vargs)
 
 	game:BindToClose(function()
 		closing = true
+		reportRoster(true)
 		local deadline = os.clock() + 8
 		repeat
 			if flush() then break end

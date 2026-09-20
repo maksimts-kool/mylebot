@@ -37,7 +37,7 @@ Workspace
 
 The plugin reads `ServerScriptService → SessionTracker → Config` for the ingestion URL and secret, so there is no second copy of the secret. Without that module it warns once and stays off.
 
-It reports every command staff run to `POST /v1/roblox/commands/batch`, and polls `GET /v1/roblox/command-blocks` every 15 seconds for the people whose command access was taken away from Discord. Blocks are enforced by wrapping `Process.Command` rather than through Adonis's own blacklist, because the blacklist is skipped for the place owner and for Creators — including whoever is testing in Studio.
+It reports every command staff run to `POST /v1/roblox/commands/batch`, reports who is in the server to `POST /v1/roblox/commands/roster` every 60 seconds (and whenever somebody joins or leaves, and once more on shutdown), and polls `GET /v1/roblox/command-blocks` every 15 seconds for the people whose command access was taken away from Discord. The roster is what the server's Discord panel is drawn from. Blocks are enforced by wrapping `Process.Command` rather than through Adonis's own blacklist, because the blacklist is skipped for the place owner and for Creators — including whoever is testing in Studio.
 
 Unlike the session tracker, this plugin does run in Studio, so the Discord side can be tested without publishing a place; the backend decides whether to keep Studio runs. Private and reserved servers are skipped here too.
 

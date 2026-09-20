@@ -1,58 +1,39 @@
 import {
-  ChannelType, Client, DiscordAPIError, EmbedBuilder, ThreadAutoArchiveDuration,
-  type AnyThreadChannel, type TextChannel,
+  ChannelType, Client, DiscordAPIError, ThreadAutoArchiveDuration,
+  type AnyThreadChannel, type Message, type TextChannel,
 } from "discord.js";
-import type { CommandLogEntry } from "@prisma/client";
+import type { CommandLogEntry, CommandLogThread } from "@prisma/client";
 import type { Db } from "../../../core/db.js";
 import { errorType } from "../../../core/errors.js";
 import type { Logger } from "../../../core/logger.js";
 import type { BloxlinkService } from "../../../shared/bloxlink.js";
-import { BRAND_COLOR } from "../../../shared/discord/colors.js";
+import type { ServerRoster } from "../domain/roster.js";
 import type { CommandLogService } from "../service/command-log-service.js";
 import type { CommandLogSettingsService } from "../service/settings.js";
-import { commandLogComponents, commandLogEmbed } from "./command-log-embed.js";
-
-/** What a press did to the runner's access, for re-rendering their message. */
-export type AccessChange =
-  | { blockedUntil: Date; blockedBy: string }
-  | { blockedUntil: null; restoredBy: string };
+import { commandLogEmbed } from "./command-log-embed.js";
+import { serverPanelComponents, serverPanelEmbed, threadName } from "./server-panel.js";
 
 /** Discord API error codes this publisher has to tell apart. */
 const UNKNOWN_CHANNEL = 10003;
 const UNKNOWN_MESSAGE = 10008;
 
-/** A job id is 36 characters; a thread name has room for it and a word. */
-function threadName(entry: CommandLogEntry): string {
-  const label = entry.serverType === "STUDIO" ? "Studio" : "Server";
-  return `${label} ${entry.jobId}`.slice(0, 100);
-}
-
 /**
- * The first message in a new thread: which server this is, so the thread is
- * self-explanatory even after the server it belongs to is long gone.
- */
-function threadHeader(entry: CommandLogEntry): EmbedBuilder {
-  return new EmbedBuilder()
-    .setTitle(entry.serverType === "STUDIO" ? "🧪 Studio playtest" : "🌐 Public server")
-    .setDescription(`Commands run in this server are logged here.\nJob ID \`${entry.jobId}\` · place \`${entry.placeId}\``)
-    .setColor(BRAND_COLOR)
-    .setTimestamp(entry.occurredAt);
-}
-
-/**
- * Posts command runs into one thread per Roblox server. The channel would be
- * unreadable otherwise: a busy server produces a run every few seconds, and a
- * reader almost always wants one server's story rather than all of them
- * interleaved.
+ * Owns what this feature looks like in Discord: a panel per running server in
+ * the log channel, the thread of command records hanging off it, and the short
+ * notices that say when somebody's access was moved.
+ *
+ * The panel is a projection of a live server, so it is rebuilt from the
+ * database every time rather than kept in memory: any of the roster, a block,
+ * or a press can change it, and the last write should win.
  */
 export class CommandLogPublisher {
   private readonly log: Logger;
   /**
-   * One thread lookup per server at a time. Two commands arriving together used
-   * to both find "no thread yet" and create one, leaving a stray empty thread
-   * next to the one that won.
+   * One server at a time. Rosters arrive on a timer while commands arrive
+   * whenever staff type, and two of them together used to both find "no panel
+   * yet" and create one, leaving a stray thread beside the one that won.
    */
-  private readonly inFlight = new Map<string, Promise<AnyThreadChannel | null>>();
+  private readonly inFlight = new Map<string, Promise<unknown>>();
 
   constructor(
     private readonly client: Client,
@@ -65,81 +46,193 @@ export class CommandLogPublisher {
     this.log = log.child({ category: "command" });
   }
 
-  private async createThread(entry: CommandLogEntry, channelId: string): Promise<AnyThreadChannel | null> {
+  /** Runs `work` with nothing else touching the same server's panel. */
+  private async serialised<T>(jobId: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.inFlight.get(jobId) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(work);
+    this.inFlight.set(jobId, next.catch(() => undefined));
+    try {
+      return await next;
+    } finally {
+      if (this.inFlight.get(jobId) === next) this.inFlight.delete(jobId);
+    }
+  }
+
+  private async logChannel(): Promise<TextChannel | null> {
+    const { channelId } = await this.settings.get();
+    if (!channelId) return null;
     const channel = await this.client.channels.fetch(channelId);
     if (!channel || channel.type !== ChannelType.GuildText) {
       this.log.error({ channelId }, "The command log channel is not a text channel");
       return null;
     }
-    const thread = await (channel as TextChannel).threads.create({
-      name: threadName(entry),
-      autoArchiveDuration: ThreadAutoArchiveDuration.OneDay,
-      type: ChannelType.PublicThread,
-      reason: `Adonis command log for job ${entry.jobId}`,
-    });
-    await thread.send({ embeds: [threadHeader(entry)] });
-    await this.db.commandLogThread.create({
-      data: { jobId: entry.jobId, channelId, threadId: thread.id, placeId: entry.placeId },
-    });
-    this.log.info({ jobId: entry.jobId }, "Opened a command log thread for a server");
-    return thread;
+    return channel as TextChannel;
+  }
+
+  /** The panel's current look, built from the server row and the live blocks. */
+  private async render(server: CommandLogThread) {
+    const staff = this.service.staffOf(server);
+    const blockedUntil = await this.service.blockedUntil(staff.map((member) => BigInt(member.userId)));
+    return {
+      embeds: [serverPanelEmbed(server, staff, blockedUntil)],
+      components: serverPanelComponents(server, staff, blockedUntil),
+    };
   }
 
   /**
-   * The thread this server's commands belong in, creating it the first time and
-   * reopening it when Discord has archived it. A thread somebody deleted is
-   * forgotten and made again, so a deleted thread cannot stop the logging.
+   * Opens a server's panel and the thread that hangs off it. The thread is
+   * started *from* the panel message, so Discord shows the log directly under
+   * the server it belongs to instead of somewhere else in the channel.
    */
-  private async resolveThread(entry: CommandLogEntry, channelId: string): Promise<AnyThreadChannel | null> {
-    const saved = await this.db.commandLogThread.findUnique({ where: { jobId: entry.jobId } });
-    // A channel change in `/config` must not keep posting into the old channel.
-    if (saved && saved.channelId === channelId) {
+  private async open(roster: ServerRoster, now: Date): Promise<CommandLogThread | null> {
+    const channel = await this.logChannel();
+    if (!channel) return null;
+
+    const draft: CommandLogThread = {
+      jobId: roster.jobId,
+      channelId: channel.id,
+      threadId: "",
+      panelMessageId: null,
+      placeId: roster.placeId,
+      serverType: roster.serverType,
+      playerCount: roster.playerCount,
+      maxPlayers: roster.maxPlayers,
+      staff: [],
+      lastSeenAt: now,
+      closedAt: null,
+      createdAt: now,
+      lastPostedAt: now,
+    };
+    const message = await channel.send(await this.render(draft));
+    const thread = await message.startThread({
+      name: threadName(roster),
+      autoArchiveDuration: ThreadAutoArchiveDuration.OneDay,
+      reason: `Adonis command log for job ${roster.jobId}`,
+    });
+    this.log.info({ jobId: roster.jobId }, "Opened a panel and log thread for a server");
+    return this.db.commandLogThread.create({
+      data: {
+        jobId: roster.jobId,
+        channelId: channel.id,
+        threadId: thread.id,
+        panelMessageId: message.id,
+        placeId: roster.placeId,
+        serverType: roster.serverType,
+        playerCount: roster.playerCount,
+        maxPlayers: roster.maxPlayers,
+        staff: [],
+        lastSeenAt: now,
+      },
+    });
+  }
+
+  /** Edits a server's panel to match its row, reposting one that is gone. */
+  private async repaint(server: CommandLogThread): Promise<void> {
+    const channel = await this.logChannel();
+    if (!channel || channel.id !== server.channelId) return;
+    const view = await this.render(server);
+    if (server.panelMessageId) {
       try {
-        const thread = await this.client.channels.fetch(saved.threadId) as AnyThreadChannel;
-        if (thread.archived) await thread.setArchived(false);
-        return thread;
+        await channel.messages.edit(server.panelMessageId, view);
+        return;
       } catch (error) {
-        if (!(error instanceof DiscordAPIError) || error.code !== UNKNOWN_CHANNEL) throw error;
-        this.log.warn({ jobId: entry.jobId }, "The command log thread is gone; opening a new one");
+        const code = error instanceof DiscordAPIError ? error.code : null;
+        if (code !== UNKNOWN_MESSAGE && code !== UNKNOWN_CHANNEL) throw error;
+        // Deleting the panel deletes its thread with it, so there is nothing
+        // to hang a replacement off and no records left to keep.
+        this.log.warn({ jobId: server.jobId }, "A server panel is gone; it will not be reposted");
+        await this.db.commandLogThread.delete({ where: { jobId: server.jobId } }).catch(() => undefined);
       }
     }
-    if (saved) await this.db.commandLogThread.delete({ where: { jobId: entry.jobId } });
-    return this.createThread(entry, channelId);
   }
 
-  private async thread(entry: CommandLogEntry, channelId: string): Promise<AnyThreadChannel | null> {
-    const pending = this.inFlight.get(entry.jobId);
-    if (pending) return pending;
-    const work = this.resolveThread(entry, channelId).finally(() => this.inFlight.delete(entry.jobId));
-    this.inFlight.set(entry.jobId, work);
-    return work;
+  /**
+   * What a server reported about itself. The first report opens its panel; the
+   * rest keep it honest, including the last one, which closes it.
+   */
+  async syncServer(roster: ServerRoster): Promise<void> {
+    await this.serialised(roster.jobId, async () => {
+      if (!this.client.isReady()) return;
+      const existing = await this.service.server(roster.jobId);
+      // A server that closed stays closed: a late report must not reopen it.
+      if (existing?.closedAt) return;
+      const server = existing ?? await this.open(roster, new Date());
+      if (!server) return;
+      await this.repaint(await this.service.saveRoster(roster));
+    }).catch((error: unknown) => {
+      this.log.error({ err: error, errorType: errorType(error), jobId: roster.jobId }, "Updating a server panel failed");
+    });
   }
 
-  /** Posts one command run. A failure here must not fail the ingestion call. */
+  /** Re-renders panels the sweep closed, so they stop offering a dead server. */
+  async closeServers(servers: CommandLogThread[]): Promise<void> {
+    for (const server of servers) {
+      await this.serialised(server.jobId, () => this.repaint(server)).catch((error: unknown) => {
+        this.log.error({ err: error, errorType: errorType(error), jobId: server.jobId }, "Closing a server panel failed");
+      });
+    }
+  }
+
+  /** Re-renders one server's panel after a block was applied or lifted. */
+  async refreshPanel(jobId: string): Promise<void> {
+    await this.serialised(jobId, async () => {
+      const server = await this.service.server(jobId);
+      if (server) await this.repaint(server);
+    }).catch((error: unknown) => {
+      this.log.error({ err: error, errorType: errorType(error), jobId }, "Refreshing a server panel failed");
+    });
+  }
+
+  private async thread(server: CommandLogThread): Promise<AnyThreadChannel | null> {
+    try {
+      const thread = await this.client.channels.fetch(server.threadId) as AnyThreadChannel;
+      if (thread.archived) await thread.setArchived(false);
+      return thread;
+    } catch (error) {
+      if (error instanceof DiscordAPIError && error.code === UNKNOWN_CHANNEL) {
+        this.log.warn({ jobId: server.jobId }, "A command log thread is gone");
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Posts one command run into its server's thread. A run can reach us before
+   * the server's first roster does, so the panel is opened here too when it
+   * has to be.
+   */
   async post(entry: CommandLogEntry): Promise<void> {
     if (!this.client.isReady()) {
       this.log.warn({ jobId: entry.jobId }, "Discord is not connected; a command run went unposted");
       return;
     }
-    const { channelId } = await this.settings.get();
-    if (!channelId) return;
-    const thread = await this.thread(entry, channelId);
+    const server = await this.serialised(entry.jobId, async () => {
+      const existing = await this.service.server(entry.jobId);
+      if (existing) return existing;
+      return this.open({
+        universeId: 0n,
+        placeId: entry.placeId,
+        jobId: entry.jobId,
+        serverType: entry.serverType,
+        playerCount: entry.playerCount,
+        maxPlayers: entry.maxPlayers,
+        closed: false,
+        staff: [],
+      }, entry.occurredAt);
+    });
+    if (!server) return;
+
+    const thread = await this.thread(server);
     if (!thread) return;
-    const block = await this.service.activeBlock(entry.robloxUserId);
-    const view = {
-      discordUserId: await this.bloxlink.discordForRoblox(entry.robloxUserId),
-      blockedUntil: block?.expiresAt ?? null,
-      blockedBy: block ? `<@${block.byDiscordUserId}>` : null,
-    };
     const message = await thread.send({
-      embeds: [commandLogEmbed(entry, view)],
-      components: commandLogComponents(entry, view),
+      embeds: [commandLogEmbed(entry, { discordUserId: await this.bloxlink.discordForRoblox(entry.robloxUserId) })],
     });
     await this.service.recordMessage(entry.id, thread.id, message.id);
     await this.db.commandLogThread.update({
       where: { jobId: entry.jobId },
       data: { lastPostedAt: new Date() },
-    });
+    }).catch(() => undefined);
   }
 
   async postMany(entries: CommandLogEntry[]): Promise<void> {
@@ -151,24 +244,14 @@ export class CommandLogPublisher {
   }
 
   /**
-   * Re-renders an entry's own message after its access was taken away or given
-   * back, so the record shows what happened and the message only ever offers
-   * the press that makes sense next.
+   * Leaves a line in the server's thread saying somebody's access moved. The
+   * panel shows the current state; the thread is where it is remembered.
    */
-  async refresh(entry: CommandLogEntry, access: AccessChange): Promise<void> {
-    if (!entry.threadId || !entry.messageId) return;
-    const view = { discordUserId: await this.bloxlink.discordForRoblox(entry.robloxUserId), ...access };
-    try {
-      const thread = await this.client.channels.fetch(entry.threadId) as AnyThreadChannel;
-      if (thread.archived) await thread.setArchived(false);
-      await thread.messages.edit(entry.messageId, {
-        embeds: [commandLogEmbed(entry, view)],
-        components: commandLogComponents(entry, view),
-      });
-    } catch (error) {
-      const code = error instanceof DiscordAPIError ? error.code : null;
-      if (code === UNKNOWN_MESSAGE || code === UNKNOWN_CHANNEL) return;
-      this.log.error({ err: error, errorType: errorType(error), entryId: entry.id }, "Updating a command run failed");
-    }
+  async notice(jobId: string, content: string): Promise<Message | null> {
+    const server = await this.service.server(jobId);
+    if (!server) return null;
+    const thread = await this.thread(server);
+    if (!thread) return null;
+    return thread.send({ content, allowedMentions: { parse: [] } });
   }
 }

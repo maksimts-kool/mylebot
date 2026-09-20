@@ -2,7 +2,7 @@ import { z } from "zod";
 
 // Roblox IDs cross the JSON boundary as decimal strings, exactly as they do
 // for presence events. A malformed ID has to fail as a payload error.
-const robloxId = z.union([z.string(), z.number()]).transform((value, context) => {
+export const robloxId = z.union([z.string(), z.number()]).transform((value, context) => {
   try {
     return BigInt(value);
   } catch {

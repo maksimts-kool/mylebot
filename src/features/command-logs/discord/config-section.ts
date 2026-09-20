@@ -38,14 +38,14 @@ export function commandLogsConfigSection(
 
     return configPage(META, {
       summary: [
-        "Every Adonis command staff run is posted as an embed, in a thread named after the Roblox server it ran in.",
-        "Private and reserved servers are never read.",
+        "Each running Roblox server gets a panel in this channel listing the staff inside it, with the controls for joining it and for taking somebody's command access away.",
+        "Every Adonis command staff run is logged in the thread hanging off that panel. Private and reserved servers are never read.",
       ],
       fields: [
         field("Logging", enabledValue(current.enabled)),
         field("Channel", channelValue(current.channelId)),
         field("Studio playtests", enabledValue(current.includeStudio)),
-        field("Server threads", countValue(stats.threads)),
+        field("Live servers", countValue(stats.servers)),
         field("Runs in 24h", countValue(stats.runsToday)),
         field("Access blocks", countValue(stats.blocks)),
         note(

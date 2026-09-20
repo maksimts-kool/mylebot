@@ -30,7 +30,7 @@ function build(overrides: Partial<CommandLogSettings> = {}) {
     setIncludeStudio: vi.fn().mockResolvedValue(state),
   } as unknown as CommandLogSettingsService;
   const service = {
-    stats: vi.fn().mockResolvedValue({ threads: 3, blocks: 1, runsToday: 42 }),
+    stats: vi.fn().mockResolvedValue({ servers: 3, blocks: 1, runsToday: 42 }),
   } as unknown as CommandLogService;
   return { section: commandLogsConfigSection(settings, service), settings, service };
 }
@@ -49,7 +49,7 @@ describe("the command logs configuration page", () => {
     expect(values["Channel"]).toBe("<#channel-1>");
     expect(values["Logging"]).toContain("Enabled");
     expect(values["Studio playtests"]).toContain("Enabled");
-    expect(values["Server threads"]).toBe("**3**");
+    expect(values["Live servers"]).toBe("**3**");
     expect(values["Runs in 24h"]).toBe("**42**");
     expect(values["Access blocks"]).toBe("**1**");
   });

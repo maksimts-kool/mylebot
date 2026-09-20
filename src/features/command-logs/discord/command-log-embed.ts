@@ -1,27 +1,7 @@
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from "discord.js";
+import { EmbedBuilder } from "discord.js";
 import type { CommandLogEntry } from "@prisma/client";
 import { riskColor, riskLabel } from "../domain/risk.js";
-import { MINIMUM_RESTORE_LEVEL, minimumPresserLevel, tierName } from "../domain/staff-ladder.js";
-
-/** Namespace for every component this feature owns. */
-export const CUSTOM_ID_PREFIX = "cmdlog";
-
-export const ACTIONS = { disable: "disable", restore: "restore" } as const;
-
-export function commandLogCustomId(action: string, entryId: string): string {
-  return `${CUSTOM_ID_PREFIX}:${action}:${entryId}`;
-}
-
-/** Reads a press back. Returns null for anything this feature does not own. */
-export function parseCommandLogCustomId(customId: string): { action: string; entryId: string } | null {
-  const [prefix, action, entryId] = customId.split(":");
-  if (prefix !== CUSTOM_ID_PREFIX || !action || !entryId) return null;
-  return { action, entryId };
-}
-
-function timestamp(date: Date, style: "f" | "R"): string {
-  return `<t:${Math.floor(date.getTime() / 1000)}:${style}>`;
-}
+import { tierName } from "../domain/staff-ladder.js";
 
 /** `Public · 14/30`, or just `Studio` for a playtest that has no player limit. */
 function serverValue(entry: CommandLogEntry): string {
@@ -38,23 +18,23 @@ function targetsValue(targets: string[]): string {
 export type CommandLogView = {
   /** The Discord account the runner is linked to, when Bloxlink knows one. */
   discordUserId: string | null;
-  /** Set while this person's command access is taken away. */
-  blockedUntil?: Date | null;
-  blockedBy?: string | null;
-  /** Set once a block on this run has been lifted early. */
-  restoredBy?: string | null;
 };
 
 /**
  * One command run. The command itself is the title, because that is what a
  * reader scanning a thread is looking for; everything that qualifies it — who,
  * what rank, how risky, which server — sits underneath in one row of fields.
+ *
+ * It carries no buttons. Every record in a thread would have shown the same
+ * two, which reads as clutter and invites acting on a command from minutes ago
+ * rather than on the server as it is now; the panel the thread hangs off owns
+ * the controls instead.
  */
 export function commandLogEmbed(entry: CommandLogEntry, view: CommandLogView): EmbedBuilder {
   const staff = view.discordUserId
     ? `**${entry.robloxUsername}**\n<@${view.discordUserId}>`
     : `**${entry.robloxUsername}**`;
-  const embed = new EmbedBuilder()
+  return new EmbedBuilder()
     .setAuthor({ name: `Adonis command · ${tierName(entry.adminLevel)}` })
     .setTitle(entry.commandText.slice(0, 256))
     .setColor(riskColor(entry.risk))
@@ -69,61 +49,7 @@ export function commandLogEmbed(entry: CommandLogEntry, view: CommandLogView): E
       { name: "🆔 Job ID", value: `\`${entry.jobId}\``, inline: false },
     )
     // Nothing else belongs in the footer: the command is already the title, and
-    // the place is on the thread's own header. The timestamp is what a reader
+    // the place is on the server's own panel. The timestamp is what a reader
     // scanning a thread actually needs, rendered in their own timezone.
     .setTimestamp(entry.occurredAt);
-  if (view.blockedUntil) {
-    embed.addFields({
-      name: "🔒 Command access",
-      value: `Disabled until ${timestamp(view.blockedUntil, "f")} (${timestamp(view.blockedUntil, "R")})${view.blockedBy ? ` by ${view.blockedBy}` : ""}`,
-      inline: false,
-    });
-  } else if (view.restoredBy) {
-    // A lifted block still belongs in the record: the run was serious enough
-    // for somebody to act on, and somebody else decided otherwise.
-    embed.addFields({
-      name: "🔓 Command access",
-      value: `Disabled, then given back by ${view.restoredBy}`,
-      inline: false,
-    });
-  }
-  return embed;
-}
-
-/**
- * The join link uses the same URL the session messages do, so one click lands
- * in that exact server. A Studio playtest has nothing to join.
- */
-export function commandLogComponents(entry: CommandLogEntry, view: CommandLogView): ActionRowBuilder<ButtonBuilder>[] {
-  const buttons: ButtonBuilder[] = [];
-  if (entry.serverType === "PUBLIC") {
-    buttons.push(new ButtonBuilder()
-      .setStyle(ButtonStyle.Link)
-      .setLabel("Join server")
-      .setURL(`https://www.roblox.com/games/start?placeId=${entry.placeId}&gameInstanceId=${encodeURIComponent(entry.jobId)}`));
-  }
-  // While a block is in force the same slot offers the way out of it, so the
-  // two never appear together and nobody presses disable on somebody who is
-  // already blocked.
-  buttons.push(view.blockedUntil
-    ? new ButtonBuilder()
-      .setCustomId(commandLogCustomId(ACTIONS.restore, entry.id))
-      .setStyle(ButtonStyle.Success)
-      .setLabel("Restore access")
-    : new ButtonBuilder()
-      .setCustomId(commandLogCustomId(ACTIONS.disable, entry.id))
-      .setStyle(ButtonStyle.Danger)
-      .setLabel("Disable access 15m"));
-  return [new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons)];
-}
-
-/** What the press needs, spelled out for the person who is not allowed to. */
-export function disableRequirement(entry: CommandLogEntry): string {
-  const required = minimumPresserLevel(entry.adminLevel);
-  return `${tierName(required)} or above (level ${required}) can disable a ${tierName(entry.adminLevel)} command run`;
-}
-
-/** The same, for giving access back, which is not tied to the run's tier. */
-export function restoreRequirement(): string {
-  return `${tierName(MINIMUM_RESTORE_LEVEL)} or above (level ${MINIMUM_RESTORE_LEVEL}) can give command access back early`;
 }

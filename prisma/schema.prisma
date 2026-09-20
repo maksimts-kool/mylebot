@@ -260,11 +260,26 @@ model CommandLogThread {
   jobId        String   @id
   channelId    String
   threadId     String   @unique
+  /// The channel message the thread hangs off. It is the server's live panel:
+  /// who is in it, and the controls for acting on them.
+  panelMessageId String?
   placeId      BigInt
+  serverType   CommandServerType @default(PUBLIC)
+  playerCount  Int      @default(0)
+  maxPlayers   Int      @default(0)
+  /// The staff currently in the server, as last reported by the plugin. This
+  /// is a projection of a running server, not a record, so it is stored whole
+  /// and replaced whole rather than modelled as rows.
+  staff        Json     @default("[]")
+  /// When the plugin last reported. A server that stops reporting is closed by
+  /// the sweep, because a crashed server never says goodbye.
+  lastSeenAt   DateTime @default(now())
+  closedAt     DateTime?
   createdAt    DateTime @default(now())
   lastPostedAt DateTime @default(now())
 
   @@index([lastPostedAt])
+  @@index([closedAt, lastSeenAt])
 }
 
 /// One Adonis command run. `eventId` is the plugin's idempotency key, so a
@@ -309,7 +324,6 @@ model CommandBlock {
   expiresAt       DateTime
   byDiscordUserId String
   byDiscordName   String
-  entryId         String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
