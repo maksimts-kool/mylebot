@@ -1,2 +1,2 @@
 // Updated by scripts/sync-version.ts during `npm version`.
-export const APP_VERSION = "0.15.2";
+export const APP_VERSION = "0.15.3";
