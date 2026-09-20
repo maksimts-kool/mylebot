@@ -4,6 +4,10 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+_Nothing yet._
+
+## 0.15.2 - 2026-09-20
+
 - Added a **Restore access** button to the command log embeds. While somebody's command access is disabled, that button replaces **Disable access 15m** and gives access back early; it takes a Manager whatever tier the original run was, because handing access back overrules whoever took it away. The embed keeps the record that access was disabled and names who lifted it.
 
 ## 0.15.1 - 2026-09-20
