@@ -1,12 +1,12 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from "discord.js";
 import type { CommandLogEntry } from "@prisma/client";
 import { riskColor, riskLabel } from "../domain/risk.js";
-import { minimumPresserLevel, tierName } from "../domain/staff-ladder.js";
+import { MINIMUM_RESTORE_LEVEL, minimumPresserLevel, tierName } from "../domain/staff-ladder.js";
 
 /** Namespace for every component this feature owns. */
 export const CUSTOM_ID_PREFIX = "cmdlog";
 
-export const ACTIONS = { disable: "disable" } as const;
+export const ACTIONS = { disable: "disable", restore: "restore" } as const;
 
 export function commandLogCustomId(action: string, entryId: string): string {
   return `${CUSTOM_ID_PREFIX}:${action}:${entryId}`;
@@ -38,9 +38,11 @@ function targetsValue(targets: string[]): string {
 export type CommandLogView = {
   /** The Discord account the runner is linked to, when Bloxlink knows one. */
   discordUserId: string | null;
-  /** Set once somebody has taken this person's command access away. */
+  /** Set while this person's command access is taken away. */
   blockedUntil?: Date | null;
   blockedBy?: string | null;
+  /** Set once a block on this run has been lifted early. */
+  restoredBy?: string | null;
 };
 
 /**
@@ -74,6 +76,14 @@ export function commandLogEmbed(entry: CommandLogEntry, view: CommandLogView): E
       value: `Disabled until ${timestamp(view.blockedUntil, "f")} (${timestamp(view.blockedUntil, "R")})${view.blockedBy ? ` by ${view.blockedBy}` : ""}`,
       inline: false,
     });
+  } else if (view.restoredBy) {
+    // A lifted block still belongs in the record: the run was serious enough
+    // for somebody to act on, and somebody else decided otherwise.
+    embed.addFields({
+      name: "🔓 Command access",
+      value: `Disabled, then given back by ${view.restoredBy}`,
+      inline: false,
+    });
   }
   return embed;
 }
@@ -90,12 +100,14 @@ export function commandLogComponents(entry: CommandLogEntry, view: CommandLogVie
       .setLabel("Join server")
       .setURL(`https://www.roblox.com/games/start?placeId=${entry.placeId}&gameInstanceId=${encodeURIComponent(entry.jobId)}`));
   }
+  // While a block is in force the same slot offers the way out of it, so the
+  // two never appear together and nobody presses disable on somebody who is
+  // already blocked.
   buttons.push(view.blockedUntil
     ? new ButtonBuilder()
-      .setCustomId(commandLogCustomId(ACTIONS.disable, entry.id))
-      .setStyle(ButtonStyle.Secondary)
-      .setLabel("Access disabled")
-      .setDisabled(true)
+      .setCustomId(commandLogCustomId(ACTIONS.restore, entry.id))
+      .setStyle(ButtonStyle.Success)
+      .setLabel("Restore access")
     : new ButtonBuilder()
       .setCustomId(commandLogCustomId(ACTIONS.disable, entry.id))
       .setStyle(ButtonStyle.Danger)
@@ -107,4 +119,9 @@ export function commandLogComponents(entry: CommandLogEntry, view: CommandLogVie
 export function disableRequirement(entry: CommandLogEntry): string {
   const required = minimumPresserLevel(entry.adminLevel);
   return `${tierName(required)} or above (level ${required}) can disable a ${tierName(entry.adminLevel)} command run`;
+}
+
+/** The same, for giving access back, which is not tied to the run's tier. */
+export function restoreRequirement(): string {
+  return `${tierName(MINIMUM_RESTORE_LEVEL)} or above (level ${MINIMUM_RESTORE_LEVEL}) can give command access back early`;
 }

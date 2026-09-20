@@ -289,7 +289,7 @@ return function(Vargs)
 				local minutes = math.max(1, math.ceil((expiry - DateTime.now().UnixTimestamp) / 60))
 				pcall(server.Remote.MakeGui, player, "Output", {
 					Title = "Commands disabled",
-					Message = string.format("Your command access was disabled from Discord. It comes back in about %d minute(s).", minutes),
+					Message = string.format("Your command access was remotely disabled. It comes back in about %d minute(s).", minutes),
 				})
 				return
 			end

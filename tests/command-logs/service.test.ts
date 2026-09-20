@@ -125,9 +125,24 @@ describe("command blocks", () => {
 
   it("ignores a block that has already run out", async () => {
     const { service, db } = build();
+    const now = new Date("2026-09-20T18:42:00Z");
     db.commandBlock.findUnique.mockResolvedValue({ expiresAt: new Date("2026-09-20T18:00:00Z") });
-    expect(await service.blockFor(999n, new Date("2026-09-20T18:42:00Z"))).toBeNull();
-    db.commandBlock.findUnique.mockResolvedValue({ expiresAt: new Date("2026-09-20T19:00:00Z") });
-    expect(await service.blockFor(999n, new Date("2026-09-20T18:42:00Z"))).toEqual(new Date("2026-09-20T19:00:00Z"));
+    expect(await service.activeBlock(999n, now)).toBeNull();
+
+    const live = { expiresAt: new Date("2026-09-20T19:00:00Z"), byDiscordUserId: "discord-1" };
+    db.commandBlock.findUnique.mockResolvedValue(live);
+    expect(await service.activeBlock(999n, now)).toEqual(live);
+  });
+
+  it("gives access back, and says when there was nothing to give back", async () => {
+    const { service, db } = build();
+    const by = { discordName: "presser", robloxUsername: "MaksimTs" };
+    db.commandBlock.deleteMany.mockResolvedValue({ count: 1 });
+    expect(await service.unblock(999n, by)).toBe(true);
+    expect(db.commandBlock.deleteMany).toHaveBeenCalledWith({ where: { robloxUserId: 999n } });
+
+    // Two people pressing at once, or a block that simply ran its course.
+    db.commandBlock.deleteMany.mockResolvedValue({ count: 0 });
+    expect(await service.unblock(999n, by)).toBe(false);
   });
 });

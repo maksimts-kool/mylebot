@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isQuietCommand } from "../../src/features/command-logs/domain/policy.js";
 import { riskForLevel, riskLabel } from "../../src/features/command-logs/domain/risk.js";
 import {
-  STAFF_TIERS, TOP_TIER_LEVEL, levelForGroupRank, minimumPresserLevel, tierName,
+  MINIMUM_RESTORE_LEVEL, STAFF_TIERS, TOP_TIER_LEVEL, levelForGroupRank, minimumPresserLevel, tierName,
 } from "../../src/features/command-logs/domain/staff-ladder.js";
 
 describe("staff ladder", () => {
@@ -36,6 +36,14 @@ describe("staff ladder", () => {
     // Nothing above Managers is staffed, so a higher run does not become
     // undisableable.
     expect(minimumPresserLevel(900)).toBe(TOP_TIER_LEVEL);
+  });
+
+  it("takes a Manager to give access back, whatever tier the run was", () => {
+    expect(MINIMUM_RESTORE_LEVEL).toBe(TOP_TIER_LEVEL);
+    expect(tierName(MINIMUM_RESTORE_LEVEL)).toBe("Managers");
+    // A Supervisor may take access away from an Engineers run, but undoing it
+    // overrules them, so it is out of their hands.
+    expect(minimumPresserLevel(101)).toBeLessThan(MINIMUM_RESTORE_LEVEL);
   });
 
   it("never lets somebody disable a run of their own tier below the top", () => {

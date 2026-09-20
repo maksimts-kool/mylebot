@@ -12,6 +12,11 @@ import type { CommandLogService } from "../service/command-log-service.js";
 import type { CommandLogSettingsService } from "../service/settings.js";
 import { commandLogComponents, commandLogEmbed } from "./command-log-embed.js";
 
+/** What a press did to the runner's access, for re-rendering their message. */
+export type AccessChange =
+  | { blockedUntil: Date; blockedBy: string }
+  | { blockedUntil: null; restoredBy: string };
+
 /** Discord API error codes this publisher has to tell apart. */
 const UNKNOWN_CHANNEL = 10003;
 const UNKNOWN_MESSAGE = 10008;
@@ -120,9 +125,11 @@ export class CommandLogPublisher {
     if (!channelId) return;
     const thread = await this.thread(entry, channelId);
     if (!thread) return;
+    const block = await this.service.activeBlock(entry.robloxUserId);
     const view = {
       discordUserId: await this.bloxlink.discordForRoblox(entry.robloxUserId),
-      blockedUntil: await this.service.blockFor(entry.robloxUserId),
+      blockedUntil: block?.expiresAt ?? null,
+      blockedBy: block ? `<@${block.byDiscordUserId}>` : null,
     };
     const message = await thread.send({
       embeds: [commandLogEmbed(entry, view)],
@@ -144,12 +151,13 @@ export class CommandLogPublisher {
   }
 
   /**
-   * Re-renders an entry's own message after its access was taken away, so the
-   * record shows the block and the button cannot be pressed twice.
+   * Re-renders an entry's own message after its access was taken away or given
+   * back, so the record shows what happened and the message only ever offers
+   * the press that makes sense next.
    */
-  async refresh(entry: CommandLogEntry, blockedUntil: Date, blockedBy: string): Promise<void> {
+  async refresh(entry: CommandLogEntry, access: AccessChange): Promise<void> {
     if (!entry.threadId || !entry.messageId) return;
-    const view = { discordUserId: await this.bloxlink.discordForRoblox(entry.robloxUserId), blockedUntil, blockedBy };
+    const view = { discordUserId: await this.bloxlink.discordForRoblox(entry.robloxUserId), ...access };
     try {
       const thread = await this.client.channels.fetch(entry.threadId) as AnyThreadChannel;
       if (thread.archived) await thread.setArchived(false);

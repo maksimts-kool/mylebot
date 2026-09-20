@@ -1,4 +1,4 @@
-import { Prisma, type CommandLogEntry } from "@prisma/client";
+import { Prisma, type CommandBlock, type CommandLogEntry } from "@prisma/client";
 import type { Config } from "../../../core/config.js";
 import type { Db } from "../../../core/db.js";
 import type { Logger } from "../../../core/logger.js";
@@ -142,9 +142,26 @@ export class CommandLogService {
     return expiresAt;
   }
 
-  async blockFor(robloxUserId: bigint, now = new Date()): Promise<Date | null> {
+  /** The block in force for somebody, or null once it has run out. */
+  async activeBlock(robloxUserId: bigint, now = new Date()): Promise<CommandBlock | null> {
     const block = await this.db.commandBlock.findUnique({ where: { robloxUserId } });
-    return block && block.expiresAt > now ? block.expiresAt : null;
+    return block && block.expiresAt > now ? block : null;
+  }
+
+  /**
+   * Gives command access back before the fifteen minutes are up. The return
+   * says whether there was anything to give back, so two people pressing at
+   * once are told different things.
+   */
+  async unblock(robloxUserId: bigint, by: { discordName: string; robloxUsername: string }): Promise<boolean> {
+    const { count } = await this.db.commandBlock.deleteMany({ where: { robloxUserId } });
+    if (count) {
+      this.log.info(
+        { actor: by.discordName, target: by.robloxUsername },
+        `Command access given back to ${by.robloxUsername}`,
+      );
+    }
+    return count > 0;
   }
 
   /** What the `/config` page reports about the feature's current state. */

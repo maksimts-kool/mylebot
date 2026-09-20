@@ -45,6 +45,14 @@ export function tierName(level: number): string {
  * Supervisor, a Supervisors run needs a Manager — and stops at the top tier,
  * because nothing above Managers is staffed.
  */
+/**
+ * The level somebody needs to give command access back before the fifteen
+ * minutes are up. Taking access away follows the ladder, but handing it back
+ * early overrides another staff member's decision, so it stops at the top: a
+ * Supervisor who blocked somebody by mistake asks a Manager to undo it.
+ */
+export const MINIMUM_RESTORE_LEVEL = TOP_TIER_LEVEL;
+
 export function minimumPresserLevel(runnerLevel: number): number {
   const above = STAFF_TIERS.find(({ level }) => level > runnerLevel);
   return above ? above.level : TOP_TIER_LEVEL;
