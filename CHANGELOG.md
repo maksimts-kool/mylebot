@@ -4,6 +4,10 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+_Nothing yet._
+
+## 0.15.0 - 2026-09-20
+
 - Added Adonis command logging. Every command staff run is posted to Discord as its own embed, in a thread named after the Roblox server it ran in, carrying the command, who ran it, their rank and Adonis level, the risk, the server type and population, the job ID, and whoever it was run on. Risk is read from the permission level the command demands rather than from a list somebody has to maintain. Each embed offers a link straight into that server and a **Disable access 15m** button that takes the runner's command access away everywhere for fifteen minutes; pressing it needs one staff tier above the run, resolved through Bloxlink and the group rank. Private and reserved servers are never read, Studio playtests are logged while the switch on the new **Command logs** page of `/config` is on, and lookup-only commands such as `:cmds` are dropped. Install [`roblox/adonis/Server-CommandLogs.lua`](roblox/adonis/Server-CommandLogs.lua) into `Adonis_Loader → Config → Plugins` in every place.
 
 ## 0.14.3 - 2026-09-11
