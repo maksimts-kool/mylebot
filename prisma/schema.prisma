@@ -227,3 +227,91 @@ model AuditEntry {
 
   @@index([sessionId, createdAt])
 }
+
+enum CommandServerType {
+  PUBLIC
+  STUDIO
+}
+
+enum CommandRisk {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+/// Where Adonis command runs are posted. The channel is chosen in `/config`,
+/// never from the environment.
+model CommandLogSettings {
+  id             String   @id
+  enabled        Boolean  @default(false)
+  channelId      String?
+  /// Studio playtests are logged too while this is on, so the plugin can be
+  /// tested without publishing a place.
+  includeStudio  Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+/// One Discord thread per Roblox server, so the channel stays readable. The
+/// job id is the identity of a running server, which is exactly what a thread
+/// should be named after.
+model CommandLogThread {
+  jobId        String   @id
+  channelId    String
+  threadId     String   @unique
+  placeId      BigInt
+  createdAt    DateTime @default(now())
+  lastPostedAt DateTime @default(now())
+
+  @@index([lastPostedAt])
+}
+
+/// One Adonis command run. `eventId` is the plugin's idempotency key, so a
+/// retried batch cannot post the same command twice.
+model CommandLogEntry {
+  id             String      @id @default(cuid())
+  eventId        String      @unique
+  jobId          String
+  placeId        BigInt
+  robloxUserId   BigInt
+  robloxUsername String
+  rankNumber     Int
+  rankName       String
+  /// The Adonis level the person holds, and the level the command demands.
+  adminLevel     Int
+  requiredLevel  Int
+  commandText    String
+  /// The Adonis index (`Kick`) and the alias that was typed (`kick`). Both are
+  /// kept because only the pair identifies a command unambiguously.
+  commandName    String
+  commandAlias   String
+  serverType     CommandServerType
+  playerCount    Int
+  maxPlayers     Int
+  risk           CommandRisk
+  targets        String[]
+  threadId       String?
+  messageId      String?
+  occurredAt     DateTime
+  createdAt      DateTime    @default(now())
+
+  @@index([robloxUserId, occurredAt])
+  @@index([createdAt])
+}
+
+/// A staff member's command access, taken away for fifteen minutes from
+/// Discord. The Roblox plugin polls these, so a block needs no Open Cloud key
+/// and works in Studio.
+model CommandBlock {
+  robloxUserId    BigInt   @id
+  robloxUsername  String
+  expiresAt       DateTime
+  byDiscordUserId String
+  byDiscordName   String
+  entryId         String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([expiresAt])
+}

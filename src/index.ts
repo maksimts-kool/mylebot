@@ -9,6 +9,7 @@ import { buildHttpServer } from "./core/http.js";
 import { createAppLogger, setAppLogger } from "./core/logger.js";
 import { Scheduler } from "./core/scheduler.js";
 import { APP_VERSION } from "./core/version.js";
+import { createCommandLogsFeature } from "./features/command-logs/index.js";
 import { createConfigFeature } from "./features/config/index.js";
 import { createHelpFeature } from "./features/help/index.js";
 import { createPortalFeature } from "./features/portal/index.js";
@@ -49,6 +50,7 @@ const ctx: FeatureContext = {
 
 const composed: Feature[] = [
   createSessionsFeature(ctx),
+  createCommandLogsFeature(ctx),
   createPortalFeature(ctx),
   createTaigaFeature(ctx),
   createVerificationFeature(ctx),

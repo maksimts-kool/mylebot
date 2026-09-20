@@ -11,6 +11,7 @@ A Node.js service that records eligible Roblox group members' play sessions in P
 - Announces each shift in the staff chat channel with one short message that mentions the member outside the embed and carries a **More info** button, edits that same message when the shift ends, and takes it down five minutes later so the channel does not fill up with finished shifts.
 - Provides session history, manual session administration, and timezone-aware leaderboards.
 - Resolves Roblox and Discord identities through Bloxlink when an API key is configured.
+- Logs every Adonis command staff run into Discord, one embed per command inside a thread named after the Roblox server it ran in, and lets the tier above the person who ran it take their command access away for fifteen minutes.
 - Mirrors the Discord bug-report and suggestion forums onto a Taiga kanban board, keeping post tags in step with the board and announcing every change.
 - Includes Docker Compose definitions for local deployment and Portainer stacks.
 - Includes server and client Lua components for each Roblox place.
@@ -280,6 +281,23 @@ What is deliberately *not* logged at `info`: the `/health` and `/ready` probes a
 
 Credentials, batch payloads and player identifiers are never logged — request lines carry the method, path, status and duration only. Set `LOG_FORMAT=json` for one object per line if you ship logs somewhere. View container logs with `docker compose logs --follow bot` or `... server`. If a health check cannot reach `/ready`, Docker records a concise `readiness check failed` diagnostic in the container health-check output; the check depends only on API readiness and PostgreSQL, never on Discord.
 
+## Adonis command logs
+
+Every Adonis command staff run is posted to Discord as its own embed, inside a thread named after the Roblox server the command ran in, so one server's story can be read without the other servers interleaved.
+
+An embed carries the command as its title, the staff member and their linked Discord account, their group rank and Adonis level, the risk, the server type and population, the job ID, and whoever the command was run on. The embed's colour and its risk field come from the Adonis permission level the command demands — raising a command's level in `Server-Command_Restrictor` raises its risk here too, so no separate list has to be maintained.
+
+Two buttons sit under each embed:
+
+- **Join server** links straight into that job ID, exactly as the session messages do. A Studio playtest has nothing to join, so the button is left off.
+- **Disable access 15m** takes the runner's Adonis command access away, in every server, for fifteen minutes. Pressing requires one staff tier above the run — an Engineers run needs a Supervisor, a Supervisors run needs a Manager — resolved through Bloxlink and then through the group rank, so Discord and the game use one ladder. Managers are the top staffed tier, so a Manager's run is disabled by another Manager. The Roblox plugin polls the block list every fifteen seconds, which needs no Open Cloud key and works in Studio.
+
+The ladder lives in [`src/features/command-logs/domain/staff-ladder.ts`](src/features/command-logs/domain/staff-ladder.ts) and mirrors `Adonis_Loader.Config.Settings`: group rank 7 is Engineers (level 101), rank 9 is Supervisors (201), and ranks 10 and 254 are Managers (250). Change the two together.
+
+Private and reserved servers are never read. Studio playtests are logged while **Studio playtests** is on in `/config`, so the plugin can be tested without publishing a place. Lookup-only commands such as `:cmds`, `:players` and `:view` are dropped rather than logged; the list is [`QUIET_COMMANDS`](src/features/command-logs/domain/policy.ts).
+
+Configure the channel and the switches on the **Command logs** page of `/config`. The feature has no environment variables of its own — it shares `ROBLOX_INGESTION_SECRET` with presence ingestion — and posts nothing until a channel is chosen and logging is switched on. The bot needs **Create Public Threads** and **Send Messages in Threads** in that channel.
+
 ## Roblox setup
 
 Install the package in **every place** listed in `ROBLOX_ALLOWED_PLACE_IDS`:
@@ -290,7 +308,8 @@ Install the package in **every place** listed in `ROBLOX_ALLOWED_PLACE_IDS`:
 4. Set `IngestionBaseUrl` to the public HTTPS origin of this service, without the API path.
 5. Set `IngestionSecret` to exactly the same value as `ROBLOX_INGESTION_SECRET`.
 6. Set `GroupId`, `MinimumRank`, and `MaximumRank` consistently with the backend.
-7. Publish each place.
+7. For the Adonis command logs, copy [`roblox/adonis/Server-CommandLogs.lua`](roblox/adonis/Server-CommandLogs.lua) into `Adonis_Loader → Config → Plugins` as a ModuleScript named `Server-CommandLogs`. It reads the same `Config` module, so there is no second secret to keep.
+8. Publish each place.
 
 Keep the configuration and secret under `ServerScriptService`; never place them in a LocalScript, ReplicatedStorage, source control, or client-visible object. The included LocalScript reports activity only and does not contain credentials.
 

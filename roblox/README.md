@@ -25,6 +25,22 @@ StarterPlayer
 
 `MainModule` owns the server code; `Bootstrap` starts it. Add this package to every place in the universe.
 
+## Install the Adonis command log plugin
+
+```text
+Workspace
+└── Adonis_Loader
+    └── Config
+        └── Plugins
+            └── Server-CommandLogs (ModuleScript) ← adonis/Server-CommandLogs.lua
+```
+
+The plugin reads `ServerScriptService → SessionTracker → Config` for the ingestion URL and secret, so there is no second copy of the secret. Without that module it warns once and stays off.
+
+It reports every command staff run to `POST /v1/roblox/commands/batch`, and polls `GET /v1/roblox/command-blocks` every 15 seconds for the people whose command access was taken away from Discord. Blocks are enforced by wrapping `Process.Command` rather than through Adonis's own blacklist, because the blacklist is skipped for the place owner and for Creators — including whoever is testing in Studio.
+
+Unlike the session tracker, this plugin does run in Studio, so the Discord side can be tested without publishing a place; the backend decides whether to keep Studio runs. Private and reserved servers are skipped here too.
+
 Studio playtests and private servers (VIP or reserved) are never tracked — `MainModule` skips them, so those sessions are ignored entirely.
 
 `server/Config.lua` is a local, gitignored configuration file. Copy `server/Config.example.lua` to it when maintaining a local configuration; never commit the secret.

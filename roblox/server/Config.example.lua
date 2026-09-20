@@ -12,4 +12,9 @@ return {
 	MaximumPendingEvents = 1000,
 	RetryBaseSeconds = 2,
 	RetryMaximumSeconds = 60,
+	-- Adonis command logging (Config.Plugins > Server-CommandLogs).
+	CommandLogsEnabled = true,
+	CommandLogFlushSeconds = 5,
+	CommandBlockPollSeconds = 15,
+	CommandLogMaximumPending = 200,
 }
