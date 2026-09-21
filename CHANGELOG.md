@@ -4,6 +4,10 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+_Nothing yet._
+
+## 0.15.6 - 2026-09-21
+
 - Stopped opening a command-log panel for every running server. A server now gets its panel and thread only once the bot has logged a command run in it — lookup-only commands such as `:cmds` do not count — and until then the Roblox plugin reports nothing about that server at all, so the channel lists only servers where staff actually did something. The bot ignores rosters from servers without a panel, which also covers places still running the old plugin. A sweep deletes the panels and threads left behind by the old rule, judging only servers young enough that their records cannot have been cleaned up yet; deleting a thread needs **Manage Threads** in the log channel, and without it only the panel goes. Reinstall [`roblox/adonis/Server-CommandLogs.lua`](roblox/adonis/Server-CommandLogs.lua) in every place.
 
 ## 0.15.5 - 2026-09-20
