@@ -63,9 +63,13 @@ export function createCommandLogsFeature(ctx: FeatureContext): Feature {
         intervalMs: 60 * 1000,
         run: async () => {
           const closed = await service.closeSilentServers(SERVER_STALE_MS);
-          if (!closed.length) return undefined;
-          await publisher.closeServers(closed);
-          return `closed ${closed.length} server panel(s) that stopped reporting`;
+          if (closed.length) await publisher.closeServers(closed);
+          const removed = await publisher.removeEmpty(ctx.config.PROCESSED_EVENT_RETENTION_DAYS);
+          const said = [
+            closed.length ? `closed ${closed.length} server panel(s) that stopped reporting` : "",
+            removed ? `removed ${removed} server panel(s) with no commands` : "",
+          ].filter(Boolean);
+          return said.length ? said.join("; ") : undefined;
         },
       },
       {

@@ -17,6 +17,7 @@ import { serverPanelComponents, serverPanelEmbed, threadName } from "./server-pa
 /** Discord API error codes this publisher has to tell apart. */
 const UNKNOWN_CHANNEL = 10003;
 const UNKNOWN_MESSAGE = 10008;
+const MISSING_PERMISSIONS = 50013;
 
 /**
  * Owns what this feature looks like in Discord: a panel per running server in
@@ -155,17 +156,16 @@ export class CommandLogPublisher {
   }
 
   /**
-   * What a server reported about itself. The first report opens its panel; the
-   * rest keep it honest, including the last one, which closes it.
+   * What a server reported about itself. Reports keep an open panel honest,
+   * including the last one, which closes it. They never open one: that takes a
+   * logged command run, in `post`.
    */
   async syncServer(roster: ServerRoster): Promise<void> {
     await this.serialised(roster.jobId, async () => {
       if (!this.client.isReady()) return;
       const existing = await this.service.server(roster.jobId);
       // A server that closed stays closed: a late report must not reopen it.
-      if (existing?.closedAt) return;
-      const server = existing ?? await this.open(roster, new Date());
-      if (!server) return;
+      if (!existing || existing.closedAt) return;
       await this.repaint(await this.service.saveRoster(roster));
     }).catch((error: unknown) => {
       this.log.error({ err: error, errorType: errorType(error), jobId: roster.jobId }, "Updating a server panel failed");
@@ -191,6 +191,50 @@ export class CommandLogPublisher {
     });
   }
 
+  /**
+   * Takes a server's panel and thread out of the channel altogether. Deleting
+   * the panel message leaves its thread behind, so both go, thread first.
+   */
+  async remove(server: CommandLogThread): Promise<void> {
+    await this.serialised(server.jobId, async () => {
+      const gone = (error: unknown) =>
+        error instanceof DiscordAPIError && (error.code === UNKNOWN_CHANNEL || error.code === UNKNOWN_MESSAGE);
+      try {
+        const thread = await this.client.channels.fetch(server.threadId) as AnyThreadChannel | null;
+        await thread?.delete();
+      } catch (error) {
+        // Deleting a thread takes Manage Threads. Without it the panel still
+        // goes, and the thread is left to archive itself.
+        if (error instanceof DiscordAPIError && error.code === MISSING_PERMISSIONS) {
+          this.log.warn({ jobId: server.jobId }, "Removing an empty log thread needs Manage Threads; leaving it to archive");
+        } else if (!gone(error)) {
+          throw error;
+        }
+      }
+      if (server.panelMessageId) {
+        try {
+          const channel = await this.client.channels.fetch(server.channelId) as TextChannel | null;
+          await channel?.messages.delete(server.panelMessageId);
+        } catch (error) {
+          if (!gone(error)) throw error;
+        }
+      }
+      await this.db.commandLogThread.delete({ where: { jobId: server.jobId } }).catch(() => undefined);
+    });
+  }
+
+  /** Removes every panel no command was ever logged under. */
+  async removeEmpty(retentionDays: number): Promise<number> {
+    if (!this.client.isReady()) return 0;
+    let removed = 0;
+    for (const server of await this.service.emptyServers(retentionDays)) {
+      await this.remove(server).then(() => { removed += 1; }, (error: unknown) => {
+        this.log.error({ err: error, errorType: errorType(error), jobId: server.jobId }, "Removing an empty server panel failed");
+      });
+    }
+    return removed;
+  }
+
   private async thread(server: CommandLogThread): Promise<AnyThreadChannel | null> {
     try {
       const thread = await this.client.channels.fetch(server.threadId) as AnyThreadChannel;
@@ -206,9 +250,8 @@ export class CommandLogPublisher {
   }
 
   /**
-   * Posts one command run into its server's thread. A run can reach us before
-   * the server's first roster does, so the panel is opened here too when it
-   * has to be.
+   * Posts one command run into its server's thread. The first logged run in a
+   * server is what opens its panel; rosters only keep one up to date.
    */
   async post(entry: CommandLogEntry): Promise<void> {
     if (!this.client.isReady()) {

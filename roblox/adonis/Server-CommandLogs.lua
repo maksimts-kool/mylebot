@@ -3,9 +3,9 @@
 	Server-CommandLogs
 
 	Reports every Adonis command staff run to the bot, which posts it as an
-	embed in this server's Discord thread; reports who is in the server so the
-	bot can keep that server's panel up to date; and enforces the fifteen-minute
-	command blocks pressed from that panel.
+	embed in this server's Discord thread; once the bot has logged one, reports
+	who is in the server so it can keep that server's panel up to date; and
+	enforces the fifteen-minute command blocks pressed from that panel.
 
 	Place this ModuleScript in Adonis_Loader > Config > Plugins and name it
 	"Server-CommandLogs". Configuration is read from
@@ -72,6 +72,10 @@ return function(Vargs)
 
 	local pending = {}
 	local blockedUntil = {}
+	-- Nothing about this server is reported until the bot has logged a command
+	-- from it. Most servers never see one, and those stay out of Discord.
+	local active = false
+	local activate
 	local closing = false
 	local flushing = false
 	local retryAttempt = 0
@@ -124,6 +128,21 @@ return function(Vargs)
 			end
 
 			for _ = 1, count do table.remove(pending, 1) end
+
+			-- Lookup-only commands are accepted but not logged, so it is the
+			-- bot's answer, not the send, that says this server now has a panel.
+			if not active and response.Success then
+				local decoded, body = pcall(HttpService.JSONDecode, HttpService, response.Body)
+				if decoded and type(body) == "table" and type(body.results) == "table" then
+					for _, result in body.results do
+						-- A duplicate is a retry of a run that was already logged.
+						if type(result) == "table" and (result.status == "recorded" or result.status == "duplicate") then
+							activate()
+							break
+						end
+					end
+				end
+			end
 		end
 
 		flushing = false
@@ -300,8 +319,10 @@ return function(Vargs)
 
 	--[[ The panel is a live picture of this server, so it is reported on a timer
 		as well as whenever somebody arrives or leaves. `closed` is this server
-		saying goodbye; without it the bot has to guess from silence. ]]
+		saying goodbye; without it the bot has to guess from silence. None of it
+		is sent before the first logged command, which is what opens the panel. ]]
 	local function reportRoster(closed)
+		if not active then return end
 		local staff = (not closed) and currentStaff() or {}
 		request("/v1/roblox/commands/roster", "POST", {
 			universeId = tostring(game.GameId),
@@ -324,6 +345,11 @@ return function(Vargs)
 			rosterQueued = false
 			reportRoster(false)
 		end)
+	end
+
+	activate = function()
+		active = true
+		if not closing then task.spawn(reportRoster, false) end
 	end
 
 	Players.PlayerAdded:Connect(requestRoster)
@@ -400,11 +426,13 @@ return function(Vargs)
 
 	game:BindToClose(function()
 		closing = true
-		reportRoster(true)
 		local deadline = os.clock() + 8
 		repeat
 			if flush() then break end
 			task.wait(1)
 		until os.clock() >= deadline
+		-- After the flush, so a server whose first command is in it still
+		-- says goodbye to the panel that command just opened.
+		reportRoster(true)
 	end)
 end

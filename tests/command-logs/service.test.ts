@@ -40,9 +40,14 @@ function event(overrides: Partial<CommandEvent> = {}): CommandEvent {
 
 function build(settings: Partial<CommandLogSettings> = {}, create = vi.fn().mockResolvedValue({ id: "entry-1" })) {
   const db = {
-    commandLogEntry: { create },
+    commandLogEntry: { create, groupBy: vi.fn().mockResolvedValue([]) },
     commandBlock: { findUnique: vi.fn().mockResolvedValue(null), upsert: vi.fn(), deleteMany: vi.fn(), findMany: vi.fn() },
-    commandLogThread: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn(), update: vi.fn() },
+    commandLogThread: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findUnique: vi.fn().mockResolvedValue({ jobId: "job-1" }),
+      updateMany: vi.fn(),
+      update: vi.fn(),
+    },
   };
   const settingsService = {
     get: vi.fn().mockResolvedValue({ enabled: true, channelId: "channel-1", includeStudio: true, ...settings }),
@@ -159,6 +164,31 @@ describe("live servers", () => {
     expect(await build({ includeStudio: false }).service.rosterAllowed({ ...roster, serverType: "STUDIO" })).toBe(false);
     // And a roster from somewhere else is refused outright, like a command run.
     await expect(build().service.rosterAllowed({ ...roster, placeId: 999n })).rejects.toThrow(/place/);
+  });
+
+  it("ignores a roster from a server nobody has logged a command in yet", async () => {
+    const roster = {
+      universeId: 100n, placeId: 300n, jobId: "job-2", serverType: "PUBLIC" as const,
+      playerCount: 14, maxPlayers: 30, closed: false, staff: [],
+    };
+    const { service, db } = build();
+    db.commandLogThread.findUnique.mockResolvedValue(null);
+    expect(await service.rosterAllowed(roster)).toBe(false);
+    expect(db.commandLogThread.findUnique).toHaveBeenCalledWith({ where: { jobId: "job-2" } });
+  });
+
+  it("finds panels with no logged runs, judging only servers the retention still covers", async () => {
+    const { service, db } = build();
+    const now = new Date("2026-09-20T18:42:00Z");
+    db.commandLogThread.findMany.mockResolvedValue([{ jobId: "job-1" }, { jobId: "job-2" }]);
+    db.commandLogEntry.groupBy.mockResolvedValue([{ jobId: "job-1" }]);
+    expect(await service.emptyServers(30, now)).toEqual([{ jobId: "job-2" }]);
+    expect(db.commandLogThread.findMany).toHaveBeenCalledWith({
+      where: { createdAt: { gte: new Date("2026-08-22T18:42:00Z") } },
+    });
+    expect(db.commandLogEntry.groupBy).toHaveBeenCalledWith({
+      by: ["jobId"], where: { jobId: { in: ["job-1", "job-2"] } },
+    });
   });
 
   it("closes servers that stopped reporting, and empties their roster", async () => {

@@ -109,13 +109,16 @@ export class CommandLogService {
   /**
    * Checks a roster the way a command run is checked, and answers whether this
    * server should be shown at all. The panel is the same projection as the log,
-   * so it obeys the same switches.
+   * so it obeys the same switches — and a server only gets one once somebody
+   * ran a command worth logging in it. Until then its rosters are dropped, so
+   * the channel is not a list of every server that happens to be running.
    */
   async rosterAllowed(roster: ServerRoster): Promise<boolean> {
     this.assertSource(roster);
     const settings = await this.settings.get();
     if (!settings.enabled || !settings.channelId) return false;
-    return roster.serverType !== "STUDIO" || settings.includeStudio;
+    if (roster.serverType === "STUDIO" && !settings.includeStudio) return false;
+    return (await this.server(roster.jobId)) !== null;
   }
 
   async server(jobId: string): Promise<CommandLogThread | null> {
@@ -161,6 +164,26 @@ export class CommandLogService {
       data: { closedAt: now, staff: [] },
     });
     return stale.map((server) => ({ ...server, closedAt: now, staff: [] }));
+  }
+
+  /**
+   * Servers that have a panel but not a single logged run. Panels used to open
+   * on a server's first roster, so these are what that left behind.
+   *
+   * Only servers younger than the entry retention are judged: an older one may
+   * have had its runs cleaned up already, and its thread is still the record.
+   * The day of slack covers a run stored a moment before its panel was.
+   */
+  async emptyServers(retentionDays: number, now = new Date()): Promise<CommandLogThread[]> {
+    const judgeable = new Date(now.getTime() - (retentionDays - 1) * 24 * 60 * 60 * 1000);
+    const servers = await this.db.commandLogThread.findMany({ where: { createdAt: { gte: judgeable } } });
+    if (!servers.length) return [];
+    const logged = await this.db.commandLogEntry.groupBy({
+      by: ["jobId"],
+      where: { jobId: { in: servers.map(({ jobId }) => jobId) } },
+    });
+    const withRuns = new Set(logged.map(({ jobId }) => jobId));
+    return servers.filter(({ jobId }) => !withRuns.has(jobId));
   }
 
   /** When each of these people gets their commands back, keyed by Roblox ID. */
