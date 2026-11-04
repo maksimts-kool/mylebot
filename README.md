@@ -92,7 +92,7 @@ Keep the secret in `ServerScriptService` — never in anything the client can se
 
 | Command | Who | What it does |
 | --- | --- | --- |
-| `/leaderboard [period]` | Everyone | Staff ranked by time this week, month, year, or all time. |
+| `/leaderboard [period]` | Everyone | Staff ranked by time this week, month, or year. |
 | `/session active [user]` | Staff | Who is on shift now, or one member's live session. |
 | `/session view user` | Staff | A member's session history. Admins can add, edit, and remove sessions from it. |
 | `/config` | Manager | The settings panel. |

@@ -15,7 +15,7 @@ import type { DiscordPublisher } from "../publisher.js";
 import type { SessionCommandContext } from "./context.js";
 import { requiredPermission, sessionCommandNames } from "./definitions.js";
 import { HISTORY_IDS, parseAddCustomId, replyHistory, updateHistoryPage } from "./history.js";
-import { presetDates, renderLeaderboard } from "./leaderboard.js";
+import { firstRecordedSession, presetDates, renderLeaderboard } from "./leaderboard.js";
 import {
   addSession, editEnded, removeSession, showActive, showAddModal, showEditEndedModal, showManagePanel,
   showSessionDetails, showView,
@@ -114,7 +114,7 @@ export class SessionCommandHandler {
     if (interaction.commandName === "leaderboard") {
       await interaction.deferReply();
       const period = interaction.options.getString("period") ?? "month";
-      const { startDate, endDate } = presetDates(this.config, period);
+      const { startDate, endDate } = presetDates(this.config, period, await firstRecordedSession(this.ctx));
       await renderLeaderboard(this.ctx, interaction, startDate, endDate, 0, 0); return;
     }
     const action = interaction.options.getSubcommand();

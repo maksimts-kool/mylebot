@@ -6,23 +6,41 @@ import { DateTime } from "luxon";
 import type { Config } from "../../../../core/config.js";
 import { BRAND_COLOR } from "../../../../shared/discord/colors.js";
 import { buildLeaderboard, tallinnDateRange } from "../../domain/reporting.js";
-import { SESSION_RETENTION_YEARS } from "../../domain/policy.js";
 import type { SessionCommandContext } from "./context.js";
 import { friendlyDuration, friendlyPeriod } from "./format.js";
 
 const PAGE_SIZE = 10;
 
-export function presetDates(config: Config, period: string): { startDate: string; endDate: string } {
-  const now = DateTime.now().setZone(config.REPORT_TIMEZONE);
-  let start = now.startOf("month");
-  let end = now.endOf("month");
-  if (period === "week") { start = now.startOf("week"); end = now.endOf("week"); }
-  if (period === "year") { start = now.startOf("year"); end = now.endOf("year"); }
-  if (period === "all") { start = now.minus({ years: SESSION_RETENTION_YEARS }).startOf("day"); end = now.endOf("day"); }
+/**
+ * The date range of a leaderboard period. A period never starts before the
+ * first recorded session, so "this year" does not claim months nobody tracked.
+ */
+export function presetDates(
+  config: Config,
+  period: string,
+  firstRecorded: Date | null,
+  now: Date = new Date(),
+): { startDate: string; endDate: string } {
+  const today = DateTime.fromJSDate(now).setZone(config.REPORT_TIMEZONE);
+  const unit = period === "week" || period === "year" ? period : "month";
+  let start = today.startOf(unit);
+  const end = today.endOf(unit);
+  if (firstRecorded) {
+    const first = DateTime.fromJSDate(firstRecorded).setZone(config.REPORT_TIMEZONE).startOf("day");
+    if (first > start && first <= end) start = first;
+  }
   return { startDate: start.toISODate()!, endDate: end.toISODate()! };
 }
 
-function leaderboardComponents(
+/** When the oldest session still on record started, or null before the first one. */
+export async function firstRecordedSession(ctx: SessionCommandContext): Promise<Date | null> {
+  const first = await ctx.db.session.findFirst({
+    where: { deletedAt: null }, orderBy: { startedAt: "asc" }, select: { startedAt: true },
+  });
+  return first?.startedAt ?? null;
+}
+
+export function leaderboardComponents(
   pageRows: Array<{ identityId: string; username: string }>,
   rowCount: number,
   startDate: string,
@@ -39,11 +57,16 @@ function leaderboardComponents(
       .addOptions(pageRows.map((row) => ({ label: row.username.split(" · ")[0]!.slice(0, 100), value: row.identityId })))
       .setDisabled(disabled),
   ));
-  components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(`leaderboard:${startDate}:${endDate}:${minimum}:${page-1}`).setLabel("Previous").setEmoji("◀️").setStyle(ButtonStyle.Secondary).setDisabled(disabled || page === 0),
-    new ButtonBuilder().setCustomId(`leaderboard:${startDate}:${endDate}:${minimum}:${page}`).setLabel("Refresh").setEmoji("🔄").setStyle(ButtonStyle.Primary).setDisabled(disabled),
-    new ButtonBuilder().setCustomId(`leaderboard:${startDate}:${endDate}:${minimum}:${page+1}`).setLabel("Next").setEmoji("▶️").setStyle(ButtonStyle.Secondary).setDisabled(disabled || (page+1)*PAGE_SIZE >= rowCount),
-  ));
+  const refresh = new ButtonBuilder().setCustomId(`leaderboard:${startDate}:${endDate}:${minimum}:${page}`).setLabel("Refresh").setEmoji("🔄").setStyle(ButtonStyle.Primary).setDisabled(disabled);
+  // Paging only appears once there is a second page to go to.
+  const buttons = rowCount > PAGE_SIZE
+    ? [
+      new ButtonBuilder().setCustomId(`leaderboard:${startDate}:${endDate}:${minimum}:${page-1}`).setLabel("Previous").setEmoji("◀️").setStyle(ButtonStyle.Secondary).setDisabled(disabled || page === 0),
+      refresh,
+      new ButtonBuilder().setCustomId(`leaderboard:${startDate}:${endDate}:${minimum}:${page+1}`).setLabel("Next").setEmoji("▶️").setStyle(ButtonStyle.Secondary).setDisabled(disabled || (page+1)*PAGE_SIZE >= rowCount),
+    ]
+    : [refresh];
+  components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(buttons));
   return components;
 }
 

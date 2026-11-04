@@ -14,7 +14,6 @@ export const sessionCommandData = [
         { name: "This week", value: "week" },
         { name: "This month", value: "month" },
         { name: "This year", value: "year" },
-        { name: "All time", value: "all" },
       )),
 ].map((command) => command.toJSON());
 
@@ -31,7 +30,7 @@ export const sessionHelp: HelpSection = {
   title: "Sessions",
   emoji: "🎮",
   commands: [
-    { usage: "/leaderboard [period]", description: "Ranks staff by recorded time for this week, month, year, or the retained rolling year.", permission: PermissionLevel.EVERYONE },
+    { usage: "/leaderboard [period]", description: "Ranks staff by recorded time for this week, month, or year.", permission: PermissionLevel.EVERYONE },
     { usage: "/session active [user]", description: "Lists every session running right now. Name a member to see that session in full.", permission: PermissionLevel.STAFF },
     { usage: "/session view user", description: "Shows a member's session history. Admins also get controls there to add, edit, and remove completed sessions.", permission: PermissionLevel.STAFF },
   ],
