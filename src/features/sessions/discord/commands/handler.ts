@@ -11,11 +11,13 @@ import type { BloxlinkService } from "../../../../shared/bloxlink.js";
 import { PublicComponentTracker } from "../../../../shared/discord/components.js";
 import { PermissionLevel, hasPermission, permissionLabel } from "../../../../shared/permissions.js";
 import type { RuntimeSettingsService } from "../../../../shared/runtime-settings.js";
+import type { BadgeService } from "../../service/badge-service.js";
 import type { DiscordPublisher } from "../publisher.js";
 import type { SessionCommandContext } from "./context.js";
 import { requiredPermission, sessionCommandNames } from "./definitions.js";
 import { HISTORY_IDS, parseAddCustomId, replyHistory, updateHistoryPage } from "./history.js";
 import { firstRecordedSession, presetDates, renderLeaderboard } from "./leaderboard.js";
+import { showBadgeGuide, showProfile } from "./profile.js";
 import {
   addSession, editEnded, removeSession, reopenSessionForm, showActive, showAddModal, showEditEndedModal, showManagePanel,
   showSessionDetails, showView,
@@ -44,9 +46,10 @@ export class SessionCommandHandler {
     publisher: DiscordPublisher,
     bloxlink: BloxlinkService,
     settings: RuntimeSettingsService,
+    badges: BadgeService,
   ) {
     this.ctx = {
-      db, config, publisher, bloxlink, settings,
+      db, config, publisher, bloxlink, settings, badges,
       publicComponents: this.publicComponents,
       hasPermission: (interaction, required) => hasPermission(db, interaction, required),
       requirePermission: async (interaction, required, message) => {
@@ -118,6 +121,8 @@ export class SessionCommandHandler {
       const { startDate, endDate } = presetDates(this.config, period, await firstRecordedSession(this.ctx));
       await renderLeaderboard(this.ctx, interaction, startDate, endDate, 0, 0); return;
     }
+    if (interaction.commandName === "profile") { await showProfile(this.ctx, interaction); return; }
+    if (interaction.commandName === "badges") { await showBadgeGuide(this.ctx, interaction); return; }
     const action = interaction.options.getSubcommand();
     await this.ctx.requirePermission(interaction, requiredPermission(interaction.commandName, action));
     if (action === "view") await showView(this.ctx, interaction);

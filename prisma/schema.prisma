@@ -329,3 +329,55 @@ model CommandBlock {
 
   @@index([expiresAt])
 }
+
+/// When badges went live. Every badge counts from this instant except Veteran,
+/// so the first deployment never awards a backlog. One row, created by the
+/// first badge pass.
+model BadgeSettings {
+  id          String   @id
+  launchedAt  DateTime @default(now())
+  /// The last calendar month (`2026-12`) whose leaderboard badges were handed
+  /// out, so a month is ranked once rather than on every pass.
+  monthsAwardedThrough String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+/// A staff member's badge standing. Keyed by Roblox user id rather than by
+/// `Identity`, because the one-year session retention deletes an identity left
+/// with no sessions and badges must outlive that.
+model BadgeProgress {
+  robloxUserId   BigInt   @id
+  /// The earliest instant the tracker knew this person; Veteran counts from it.
+  firstTrackedAt DateTime
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+/// Active time one settled session contributed toward the hours badges. There
+/// is deliberately no relation to `Session`: retention deletes sessions after a
+/// year, and the hours they earned must not disappear with them.
+model BadgeCredit {
+  sessionId          String   @id
+  robloxUserId       BigInt
+  activeMilliseconds BigInt
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([robloxUserId])
+}
+
+/// One badge earned. Repeatable badges carry the month they were earned in as
+/// `period`; one-off badges leave it empty, so the unique key holds for both.
+model BadgeAward {
+  id           String    @id @default(cuid())
+  robloxUserId BigInt
+  badge        String
+  period       String    @default("")
+  awardedAt    DateTime  @default(now())
+  /// When the member was told by DM, or gave up trying. Null means still owed.
+  notifiedAt   DateTime?
+
+  @@unique([robloxUserId, badge, period])
+  @@index([notifiedAt])
+}

@@ -4,7 +4,9 @@ import { sessionRoutes } from "./api/routes.js";
 import { sessionCommandData, sessionHelp } from "./discord/commands/definitions.js";
 import { SessionCommandHandler } from "./discord/commands/handler.js";
 import { trackingConfigSection } from "./discord/config-section.js";
+import { BadgeNotifier } from "./discord/badge-notifier.js";
 import { DiscordPublisher } from "./discord/publisher.js";
+import { BadgeService } from "./service/badge-service.js";
 import { SessionService, type DiscordMessageReference } from "./service/session-service.js";
 
 /** `1 session` / `3 sessions`, so the log lines read as English. */
@@ -21,9 +23,11 @@ export function createSessionsFeature(ctx: FeatureContext): Feature {
   const log = ctx.log.child({ category: "session" });
   const sessions = new SessionService(ctx.db, ctx.config, ctx.settings, log);
   const publisher = new DiscordPublisher(ctx.client, ctx.db, ctx.config, ctx.bloxlink, ctx.settings, ctx.log);
+  const badges = new BadgeService(ctx.db, ctx.config);
+  const badgeNotifier = new BadgeNotifier(ctx.client, ctx.db, ctx.config, badges, ctx.bloxlink, ctx.log);
   // Slash commands answer on the gateway, so they are only worth wiring up in
   // the process that holds one.
-  if (!ctx.bot) new SessionCommandHandler(ctx.client, ctx.db, ctx.config, publisher, ctx.bloxlink, ctx.settings).register();
+  if (!ctx.bot) new SessionCommandHandler(ctx.client, ctx.db, ctx.config, publisher, ctx.bloxlink, ctx.settings, badges).register();
 
   /** Brings Discord up to date, here or in the container that can. */
   const publish = async (ids: string[], removedMessages?: DiscordMessageReference[]): Promise<void> => {
@@ -103,6 +107,18 @@ export function createSessionsFeature(ctx: FeatureContext): Feature {
           await publisher.removeMessages(cleanup.removedMessages);
           if (!cleanup.removedSessionCount && !cleanup.removedIdentityCount) return;
           return `removed ${plural(cleanup.removedSessionCount, "session")} and ${plural(cleanup.removedIdentityCount, "identity", "identities")}`;
+        },
+      },
+      {
+        // Badges are rows first and DMs second, so a DM that fails is retried
+        // without the badge ever being awarded twice.
+        name: "badge awards",
+        intervalMs: 5 * 60_000,
+        run: async () => {
+          const awarded = await badges.award();
+          const told = await badgeNotifier.notifyOwed();
+          if (!awarded && !told) return;
+          return `awarded ${plural(awarded, "badge")} and told ${plural(told, "member")}`;
         },
       },
       {

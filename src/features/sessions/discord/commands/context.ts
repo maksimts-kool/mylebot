@@ -4,6 +4,7 @@ import type { Db } from "../../../../core/db.js";
 import type { BloxlinkService } from "../../../../shared/bloxlink.js";
 import type { PublicComponentTracker } from "../../../../shared/discord/components.js";
 import type { RuntimeSettingsService } from "../../../../shared/runtime-settings.js";
+import type { BadgeService } from "../../service/badge-service.js";
 import type { DiscordPublisher } from "../publisher.js";
 
 /**
@@ -14,6 +15,7 @@ export interface SessionCommandContext {
   db: Db;
   config: Config;
   publisher: DiscordPublisher;
+  badges: BadgeService;
   bloxlink: BloxlinkService;
   settings: RuntimeSettingsService;
   publicComponents: PublicComponentTracker;

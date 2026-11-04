@@ -16,6 +16,17 @@ describe("Discord command permissions", () => {
     expect(requiredPermission("leaderboard")).toBe(PermissionLevel.EVERYONE);
     expect(requiredPermission("session", "view")).toBe(PermissionLevel.STAFF);
     expect(requiredPermission("session", "active")).toBe(PermissionLevel.STAFF);
+    expect(requiredPermission("profile")).toBe(PermissionLevel.EVERYONE);
+    expect(requiredPermission("badges")).toBe(PermissionLevel.EVERYONE);
+  });
+
+  it("deploys /profile with an optional user and /badges with no options", () => {
+    const profile = sessionCommandData.find((command) => command.name === "profile") as
+      | { options?: Array<{ name: string; required?: boolean }> }
+      | undefined;
+    expect(profile?.options?.map((option) => [option.name, option.required ?? false])).toEqual([["user", false]]);
+    const badges = sessionCommandData.find((command) => command.name === "badges");
+    expect(badges?.options ?? []).toEqual([]);
   });
 
   it("manages completed sessions from /session view instead of separate subcommands", () => {

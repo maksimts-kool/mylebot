@@ -93,13 +93,28 @@ Keep the secret in `ServerScriptService` — never in anything the client can se
 | Command | Who | What it does |
 | --- | --- | --- |
 | `/leaderboard [period]` | Everyone | Staff ranked by time this week, month, or year. |
+| `/profile [user]` | Everyone | A member's profile card: Roblox avatar and rank, shift stats for the past 12 months, and badges. |
+| `/badges` | Everyone | Every badge, how to earn it, and your own progress. Only you see it. |
 | `/session active [user]` | Staff | Who is on shift now, or one member's live session. |
 | `/session view user` | Staff | A member's session history. Admins can add, edit, and remove sessions from it. |
 | `/config` | Manager | The settings panel. |
 | `/verification status` | Manager | Unverified members and their deadlines. |
 | `/help` | Everyone | Every command and whether you can run it. |
 
-Manager commands reply privately; the rest reply in the channel. Commands sync automatically when the bot starts; `npm run commands:deploy` does it by hand.
+Manager commands and `/badges` reply privately; the rest reply in the channel. Commands sync automatically when the bot starts; `npm run commands:deploy` does it by hand.
+
+### Badges
+
+Badges are earned automatically and each one is announced to the member by DM. Hours and leaderboard badges count from the moment the first badge pass ran after deploying this version — nothing is back-filled from older shifts.
+
+| Badge | How it is earned |
+| --- | --- |
+| 10, 50, 150, 500, 1000 hours | Active time on shift (inactive time does not count). |
+| Staff of the month | Finishing a calendar month #1 on `/leaderboard`. Repeatable. |
+| Top 3 | Finishing a calendar month in the top 3. Repeatable. |
+| Veteran | One year since the member was first tracked, using their real history. |
+
+A month is ranked an hour after it ends in `REPORT_TIMEZONE`, and only whole months after launch count. Badges and the hours behind them are kept when old sessions are deleted, but a member purged for dropping below `ROBLOX_MIN_RANK` loses them too. A member with closed DMs still gets the badge.
 
 ## Development
 
@@ -137,4 +152,4 @@ GitHub runs the tests, raises the version, moves the changelog entries under it,
 
 - Never commit `.env` or share the tokens and secrets in it.
 - Keep PostgreSQL private and back up the `postgres_data` volume before upgrades.
-- Sessions under one minute are dropped. Sessions are kept for a year; command records for `PROCESSED_EVENT_RETENTION_DAYS`.
+- Sessions under one minute are dropped. Sessions are kept for a year; command records for `PROCESSED_EVENT_RETENTION_DAYS`. Badges and the active time behind them are kept after their sessions are gone.

@@ -59,6 +59,9 @@ describe("ingestion validation", () => {
       auditEntry: { deleteMany: vi.fn() },
       processedEvent: { deleteMany: vi.fn() },
       session: { deleteMany: vi.fn() },
+      badgeAward: { deleteMany: vi.fn() },
+      badgeCredit: { deleteMany: vi.fn() },
+      badgeProgress: { deleteMany: vi.fn() },
     };
     const db = { $transaction: vi.fn(async (operation) => operation(transaction)) };
     const lowRank = new SessionService(db as never, config);
@@ -76,6 +79,27 @@ describe("ingestion validation", () => {
     expect(transaction.processedEvent.deleteMany).toHaveBeenCalledWith({ where: { sessionId: { in: ["session-1", "session-2"] } } });
     expect(transaction.session.deleteMany).toHaveBeenCalledWith({ where: { identityId: "identity-1" } });
     expect(transaction.identity.delete).toHaveBeenCalledWith({ where: { id: "identity-1" } });
+    expect(transaction.badgeAward.deleteMany).toHaveBeenCalledWith({ where: { robloxUserId: 1n } });
+    expect(transaction.badgeCredit.deleteMany).toHaveBeenCalledWith({ where: { robloxUserId: 1n } });
+    expect(transaction.badgeProgress.deleteMany).toHaveBeenCalledWith({ where: { robloxUserId: 1n } });
+  });
+
+  it("purges a low-rank player's badges even after retention removed their identity", async () => {
+    const transaction = {
+      identity: { findUnique: vi.fn().mockResolvedValue(null), delete: vi.fn() },
+      badgeAward: { deleteMany: vi.fn() },
+      badgeCredit: { deleteMany: vi.fn() },
+      badgeProgress: { deleteMany: vi.fn() },
+    };
+    const db = { $transaction: vi.fn(async (operation) => operation(transaction)) };
+    const lowRank = new SessionService(db as never, config);
+
+    await expect(lowRank.process({ ...base, player: { ...base.player, rankNumber: 9 } }))
+      .resolves.toMatchObject({ status: "removed_low_rank", removedMessages: [] });
+    expect(transaction.badgeAward.deleteMany).toHaveBeenCalledWith({ where: { robloxUserId: 1n } });
+    expect(transaction.badgeCredit.deleteMany).toHaveBeenCalledWith({ where: { robloxUserId: 1n } });
+    expect(transaction.badgeProgress.deleteMany).toHaveBeenCalledWith({ where: { robloxUserId: 1n } });
+    expect(transaction.identity.delete).not.toHaveBeenCalled();
   });
 
   it("ignores a teardown event from a server the player already left after hopping", async () => {

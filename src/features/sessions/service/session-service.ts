@@ -5,6 +5,7 @@ import { formatDuration, type LogFields, type Logger } from "../../../core/logge
 import type { RuntimeSettingsService } from "../../../shared/runtime-settings.js";
 import type { PresenceEvent } from "../domain/events.js";
 import { announcementRetentionCutoff, recordedTimeMeetsSessionMinimum, sessionRetentionCutoff } from "../domain/policy.js";
+import { purgeBadges } from "./badge-service.js";
 
 export type DiscordMessageReference = { channelId: string; messageId: string };
 
@@ -182,6 +183,9 @@ export class SessionService {
 
   private async purgeLowRankPlayer(event: PresenceEvent): Promise<EventResult> {
     const removedMessages = await this.db.$transaction(async (tx) => {
+      // Badges are keyed by Roblox id and outlive the identity row, so they
+      // are purged even when the tracker no longer holds an identity.
+      await purgeBadges(tx, event.player.userId);
       const identity = await tx.identity.findUnique({
         where: { robloxUserId: event.player.userId },
         include: { sessions: { include: { discordMessage: true, announcement: true } } },

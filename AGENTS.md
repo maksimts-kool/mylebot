@@ -88,6 +88,7 @@ Useful entry points:
 - Rank boundaries are inclusive.
 - A source-valid event below the configured minimum rank intentionally hard-purges that identity, its sessions, audit records, processed events, and Discord references. It also removes published session messages.
 - A rank above the configured maximum is rejected and must not trigger the purge.
+- The purge also removes the member's badge rows (`BadgeAward`, `BadgeCredit`, `BadgeProgress`), even when no `Identity` is left, because those rows are keyed by Roblox id and outlive it.
 - Changes to purge criteria or scope are destructive behavior changes. Call them out explicitly and add regression coverage.
 
 ### Identifiers, batches, and time
@@ -96,6 +97,16 @@ Useful entry points:
 - Keep the Roblox producer batch size of 100 within backend `MAX_BATCH_SIZE`.
 - Under sender queue pressure, discard replaceable heartbeats before lifecycle events such as join, activity change, leave, or shutdown.
 - Timestamps are instants in storage and transport. Reporting boundaries and manual date input use the configured IANA `REPORT_TIMEZONE`; preserve DST-safe, half-open date ranges.
+
+### Badges and profiles
+
+- The catalogue lives only in [`src/features/sessions/domain/badges.ts`](src/features/sessions/domain/badges.ts); the awarding job, the `/profile` card, and the `/badges` guide all read it.
+- Badges count from `BadgeSettings.launchedAt` — never back-fill from older shifts. Veteran is the one exception and uses the member's first tracked instant.
+- Hours come from `BadgeCredit` rows, one per settled session, with no relation to `Session`. A credit follows its session while it exists (edits update it, soft-deletes drop it) and survives the one-year retention delete. Do not compute hours from `Session` directly.
+- Awards are rows first and DMs second. `notifiedAt` is set when the DM is sent or can never be (no linked Discord, DMs closed); any other failure leaves it owed. A badge, once awarded, is never revoked.
+- A month is ranked once, through `buildLeaderboard`, after `MONTH_SETTLE_MILLISECONDS`; only whole months after launch count.
+- The card's fonts are in `assets/fonts` (Nunito, OFL) and the runtime image copies that folder; the slim base image has no fonts.
+- Badge artwork is stroked SVG paths on a 24×24 grid in [`src/features/sessions/discord/badge-icons.ts`](src/features/sessions/discord/badge-icons.ts), drawn for this bot. The hours badges are one family of rank insignia (chevrons, then stars) so they read as a ladder; the leaderboard and Veteran badges carry the lift theme. Keep icons free of numbers; the badge name carries the threshold. Check a change on a large icon sheet before it ships.
 
 ### Taiga integration
 

@@ -17,6 +17,8 @@ COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=build /app/dist ./dist
+# Fonts for the /profile card; the slim image has none of its own.
+COPY assets ./assets
 COPY prisma ./prisma
 COPY prisma.config.ts ./
 COPY scripts/docker-entrypoint.sh ./
