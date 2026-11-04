@@ -111,9 +111,19 @@ Manager commands reply privately; the rest reply in the channel. Commands sync a
 | `npm run build` | Compile to `dist/`. |
 | `npm run simulate` | Send a fake session to a running API. |
 | `npm run prisma:deploy` | Apply migrations to a deployed database. |
-| `npm run release -- <M\|R\|B>` | Cut a major, release, or bugfix version from `CHANGELOG.md`. Add `--dry-run` to preview. |
 
 Code layout and the rules for changing it are in [`AGENTS.md`](AGENTS.md).
+
+### Releasing
+
+1. Describe the changes under `## Unreleased` in [`CHANGELOG.md`](CHANGELOG.md) and push to `main`.
+2. On GitHub, open **Actions → Release → Run workflow** and pick `patch`, `minor`, or `major`. Or from a terminal:
+
+   ```powershell
+   gh workflow run release.yml -f bump=patch
+   ```
+
+GitHub runs the tests, raises the version, moves the changelog entries under it, then commits, tags, and publishes the release.
 
 ## Troubleshooting
 

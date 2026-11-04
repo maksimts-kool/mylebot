@@ -1,16 +1,25 @@
 name: Release
 
+# Run from the Actions tab ("Run workflow"), or: gh workflow run release.yml -f bump=patch
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "patch 1.2.3 → 1.2.4 · minor → 1.3.0 · major → 2.0.0"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
 
 permissions:
   contents: write
 
+# Two releases at once would both try to claim the same version.
+concurrency: release
+
 jobs:
   release:
     runs-on: ubuntu-latest
+    if: github.ref_name == github.event.repository.default_branch
 
     steps:
       - uses: actions/checkout@v5
@@ -26,24 +35,25 @@ jobs:
       - run: npm test
       - run: npm run build
 
-      - name: Verify tag matches package version
+      - name: Bump version and changelog
+        id: prepare
         env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          test "$TAG" = "v$(node -p "require('./package.json').version")"
+          BUMP: ${{ inputs.bump }}
+          NOTES_FILE: ${{ runner.temp }}/notes.md
+        run: npx tsx scripts/release.ts "$BUMP" "$NOTES_FILE" >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub release
+      - name: Commit and tag
+        env:
+          TAG: v${{ steps.prepare.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(release): $TAG"
+          git tag -a "$TAG" -m "$TAG"
+          git push origin HEAD "$TAG"
+
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          flags=(--title "$TAG" --generate-notes)
-          if [[ "$TAG" == *-* ]]; then
-            flags+=(--prerelease)
-          fi
-          # Re-pushing a tag re-runs this job; replace any existing release so its
-          # notes and target commit track the current tag instead of failing.
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release delete "$TAG" --yes
-          fi
-          gh release create "$TAG" "${flags[@]}"
+          TAG: v${{ steps.prepare.outputs.version }}
+        run: gh release create "$TAG" --title "$TAG" --notes-file "${{ runner.temp }}/notes.md"

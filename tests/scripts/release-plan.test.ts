@@ -20,12 +20,12 @@ const changelog = [
 describe("next version", () => {
   it("maps each release part onto the right component", () => {
     expect(nextVersion("1.2.3", "major")).toBe("2.0.0");
-    expect(nextVersion("1.2.3", "release")).toBe("1.3.0");
-    expect(nextVersion("1.2.3", "beta")).toBe("1.2.4");
+    expect(nextVersion("1.2.3", "minor")).toBe("1.3.0");
+    expect(nextVersion("1.2.3", "patch")).toBe("1.2.4");
   });
 
   it("rejects a version package.json could not have produced", () => {
-    expect(() => nextVersion("1.2", "beta")).toThrow(/Invalid version/);
+    expect(() => nextVersion("1.2", "patch")).toThrow(/Invalid version/);
   });
 });
 

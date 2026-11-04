@@ -6,4 +6,4 @@ if (typeof packageJson.version !== "string" || !/^\d+\.\d+\.\d+$/.test(packageJs
 }
 
 const target = new URL("../src/core/version.ts", import.meta.url);
-writeFileSync(target, `// Updated by scripts/sync-version.ts during \`npm version\`.\nexport const APP_VERSION = ${JSON.stringify(packageJson.version)};\n`);
+writeFileSync(target, `// Updated by scripts/sync-version.ts during \`npm version\`, which the release workflow runs.\nexport const APP_VERSION = ${JSON.stringify(packageJson.version)};\n`);

@@ -1,22 +1,24 @@
 /**
  * The pure half of `scripts/release.ts`: what the next version is and what the
  * changelog looks like afterwards. Kept apart from the script so it can be
- * tested without running git.
+ * tested without touching files.
  */
 
-export type VersionPart = "major" | "release" | "beta";
+export const VERSION_PARTS = ["patch", "minor", "major"] as const;
+
+export type VersionPart = (typeof VERSION_PARTS)[number];
 
 export const UNRELEASED_HEADING = "## Unreleased";
 
 /** Seeded into the fresh Unreleased section, and read back as "no entries yet". */
 export const EMPTY_CHANGELOG_BODY = "_Nothing yet._";
 
-/** The version `npm version <part>` will produce, known before anything is written. */
+/** The version after raising `part`, the way `npm version <part>` would. */
 export function nextVersion(version: string, part: VersionPart): string {
     if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`Invalid version: ${version}`);
     const [major, minor, patch] = version.split(".").map(Number) as [number, number, number];
     if (part === "major") return `${major + 1}.0.0`;
-    if (part === "release") return `${major}.${minor + 1}.0`;
+    if (part === "minor") return `${major}.${minor + 1}.0`;
     return `${major}.${minor}.${patch + 1}`;
 }
 

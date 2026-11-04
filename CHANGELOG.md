@@ -4,7 +4,12 @@ All notable changes are recorded here.
 
 ## Unreleased
 
-_Nothing yet._
+- Folded `/session manage` and `/session add` into `/session view`. Admins get a menu there to edit or remove a completed session, which opens a private panel, and an **Add session** button that also works for a member who has no sessions yet.
+- `/help`, `/session active`, and `/session view` now answer in the channel, with controls only the caller can use. Manager commands and errors stay private.
+- Removed the **Close** buttons from session history and the session manage panel, and added one under the last message of `/verification status` that takes the whole dashboard down.
+- Removed the explanatory text from every `/config` page, and added a health check to the session tracking page: missing or unreachable channels, and live sessions the sweep left open past their deadline.
+- Releases now run on GitHub: **Actions → Release → Run workflow**. The local `npm run release` helper is gone.
+- Rewrote the README as a short setup guide.
 
 ## 0.15.6 - 2026-09-21
 
