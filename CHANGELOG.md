@@ -4,6 +4,10 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+_Nothing yet._
+
+## 0.15.7 - 2026-11-04
+
 - Folded `/session manage` and `/session add` into `/session view`. Admins get a menu there to edit or remove a completed session, which opens a private panel, and an **Add session** button that also works for a member who has no sessions yet.
 - `/help`, `/session active`, and `/session view` now answer in the channel, with controls only the caller can use. Manager commands and errors stay private.
 - Removed the **Close** buttons from session history and the session manage panel, and added one under the last message of `/verification status` that takes the whole dashboard down.
