@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { verificationStatusEmbeds } from "../../src/features/verification/discord/commands.js";
+import { PermissionFlagsBits } from "discord.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+  VERIFICATION_CLOSE_ID, VerificationCommandHandler, verificationStatusEmbeds,
+} from "../../src/features/verification/discord/commands.js";
 import type { VerificationStatus } from "../../src/features/verification/service/verification-service.js";
 
 describe("verification status command", () => {
@@ -92,5 +95,97 @@ describe("verification status command", () => {
       expect(content).toContain(`**Member:** [@${member.displayName}](https://discord.com/users/${member.discordUserId})`);
       expect(content).not.toContain(`<@${member.discordUserId}>`);
     }
+  });
+});
+
+describe("verification status close button", () => {
+  function manager() {
+    return { permissions: String(PermissionFlagsBits.Administrator), roles: [] };
+  }
+
+  async function runStatus(memberCount: number) {
+    let listener: (interaction: unknown) => void = () => undefined;
+    const client = { on: (_event: string, handler: typeof listener) => { listener = handler; } };
+    const service = {
+      status: vi.fn().mockResolvedValue({
+        lastReminderAt: null,
+        nextReminderAt: null,
+        staleTrackedCount: 0,
+        members: Array.from({ length: memberCount }, (_, index) => ({
+          discordUserId: String(100 + index),
+          displayName: `Member ${index}`,
+          firstSeenAt: null,
+          warnedAt: null,
+          finalWarningDueAt: null,
+          removalDueAt: null,
+        })),
+      } satisfies VerificationStatus),
+    };
+    new VerificationCommandHandler(client as never, {} as never, { DISCORD_GUILD_ID: "guild" } as never, service as never).register();
+
+    const sent: Array<{ id: string; components: unknown[] }> = [];
+    let next = 0;
+    const record = (body: { components: unknown[] }) => {
+      const message = { id: `m${next++}`, components: body.components };
+      sent.push(message);
+      return Promise.resolve(message);
+    };
+    const command = {
+      isButton: () => false,
+      isChatInputCommand: () => true,
+      isRepliable: () => true,
+      commandName: "verification",
+      guildId: "guild",
+      member: manager(),
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn(record),
+      followUp: vi.fn(record),
+      deleteReply: vi.fn().mockResolvedValue(undefined),
+    };
+    listener(command);
+    await vi.waitFor(() => expect(sent.length).toBeGreaterThan(0));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const close = (messageId: string) => {
+      const button = {
+        isButton: () => true,
+        isRepliable: () => true,
+        customId: VERIFICATION_CLOSE_ID,
+        message: { id: messageId },
+        deferUpdate: vi.fn().mockResolvedValue(undefined),
+        deleteReply: vi.fn().mockResolvedValue(undefined),
+      };
+      listener(button);
+      return button;
+    };
+    return { sent, command, close };
+  }
+
+  function hasClose(message: { components: unknown[] }): boolean {
+    return JSON.stringify(message.components).includes(VERIFICATION_CLOSE_ID);
+  }
+
+  it("puts the close button under the last message only", async () => {
+    const { sent } = await runStatus(45);
+    expect(sent).toHaveLength(4);
+    expect(sent.slice(0, -1).some(hasClose)).toBe(false);
+    expect(hasClose(sent.at(-1)!)).toBe(true);
+  });
+
+  it("puts it on the only message when nobody is unverified", async () => {
+    const { sent } = await runStatus(0);
+    expect(sent).toHaveLength(1);
+    expect(hasClose(sent[0]!)).toBe(true);
+  });
+
+  it("takes the whole dashboard down when closed", async () => {
+    const { sent, command, close } = await runStatus(45);
+    const button = close(sent.at(-1)!.id);
+    await vi.waitFor(() => expect(button.deleteReply).toHaveBeenCalledWith(sent.at(-1)!.id));
+    // The original reply, then each follow-up above the button.
+    expect(command.deleteReply).toHaveBeenCalledWith();
+    expect(command.deleteReply).toHaveBeenCalledWith("m1");
+    expect(command.deleteReply).toHaveBeenCalledWith("m2");
+    expect(command.deleteReply).toHaveBeenCalledTimes(3);
   });
 });

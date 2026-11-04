@@ -10,7 +10,6 @@ const META: ConfigSectionMeta = {
   id: "verification",
   label: "Verification",
   emoji: "🔐",
-  description: "Unverified reminder and removal cycle, and who it currently covers.",
 };
 
 /**
@@ -27,10 +26,6 @@ export function verificationConfigSection(config: Config, service: VerificationS
       && member.removalDueAt !== null
       && member.removalDueAt.getTime() <= now.getTime()).length;
     return configPage(META, {
-      summary: [
-        "Members holding the Unverified role get a reminder every three days, a final warning on day 27, and are removed three days after that warning was delivered.",
-        "The channel and role are environment settings, so they cannot be changed from here.",
-      ],
       fields: [
         field("Reminder channel", channelValue(config.VERIFICATION_CHANNEL_ID)),
         field("Unverified role", roleValue(config.VERIFICATION_UNVERIFIED_ROLE_ID)),
@@ -43,7 +38,6 @@ export function verificationConfigSection(config: Config, service: VerificationS
             ? "❌ No successful reminder recorded yet"
             : `✅ Last sent ${timeValue(status.lastReminderAt, "R")}${status.nextReminderAt ? ` · ⏰ next ${timeValue(status.nextReminderAt, "R")}` : ""}`,
         ),
-        note("Per-member detail", "Run `/verification status` for every member's warning and removal deadline."),
       ],
       rows: [configRow(refreshButton(META))],
     });

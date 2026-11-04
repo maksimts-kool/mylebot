@@ -34,8 +34,6 @@ export interface ConfigSection {
   id: string;
   label: string;
   emoji: string;
-  /** One line, shown in the navigation menu and on the panel home page. */
-  description: string;
   /** Renders the section from current state. Called for every navigation. */
   view(): Promise<ConfigView>;
   /**

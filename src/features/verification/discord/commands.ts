@@ -1,8 +1,13 @@
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  DiscordAPIError,
   EmbedBuilder,
   MessageFlags,
   SlashCommandBuilder,
   escapeMarkdown,
+  type ButtonInteraction,
   type ChatInputCommandInteraction,
   type Client,
   type Interaction,
@@ -130,7 +135,35 @@ export function verificationStatusEmbeds(status: VerificationStatus, now = new D
   return embeds;
 }
 
+/** The button under the last status message, which takes the whole dashboard down. */
+export const VERIFICATION_CLOSE_ID = "verification:close";
+
+/**
+ * An interaction token lives for 15 minutes, and only the command's own token
+ * can delete the earlier messages of a private reply. Forget it a minute early.
+ */
+const OPEN_DASHBOARD_MS = 14 * 60_000;
+
+/** Discord's "Unknown Message": the member already dismissed that part. */
+const UNKNOWN_MESSAGE = 10008;
+
+export function closeRow(): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(VERIFICATION_CLOSE_ID).setLabel("Close").setEmoji("✖️").setStyle(ButtonStyle.Secondary),
+  );
+}
+
+type OpenDashboard = {
+  command: ChatInputCommandInteraction;
+  /** Every message above the one carrying the close button, oldest first. */
+  earlier: string[];
+  timeout: NodeJS.Timeout;
+};
+
 export class VerificationCommandHandler {
+  /** Dashboards still closable as a whole, keyed by their last message. */
+  private readonly open = new Map<string, OpenDashboard>();
+
   constructor(
     private readonly client: Client,
     private readonly db: Db,
@@ -154,6 +187,10 @@ export class VerificationCommandHandler {
   }
 
   private async handle(interaction: Interaction): Promise<void> {
+    if (interaction.isButton() && interaction.customId === VERIFICATION_CLOSE_ID) {
+      await this.close(interaction);
+      return;
+    }
     if (!interaction.isChatInputCommand() || interaction.commandName !== "verification") return;
     if (interaction.guildId !== this.config.DISCORD_GUILD_ID) userError("This command is not available in this server");
     if (!await hasPermission(this.db, interaction, PermissionLevel.MANAGER)) userError("Manager role required");
@@ -163,11 +200,41 @@ export class VerificationCommandHandler {
   private async replyStatus(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const embeds = verificationStatusEmbeds(await this.service.status());
-    const first = embeds[0];
-    if (!first) return;
-    await interaction.editReply({ embeds: [first], allowedMentions: { parse: [] } });
-    for (const embed of embeds.slice(1)) {
-      await interaction.followUp({ embeds: [embed], allowedMentions: { parse: [] }, flags: MessageFlags.Ephemeral });
+    const sent: string[] = [];
+    for (const [index, embed] of embeds.entries()) {
+      const last = index === embeds.length - 1;
+      const body = { embeds: [embed], allowedMentions: { parse: [] }, components: last ? [closeRow()] : [] };
+      const message = index === 0
+        ? await interaction.editReply(body)
+        : await interaction.followUp({ ...body, flags: MessageFlags.Ephemeral });
+      sent.push(message.id);
     }
+    const lastId = sent.pop();
+    if (!lastId) return;
+    const timeout = setTimeout(() => this.open.delete(lastId), OPEN_DASHBOARD_MS);
+    timeout.unref();
+    this.open.set(lastId, { command: interaction, earlier: sent, timeout });
+  }
+
+  /**
+   * Takes the dashboard down. While the command's token is still valid that is
+   * every message it sent; after that, only the one the button is on.
+   */
+  private async close(interaction: ButtonInteraction): Promise<void> {
+    await interaction.deferUpdate();
+    const dashboard = this.open.get(interaction.message.id);
+    if (dashboard) {
+      this.open.delete(interaction.message.id);
+      clearTimeout(dashboard.timeout);
+      const results = await Promise.allSettled(dashboard.earlier.map((id, index) => (
+        index === 0 ? dashboard.command.deleteReply() : dashboard.command.deleteReply(id)
+      )));
+      for (const result of results) {
+        if (result.status === "fulfilled") continue;
+        if (result.reason instanceof DiscordAPIError && result.reason.code === UNKNOWN_MESSAGE) continue;
+        appLogger().warn({ category: "verify", err: result.reason }, "Could not take down part of the verification dashboard");
+      }
+    }
+    await interaction.deleteReply(interaction.message.id);
   }
 }

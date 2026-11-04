@@ -3,6 +3,7 @@ import type { Feature, FeatureContext } from "../../core/feature.js";
 import { sessionRoutes } from "./api/routes.js";
 import { sessionCommandData, sessionHelp } from "./discord/commands/definitions.js";
 import { SessionCommandHandler } from "./discord/commands/handler.js";
+import { trackingConfigSection } from "./discord/config-section.js";
 import { DiscordPublisher } from "./discord/publisher.js";
 import { SessionService, type DiscordMessageReference } from "./service/session-service.js";
 
@@ -35,6 +36,7 @@ export function createSessionsFeature(ctx: FeatureContext): Feature {
     name: "sessions",
     commands: sessionCommandData,
     help: sessionHelp,
+    configSections: [trackingConfigSection(ctx.client, ctx.db, ctx.config, ctx.settings)],
     routes: sessionRoutes({ config: ctx.config, sessions, onChanged: publish }),
     // The API half records the change and then asks this half to show it.
     internalRoutes: botInternalRoutes({ config: ctx.config, onSessionsChanged: publish }),

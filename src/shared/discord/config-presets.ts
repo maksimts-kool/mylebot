@@ -21,8 +21,6 @@ export type ConfigSectionMeta = {
   id: string;
   label: string;
   emoji: string;
-  /** One line, shown in the navigation menu and on the panel home page. */
-  description: string;
 };
 
 /** The part of a section a component preset needs. */
@@ -95,7 +93,7 @@ export function field(name: string, value: string): APIEmbedField {
   return { name, value, inline: true };
 }
 
-/** A full-width field, for prose explaining what a control does. */
+/** A full-width field, for a value too long to sit beside others. */
 export function note(name: string, value: string): APIEmbedField {
   return { name, value, inline: false };
 }
@@ -105,8 +103,8 @@ export function note(name: string, value: string): APIEmbedField {
 /* -------------------------------------------------------------------------- */
 
 export type ConfigPage = {
-  /** Lead paragraph. An array is joined with newlines. */
-  summary: string | string[];
+  /** Lead paragraph, for a sub-page that has to say what it is asking. An array is joined with newlines. */
+  summary?: string | string[];
   fields?: APIEmbedField[];
   rows?: ConfigRow[];
   /** Overrides the section title, for a sub-page such as a confirmation step. */
@@ -125,8 +123,9 @@ export function configPage(section: ConfigSectionMeta, page: ConfigPage): Config
   }
   const embed = new EmbedBuilder()
     .setTitle(page.title ?? `${section.emoji} ${section.label}`)
-    .setDescription(Array.isArray(page.summary) ? page.summary.join("\n") : page.summary)
     .setColor(BRAND_COLOR);
+  const summary = Array.isArray(page.summary) ? page.summary.join("\n") : page.summary;
+  if (summary) embed.setDescription(summary);
   if (page.fields?.length) embed.addFields(page.fields);
   return { embeds: [embed], components: rows };
 }

@@ -14,18 +14,18 @@ import type { RuntimeSettingsService } from "../../../../shared/runtime-settings
 import type { DiscordPublisher } from "../publisher.js";
 import type { SessionCommandContext } from "./context.js";
 import { requiredPermission, sessionCommandNames } from "./definitions.js";
-import { replyHistory } from "./history.js";
+import { HISTORY_IDS, parseAddCustomId, replyHistory, updateHistoryPage } from "./history.js";
 import { presetDates, renderLeaderboard } from "./leaderboard.js";
 import {
-  addSession, editEnded, removeSession, showActive, showAdd, showEditEndedModal, showManage,
+  addSession, editEnded, removeSession, showActive, showAddModal, showEditEndedModal, showManagePanel,
   showSessionDetails, showView,
 } from "./session-commands.js";
 
 /** Component identifiers this feature answers for. Everything else is another feature's. */
-const EXACT_CUSTOM_IDS = new Set(["cancel", "historyclose", "leaderboard-user"]);
+const EXACT_CUSTOM_IDS = new Set<string>(["leaderboard-user", HISTORY_IDS.manage]);
 const CUSTOM_ID_PREFIXES = [
-  "refresh:", "details:", "history:", "historypage:",
-  "leaderboard:", "editended:", "remove:", "add:",
+  "refresh:", "details:", "history:", HISTORY_IDS.page,
+  "leaderboard:", "editended:", "remove:", HISTORY_IDS.add,
 ];
 
 function ownsCustomId(customId: string): boolean {
@@ -72,7 +72,12 @@ export class SessionCommandHandler {
         // Delivering the error can itself fail (e.g. the interaction already
         // expired with a 10062). Swallow that so it never crashes the process.
         try {
-          if (interaction.deferred && !interaction.replied) await interaction.editReply({ content: `Error: ${message}` });
+          if (interaction.isChatInputCommand() && interaction.deferred && !interaction.replied && !interaction.ephemeral) {
+            // A public command was already acknowledged in the channel. Errors
+            // are the caller's alone, so take the placeholder down and say it privately.
+            await interaction.deleteReply();
+            await interaction.followUp({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
+          } else if (interaction.deferred && !interaction.replied) await interaction.editReply({ content: `Error: ${message}` });
           else if (interaction.replied) await interaction.followUp({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
           else await interaction.reply({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
         } catch (replyError) {
@@ -114,23 +119,17 @@ export class SessionCommandHandler {
     }
     const action = interaction.options.getSubcommand();
     await this.ctx.requirePermission(interaction, requiredPermission(interaction.commandName, action));
-    if (action === "add") await showAdd(this.ctx, interaction);
-    if (action === "manage") await showManage(this.ctx, interaction);
     if (action === "view") await showView(this.ctx, interaction);
     if (action === "active") await showActive(this.ctx, interaction);
   }
 
   private async handleModal(interaction: ModalSubmitInteraction): Promise<void> {
-    if (interaction.customId.startsWith("add:")) await addSession(this.ctx, interaction);
+    const addFor = parseAddCustomId(interaction.customId);
+    if (addFor) await addSession(this.ctx, interaction, addFor);
     else if (interaction.customId.startsWith("editended:")) await editEnded(this.ctx, interaction);
   }
 
   private async handleButton(interaction: ButtonInteraction): Promise<void> {
-    if (interaction.customId === "cancel" || interaction.customId === "historyclose") {
-      await interaction.deferUpdate();
-      await interaction.deleteReply(interaction.message.id);
-      return;
-    }
     if (interaction.customId.startsWith("refresh:")) {
       await interaction.deferUpdate();
       await this.ctx.publisher.refresh(interaction.customId.slice(8));
@@ -143,13 +142,21 @@ export class SessionCommandHandler {
     }
     if (interaction.customId.startsWith("history:")) {
       await this.ctx.requirePermission(interaction, PermissionLevel.STAFF);
-      await replyHistory(this.ctx, interaction, interaction.customId.slice(8), 0, "reply");
+      // The record lives in the logs channel; keep that channel free of replies.
+      await replyHistory(this.ctx, interaction, { identityId: interaction.customId.slice(8) }, "private");
       return;
     }
-    if (interaction.customId.startsWith("historypage:")) {
+    if (interaction.customId.startsWith(HISTORY_IDS.page)) {
+      await this.requireOwnerIfPublic(interaction);
       await this.ctx.requirePermission(interaction, PermissionLevel.STAFF);
       const [, identityId, page] = interaction.customId.split(":");
-      await replyHistory(this.ctx, interaction, identityId!, Number(page), "update");
+      await updateHistoryPage(this.ctx, interaction, identityId!, Number(page));
+      return;
+    }
+    const addFor = parseAddCustomId(interaction.customId);
+    if (addFor) {
+      await this.requireOwnerIfPublic(interaction);
+      await showAddModal(this.ctx, interaction, addFor);
       return;
     }
     if (interaction.customId.startsWith("leaderboard:")) {
@@ -166,10 +173,21 @@ export class SessionCommandHandler {
   }
 
   private async handleSelect(interaction: StringSelectMenuInteraction): Promise<void> {
+    if (interaction.customId === HISTORY_IDS.manage) {
+      await this.requireOwnerIfPublic(interaction);
+      await showManagePanel(this.ctx, interaction);
+      return;
+    }
     if (interaction.customId !== "leaderboard-user") return;
     await this.requirePublicComponentOwner(interaction);
     await this.ctx.requirePermission(interaction, PermissionLevel.STAFF);
-    await replyHistory(this.ctx, interaction, interaction.values[0]!, 0, "reply");
+    await replyHistory(this.ctx, interaction, { identityId: interaction.values[0]! }, "public");
+  }
+
+  /** Only the caller sees a private message, so only a public one needs the owner check. */
+  private async requireOwnerIfPublic(interaction: ButtonInteraction | StringSelectMenuInteraction): Promise<void> {
+    if (interaction.message.flags.has(MessageFlags.Ephemeral)) return;
+    await this.requirePublicComponentOwner(interaction);
   }
 
   private async requirePublicComponentOwner(interaction: ButtonInteraction | StringSelectMenuInteraction): Promise<void> {

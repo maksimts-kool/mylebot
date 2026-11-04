@@ -4,19 +4,17 @@ import { PermissionLevel } from "../../shared/permissions.js";
 import { configCommandData } from "./discord/definitions.js";
 import { ConfigPanelHandler } from "./discord/panel.js";
 import { permissionsSection } from "./sections/permissions.js";
-import { trackingSection } from "./sections/tracking.js";
 
 /**
- * The single settings surface. It owns the pages that belong to no one feature
- * — session tracking and role permissions — and shows the pages other features
- * contribute through `Feature.configSections`, which `src/index.ts` collects.
- * Extra sections are appended, so the built-in pages always come first.
+ * The single settings surface. It owns the one page that belongs to no feature
+ * — role permissions — and shows the pages features contribute through
+ * `Feature.configSections`, which `src/index.ts` collects in composition order.
+ * Role permissions come last.
  */
 export function createConfigFeature(ctx: FeatureContext, sections: ConfigSection[]): Feature {
   const pages = [
-    trackingSection(ctx.settings),
-    permissionsSection(ctx.db, ctx.client, ctx.config.DISCORD_GUILD_ID),
     ...sections,
+    permissionsSection(ctx.db, ctx.client, ctx.config.DISCORD_GUILD_ID),
   ];
   new ConfigPanelHandler(ctx.client, ctx.db, ctx.config, pages).register();
 

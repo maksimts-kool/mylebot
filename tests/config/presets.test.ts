@@ -7,9 +7,9 @@ import {
 } from "../../src/shared/discord/config-presets.js";
 import { BRAND_COLOR } from "../../src/shared/discord/colors.js";
 import { permissionsSection } from "../../src/features/config/sections/permissions.js";
-import { trackingSection } from "../../src/features/config/sections/tracking.js";
+import { trackingConfigSection } from "../../src/features/sessions/discord/config-section.js";
 
-const META: ConfigSectionMeta = { id: "demo", label: "Demo page", emoji: "🧪", description: "A page." };
+const META: ConfigSectionMeta = { id: "demo", label: "Demo page", emoji: "🧪" };
 
 /** Link and SKU buttons carry no custom id, so every read has to be guarded. */
 function customIdOf(component: object): string {
@@ -59,6 +59,11 @@ describe("configuration pages", () => {
     expect(embed.title).toBe("🧪 Demo page");
     expect(embed.description).toBe("Hello.");
     expect(embed.color).toBe(BRAND_COLOR);
+  });
+
+  it("leaves the description off a page that has nothing to say beyond its fields", () => {
+    const embed = configPage(META, { fields: [field("A", "b")] }).embeds[0]!.toJSON();
+    expect(embed.description).toBeUndefined();
   });
 
   it("joins a multi-line summary and carries the fields it was given", () => {
@@ -136,9 +141,17 @@ describe("every configuration page", () => {
     const settings = {
       get: vi.fn().mockResolvedValue({ trackingEnabled: true, logsChannelId: "1", staffChannelId: "" }),
     };
-    const db = { permissionRole: { findMany: vi.fn().mockResolvedValue([]) } };
-    const client = { guilds: { cache: { get: () => undefined } } };
-    const sections = [trackingSection(settings as never), permissionsSection(db as never, client as never, "guild-1")];
+    const db = {
+      permissionRole: { findMany: vi.fn().mockResolvedValue([]) },
+      session: { count: vi.fn().mockResolvedValue(0) },
+      processedEvent: { findFirst: vi.fn().mockResolvedValue(null) },
+    };
+    const client = { guilds: { cache: { get: () => undefined } }, isReady: () => false };
+    const config = { HEARTBEAT_STALE_SECONDS: 75 };
+    const sections = [
+      trackingConfigSection(client as never, db as never, config as never, settings as never),
+      permissionsSection(db as never, client as never, "guild-1"),
+    ];
 
     for (const section of sections) {
       const view = await section.view();
@@ -146,6 +159,8 @@ describe("every configuration page", () => {
       // The navigation menu and the page itself can never drift apart.
       expect(embed.title).toBe(`${section.emoji} ${section.label}`);
       expect(embed.color).toBe(BRAND_COLOR);
+      // Pages show settings and state, not prose about them.
+      expect(embed.description).toBeUndefined();
       expect(view.components.length).toBeLessThanOrEqual(CONFIG_MAX_ROWS);
       for (const row of view.components) {
         for (const component of row.toJSON().components) {

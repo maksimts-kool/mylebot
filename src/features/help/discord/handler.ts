@@ -45,7 +45,8 @@ export class HelpCommandHandler {
   }
 
   private async reply(interaction: ChatInputCommandInteraction): Promise<void> {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    // The list is the same for everyone, so it is answered in the channel.
+    await interaction.deferReply();
     const level = await permissionLevelFor(this.db, interaction);
     await interaction.editReply({ embeds: [helpEmbed(this.sections, level)] });
   }

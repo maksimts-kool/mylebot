@@ -6,6 +6,7 @@ import {
   requiredPermission,
   sessionCommandData,
 } from "../../src/features/sessions/discord/commands/definitions.js";
+import { addCustomId, parseAddCustomId } from "../../src/features/sessions/discord/commands/history.js";
 import {
   formatSessionDateTime,
   friendlyPeriod,
@@ -18,8 +19,22 @@ describe("Discord command permissions", () => {
     expect(requiredPermission("leaderboard")).toBe(PermissionLevel.EVERYONE);
     expect(requiredPermission("session", "view")).toBe(PermissionLevel.STAFF);
     expect(requiredPermission("session", "active")).toBe(PermissionLevel.STAFF);
-    expect(requiredPermission("session", "add")).toBe(PermissionLevel.ADMIN);
-    expect(requiredPermission("session", "manage")).toBe(PermissionLevel.ADMIN);
+  });
+
+  it("manages completed sessions from /session view instead of separate subcommands", () => {
+    const session = sessionCommandData.find((command) => command.name === "session");
+    const subcommands = session?.options?.map((option) => option.name);
+    expect(subcommands).toEqual(["active", "view"]);
+  });
+
+  it("round-trips the history's add control for tracked and never-tracked members", () => {
+    expect(addCustomId({ identityId: "clx123" })).toBe("session:add:i:clx123");
+    expect(parseAddCustomId("session:add:i:clx123")).toEqual({ identityId: "clx123" });
+    expect(addCustomId({ discordUserId: "1485701483038118059" })).toBe("session:add:u:1485701483038118059");
+    expect(parseAddCustomId("session:add:u:1485701483038118059")).toEqual({ discordUserId: "1485701483038118059" });
+    expect(parseAddCustomId("session:add:x:1")).toBeNull();
+    expect(parseAddCustomId("session:add:i:")).toBeNull();
+    expect(parseAddCustomId("session:manage")).toBeNull();
   });
 
   it("deploys /session active with an optional user option", () => {

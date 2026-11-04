@@ -5,8 +5,6 @@ import {
   type ConfigSectionMeta,
 } from "../../../shared/discord/config-presets.js";
 import type { ConfigComponentInteraction, ConfigSection, ConfigView } from "../../../shared/discord/config-section.js";
-import { BLOCK_MINUTES, QUIET_COMMANDS } from "../domain/policy.js";
-import { STAFF_TIERS } from "../domain/staff-ladder.js";
 import type { CommandLogService } from "../service/command-log-service.js";
 import type { CommandLogSettingsService } from "../service/settings.js";
 
@@ -14,7 +12,6 @@ const META: ConfigSectionMeta = {
   id: "commandlogs",
   label: "Command logs",
   emoji: "🧾",
-  description: "Where Adonis commands are logged, and whether Studio counts.",
 };
 
 const ACTIONS = { channel: "channel", toggle: "toggle", studio: "studio" } as const;
@@ -37,10 +34,6 @@ export function commandLogsConfigSection(
     if (current.enabled && !current.channelId) problems.push("Logging is on but has nowhere to post.");
 
     return configPage(META, {
-      summary: [
-        "Each running Roblox server gets a panel in this channel listing the staff inside it, with the controls for joining it and for taking somebody's command access away.",
-        "Every Adonis command staff run is logged in the thread hanging off that panel. Private and reserved servers are never read.",
-      ],
       fields: [
         field("Logging", enabledValue(current.enabled)),
         field("Channel", channelValue(current.channelId)),
@@ -48,14 +41,6 @@ export function commandLogsConfigSection(
         field("Live servers", countValue(stats.servers)),
         field("Runs in 24h", countValue(stats.runsToday)),
         field("Access blocks", countValue(stats.blocks)),
-        note(
-          "Who can disable access",
-          [
-            `A run can be disabled for ${BLOCK_MINUTES} minutes by the tier above whoever ran it:`,
-            STAFF_TIERS.map(({ name, level }) => `${name} (${level})`).join(" → "),
-          ].join("\n"),
-        ),
-        note("Not logged", `${QUIET_COMMANDS.size} lookup-only commands such as \`:cmds\`, \`:players\` and \`:view\`.`),
         note("Health", problemsValue(problems)),
       ],
       rows: [

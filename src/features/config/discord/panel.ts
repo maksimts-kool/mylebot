@@ -101,13 +101,8 @@ export class ConfigPanelHandler {
   private homeEmbed(): EmbedBuilder {
     return new EmbedBuilder()
       .setTitle("⚙️ Server configuration")
-      .setDescription("Every setting the bot keeps for this server lives here. Choose a page below. This panel is only visible to you.")
-      .setColor(BRAND_COLOR)
-      .addFields(this.sections.map((section) => ({
-        name: `${section.emoji} ${section.label}`,
-        value: section.description,
-        inline: false,
-      })));
+      .setDescription(this.sections.map((section) => `${section.emoji} ${section.label}`).join("\n"))
+      .setColor(BRAND_COLOR);
   }
 
   /**
@@ -119,15 +114,14 @@ export class ConfigPanelHandler {
       .setCustomId(CONFIG_NAV_CUSTOM_ID)
       .setPlaceholder("Go to a configuration page")
       .addOptions(
-        { label: "Overview", value: CONFIG_HOME_VALUE, emoji: "⚙️", description: "Every page in one list", default: sectionId === CONFIG_HOME_VALUE },
+        { label: "Overview", value: CONFIG_HOME_VALUE, emoji: "⚙️", default: sectionId === CONFIG_HOME_VALUE },
         ...this.sections.map((section) => ({
           label: section.label,
           value: section.id,
           emoji: section.emoji,
-          description: section.description.slice(0, 100),
           default: section.id === sectionId,
         })),
-        { label: "Close panel", value: CONFIG_CLOSE_VALUE, emoji: "✖️", description: "Dismiss this panel" },
+        { label: "Close panel", value: CONFIG_CLOSE_VALUE, emoji: "✖️" },
       );
     return new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(menu);
   }

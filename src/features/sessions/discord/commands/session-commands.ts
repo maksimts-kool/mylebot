@@ -1,6 +1,6 @@
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, ModalBuilder, MessageFlags,
-  type ButtonInteraction, type ChatInputCommandInteraction, type ModalSubmitInteraction,
+  type ButtonInteraction, type ChatInputCommandInteraction, type ModalSubmitInteraction, type StringSelectMenuInteraction,
 } from "discord.js";
 import { userError } from "../../../../core/errors.js";
 import { BRAND_COLOR, SUCCESS_COLOR } from "../../../../shared/discord/colors.js";
@@ -12,7 +12,7 @@ import { recordedTimeMeetsSessionMinimum } from "../../domain/policy.js";
 import { sessionDetailEmbed, sessionOwner, statusIcon, statusLabel } from "../session-embed.js";
 import type { SessionCommandContext } from "./context.js";
 import { formatSessionDateTime, friendlyDuration, parseDuration, parseSessionDateTime } from "./format.js";
-import { replyHistory } from "./history.js";
+import { addCustomId, replyHistory, type HistorySubject } from "./history.js";
 
 /** How many live sessions the roster lists before it stops and counts the rest. */
 const ACTIVE_ROSTER_LIMIT = 15;
@@ -32,11 +32,13 @@ async function commandsDuring(
   });
 }
 
-export async function showAdd(ctx: SessionCommandContext, interaction: ChatInputCommandInteraction): Promise<void> {
-  const user = interaction.options.getUser("user", true);
-  const mapped = await ctx.bloxlink.robloxForDiscord(user.id);
-  if (!mapped) userError("That Discord user has no Bloxlink mapping");
-  const modal = new ModalBuilder().setCustomId(`add:${user.id}`).setTitle("➕ Add completed session").addComponents(
+/** The add form, opened from the history's Add button. */
+export async function showAddModal(ctx: SessionCommandContext, interaction: ButtonInteraction, subject: HistorySubject): Promise<void> {
+  await ctx.requirePermission(interaction, PermissionLevel.ADMIN);
+  if ("discordUserId" in subject && !await ctx.bloxlink.robloxForDiscord(subject.discordUserId)) {
+    userError("That Discord user has no Bloxlink mapping");
+  }
+  const modal = new ModalBuilder().setCustomId(addCustomId(subject)).setTitle("➕ Add completed session").addComponents(
     textInputRow("start", "Start (example: 11/07/2026 14:30)"), textInputRow("end", "End (example: 11/07/2026 16:45)"),
     textInputRow("active", "Active time (example: 2h 15m)"), textInputRow("inactive", "Inactive time (example: 10m)"),
     textInputRow("note", "Reason for adding this session"),
@@ -44,41 +46,67 @@ export async function showAdd(ctx: SessionCommandContext, interaction: ChatInput
   await interaction.showModal(modal);
 }
 
-export async function showManage(ctx: SessionCommandContext, interaction: ChatInputCommandInteraction): Promise<void> {
-  const id = interaction.options.getString("sessionid", true);
+type ManagedSession = {
+  id: string;
+  startedAt: Date;
+  endedAt: Date | null;
+  activeMilliseconds: bigint;
+  inactiveMilliseconds: bigint;
+  identity: { robloxUsername: string; discordUserId: string | null };
+};
+
+/** A completed session that may be edited or removed by hand, or a user error. */
+async function manageableSession(ctx: SessionCommandContext, id: string) {
   const session = await ctx.db.session.findUnique({ where: { id }, include: { identity: true } });
   if (!session || session.deletedAt) userError("Session not found");
   if (session.state !== "ENDED") userError("Live sessions cannot be managed");
-  const totals = Number(session.activeMilliseconds) + Number(session.inactiveMilliseconds);
   if (!recordedTimeMeetsSessionMinimum(session.activeMilliseconds, session.inactiveMilliseconds)) userError("Session not found");
-  const embed = new EmbedBuilder().setColor(BRAND_COLOR).setTitle("🛠️ Manage completed session").setDescription(`Manage the completed session for **${session.identity.robloxUsername}**.`).addFields(
-    { name: "👤 Staff", value: session.identity.discordUserId ? `<@${session.identity.discordUserId}>` : "No linked Discord user", inline: true },
+  return session;
+}
+
+/** The private edit/remove panel for one completed session. */
+function managePanel(session: ManagedSession, notice?: string): { embeds: EmbedBuilder[]; components: Array<ActionRowBuilder<ButtonBuilder>> } {
+  const totals = Number(session.activeMilliseconds) + Number(session.inactiveMilliseconds);
+  const embed = new EmbedBuilder().setColor(notice ? SUCCESS_COLOR : BRAND_COLOR).setTitle(notice ?? "🛠️ Manage completed session").addFields(
+    { name: "👤 Staff", value: sessionOwner(session.identity), inline: false },
     { name: "🗓️ When", value: `<t:${Math.floor(session.startedAt.getTime() / 1000)}:f> to <t:${Math.floor(session.endedAt!.getTime() / 1000)}:f>`, inline: false },
     { name: "⏱️ Recorded time", value: `${friendlyDuration(totals)} total · ${friendlyDuration(Number(session.activeMilliseconds))} active`, inline: false },
     { name: "🆔 Session ID", value: `\`${session.id}\`` },
   );
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(`editended:${id}`).setStyle(ButtonStyle.Primary).setLabel("Edit").setEmoji("✏️"),
-    new ButtonBuilder().setCustomId(`remove:${id}`).setStyle(ButtonStyle.Danger).setLabel("Remove").setEmoji("🗑️"),
-    new ButtonBuilder().setCustomId("cancel").setStyle(ButtonStyle.Secondary).setLabel("Close").setEmoji("✖️"),
+    new ButtonBuilder().setCustomId(`editended:${session.id}`).setStyle(ButtonStyle.Primary).setLabel("Edit").setEmoji("✏️"),
+    new ButtonBuilder().setCustomId(`remove:${session.id}`).setStyle(ButtonStyle.Danger).setLabel("Remove").setEmoji("🗑️"),
   );
-  await interaction.reply({ embeds: [embed], components: [row], flags: MessageFlags.Ephemeral });
+  return { embeds: [embed], components: [row] };
 }
 
+/** The history's manage menu: opens one session's panel, privately. */
+export async function showManagePanel(ctx: SessionCommandContext, interaction: StringSelectMenuInteraction): Promise<void> {
+  await ctx.requirePermission(interaction, PermissionLevel.ADMIN);
+  const id = interaction.values[0];
+  if (!id) userError("Choose a session");
+  await interaction.reply({ ...managePanel(await manageableSession(ctx, id)), flags: MessageFlags.Ephemeral });
+}
+
+/**
+ * Resolves the member a `/session view` names: their tracked identity, or —
+ * when the tracker has never seen them — their Bloxlink mapping, so an Admin
+ * can still add their first session.
+ */
 export async function showView(ctx: SessionCommandContext, interaction: ChatInputCommandInteraction): Promise<void> {
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await interaction.deferReply();
   const user = interaction.options.getUser("user", true);
   let identity = await ctx.db.identity.findFirst({ where: { discordUserId: user.id } });
   if (!identity) {
     const mapped = await ctx.bloxlink.robloxForDiscord(user.id);
-    if (mapped) identity = await ctx.db.identity.findUnique({ where: { robloxUserId: mapped.userId } });
+    if (!mapped) userError("That member hasn't linked a Roblox account with Bloxlink yet");
+    identity = await ctx.db.identity.findUnique({ where: { robloxUserId: mapped.userId } });
   }
-  if (!identity) userError("Identity not found");
-  await replyHistory(ctx, interaction, identity.id, 0, "reply");
+  await replyHistory(ctx, interaction, identity ? { identityId: identity.id } : { discordUserId: user.id }, "public");
 }
 
 export async function showActive(ctx: SessionCommandContext, interaction: ChatInputCommandInteraction): Promise<void> {
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await interaction.deferReply();
   const target = interaction.options.getUser("user");
   if (!target) {
     await replyActiveRoster(ctx, interaction);
@@ -149,7 +177,7 @@ export async function showSessionDetails(ctx: SessionCommandContext, interaction
   await interaction.editReply({ embeds: [sessionDetailEmbed({ ...session, commands: await commandsDuring(ctx, session) })] });
 }
 
-export async function addSession(ctx: SessionCommandContext, interaction: ModalSubmitInteraction): Promise<void> {
+export async function addSession(ctx: SessionCommandContext, interaction: ModalSubmitInteraction, subject: HistorySubject): Promise<void> {
   await ctx.requirePermission(interaction, PermissionLevel.ADMIN);
   const start = parseSessionDateTime(interaction.fields.getTextInputValue("start"), ctx.config.REPORT_TIMEZONE);
   const end = parseSessionDateTime(interaction.fields.getTextInputValue("end"), ctx.config.REPORT_TIMEZONE);
@@ -157,18 +185,23 @@ export async function addSession(ctx: SessionCommandContext, interaction: ModalS
   const inactive = parseDuration(interaction.fields.getTextInputValue("inactive"));
   assertDurationInvariant(start, end, active, inactive);
   if (!recordedTimeMeetsSessionMinimum(active, inactive)) userError("A completed session must contain at least one minute of recorded time");
-  const discordUserId = interaction.customId.slice(4);
-  const mapped = await ctx.bloxlink.robloxForDiscord(discordUserId);
-  if (!mapped) userError("That Discord user has no Bloxlink mapping");
-  const username = mapped.username;
-  const identity = await ctx.db.identity.upsert({
-    where: { robloxUserId: mapped.userId },
-    create: { robloxUserId: mapped.userId, robloxUsername: username, discordUserId },
-    update: { robloxUsername: username, discordUserId },
-  });
+  let identity;
+  if ("identityId" in subject) {
+    identity = await ctx.db.identity.findUnique({ where: { id: subject.identityId } });
+    if (!identity) userError("That member is no longer tracked");
+  } else {
+    const mapped = await ctx.bloxlink.robloxForDiscord(subject.discordUserId);
+    if (!mapped) userError("That Discord user has no Bloxlink mapping");
+    identity = await ctx.db.identity.upsert({
+      where: { robloxUserId: mapped.userId },
+      create: { robloxUserId: mapped.userId, robloxUsername: mapped.username, discordUserId: subject.discordUserId },
+      update: { robloxUsername: mapped.username, discordUserId: subject.discordUserId },
+    });
+  }
+  const identityId = identity.id;
   const session = await ctx.db.$transaction(async (tx) => {
     const created = await tx.session.create({ data: {
-      identityId: identity.id, state: "ENDED", startedAt: start, endedAt: end, lastEventAt: end, lastStateAt: end,
+      identityId, state: "ENDED", startedAt: start, endedAt: end, lastEventAt: end, lastStateAt: end,
       activeMilliseconds: BigInt(active), inactiveMilliseconds: BigInt(inactive), rankNumber: ctx.config.ROBLOX_MIN_RANK,
       rankName: "Manual entry", universeId: ctx.config.ROBLOX_UNIVERSE_ID, placeId: ctx.config.ROBLOX_ALLOWED_PLACE_IDS[0]!, jobId: "manual",
     } });
@@ -180,7 +213,7 @@ export async function addSession(ctx: SessionCommandContext, interaction: ModalS
   });
   await ctx.publisher.refresh(session.id);
   await interaction.reply({
-    embeds: [new EmbedBuilder().setColor(SUCCESS_COLOR).setTitle("✅ Session added").setDescription(`A completed session was added for **${username}**.`).addFields(
+    embeds: [new EmbedBuilder().setColor(SUCCESS_COLOR).setTitle("✅ Session added").setDescription(`A completed session was added for **${identity.robloxUsername}**.`).addFields(
       { name: "🗓️ When", value: `<t:${Math.floor(start.getTime() / 1000)}:f> to <t:${Math.floor(end.getTime() / 1000)}:t>` },
       { name: "⏱️ Time recorded", value: `${friendlyDuration(active)} active · ${friendlyDuration(inactive)} inactive` },
       { name: "🆔 Session ID", value: `\`${session.id}\`` },
@@ -214,18 +247,15 @@ export async function editEnded(ctx: SessionCommandContext, interaction: ModalSu
     } });
   });
   await ctx.publisher.refresh(id);
-  await interaction.reply({
-    embeds: [new EmbedBuilder().setColor(SUCCESS_COLOR).setTitle("✅ Session updated").setDescription("The completed session was updated successfully.").addFields({ name: "🆔 Session ID", value: `\`${id}\`` })],
-    flags: MessageFlags.Ephemeral,
-  });
+  // The form is opened from the manage panel, so show the new values there.
+  const panel = managePanel(await manageableSession(ctx, id), "✅ Session updated");
+  if (interaction.isFromMessage()) await interaction.update(panel);
+  else await interaction.reply({ ...panel, flags: MessageFlags.Ephemeral });
 }
 
 export async function showEditEndedModal(ctx: SessionCommandContext, interaction: ButtonInteraction, id: string): Promise<void> {
   await ctx.requirePermission(interaction, PermissionLevel.ADMIN);
-  const session = await ctx.db.session.findUnique({ where: { id } });
-  if (!session || session.deletedAt) userError("Session not found");
-  if (session.state !== "ENDED") userError("Live sessions cannot be managed");
-  if (!recordedTimeMeetsSessionMinimum(session.activeMilliseconds, session.inactiveMilliseconds)) userError("Session not found");
+  const session = await manageableSession(ctx, id);
   const modal = new ModalBuilder().setCustomId(`editended:${id}`).setTitle("✏️ Edit completed session").addComponents(
     textInputRow("start", "Start (example: 11/07/2026 14:30)", formatSessionDateTime(session.startedAt, ctx.config.REPORT_TIMEZONE)),
     textInputRow("end", "End (example: 11/07/2026 16:45)", formatSessionDateTime(session.endedAt!, ctx.config.REPORT_TIMEZONE)),
@@ -249,5 +279,8 @@ export async function removeSession(ctx: SessionCommandContext, interaction: But
     } });
   });
   await ctx.publisher.refresh(id, true);
-  await interaction.update({ content: `Session ${id} removed from statistics.`, components: [] });
+  await interaction.update({
+    embeds: [new EmbedBuilder().setColor(SUCCESS_COLOR).setTitle("🗑️ Session removed").setDescription(`Session \`${id}\` no longer counts towards any statistics.`)],
+    components: [],
+  });
 }

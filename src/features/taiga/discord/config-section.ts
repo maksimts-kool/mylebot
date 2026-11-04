@@ -7,7 +7,6 @@ import {
   type ConfigSectionMeta,
 } from "../../../shared/discord/config-presets.js";
 import type { ConfigComponentInteraction, ConfigSection, ConfigView } from "../../../shared/discord/config-section.js";
-import { KNOWN_FORUM_TAGS } from "../domain/mapping.js";
 import type { TaigaSettingsService } from "../service/settings.js";
 import type { TaigaSyncService } from "../service/taiga-sync.js";
 
@@ -15,7 +14,6 @@ const META: ConfigSectionMeta = {
   id: "taiga",
   label: "Taiga board",
   emoji: "🗂️",
-  description: "Forums, notifications channel, and the board sync switch.",
 };
 
 const ACTIONS = {
@@ -47,10 +45,6 @@ export function taigaConfigSection(
     if (!current.notificationChannelId) problems.push("No notifications channel set — card updates will not be announced.");
 
     return configPage(META, {
-      summary: [
-        "New forum posts become cards on the Taiga board, and moving a card retags its post.",
-        `Forums need these tags: ${KNOWN_FORUM_TAGS.join(", ")}.`,
-      ],
       fields: [
         field("Integration", enabledValue(current.enabled)),
         field("Tracked cards", countValue(health.trackedCards)),
@@ -60,9 +54,7 @@ export function taigaConfigSection(
         field("Notifications", channelValue(current.notificationChannelId)),
         note(
           "Posts tracked from",
-          current.activatedAt
-            ? `${timeValue(current.activatedAt)} — older posts are never touched`
-            : "Not activated yet",
+          current.activatedAt ? timeValue(current.activatedAt) : "Not activated yet",
         ),
         note("Health", problemsValue(problems)),
       ],

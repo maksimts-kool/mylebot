@@ -12,18 +12,11 @@ const META: ConfigSectionMeta = {
   id: "permissions",
   label: "Role permissions",
   emoji: "🔑",
-  description: "Grant, change, and revoke staff, admin, and manager access per role.",
 };
 
 const ACTIONS = { role: "role", revoke: "revoke", level: "level", back: "back" } as const;
 
 const ASSIGNABLE_LEVELS = [PermissionLevel.STAFF, PermissionLevel.ADMIN, PermissionLevel.MANAGER] as const;
-
-const LEVEL_SUMMARY: Record<number, string> = {
-  [PermissionLevel.STAFF]: "Sees session histories and live sessions.",
-  [PermissionLevel.ADMIN]: "Everything staff can do, plus adding, editing and removing sessions.",
-  [PermissionLevel.MANAGER]: "Everything admins can do, plus this configuration panel.",
-};
 
 /**
  * Splits `permissions:level:<roleId>:<choice>` into its parts. Exported so the
@@ -56,11 +49,6 @@ export function permissionsSection(db: Db, client: Client, guildId: string): Con
       }))));
     }
     return configPage(META, {
-      summary: [
-        "Access is cumulative: a member gets the highest level of any role they hold, and anyone with Discord's Administrator permission always counts as a manager.",
-        "",
-        ...ASSIGNABLE_LEVELS.map((level) => `**${permissionLabel(level)}** — ${LEVEL_SUMMARY[level]}`),
-      ],
       fields: [...ASSIGNABLE_LEVELS].reverse().map((level) => {
         const members = roles.filter((role) => role.level === level);
         return note(
@@ -76,10 +64,7 @@ export function permissionsSection(db: Db, client: Client, guildId: string): Con
     const current = await db.permissionRole.findUnique({ where: { roleId } });
     return configPage(META, {
       summary: `Choose the access level for <@&${roleId}>.`,
-      fields: [
-        field("Current access", current ? permissionLabel(current.level) : "None"),
-        ...ASSIGNABLE_LEVELS.map((level) => note(permissionLabel(level), LEVEL_SUMMARY[level] ?? "")),
-      ],
+      fields: [field("Current access", current ? permissionLabel(current.level) : "None")],
       rows: [configRow(
         ...ASSIGNABLE_LEVELS.map((level) => actionButton(META, `${ACTIONS.level}:${roleId}:${level}`, permissionLabel(level), {
           style: level === PermissionLevel.MANAGER ? ButtonStyle.Success : level === PermissionLevel.ADMIN ? ButtonStyle.Primary : ButtonStyle.Secondary,
