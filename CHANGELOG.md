@@ -4,6 +4,10 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+_Nothing yet._
+
+## 0.15.9 - 2026-11-04
+
 - Rebuilt the add and edit session forms so they are hard to get wrong. The day is picked from a menu of the last 25 days, start and end are plain times (`14:30`, `1430`, `2:30pm` all work, and an end before the start means past midnight), and inactive time is optional. Active time is no longer typed: it is whatever the rest leaves, so the parts always add up. When something is still wrong, the error says which field and offers **Fix and resubmit**, which reopens the form with everything already filled in. Sessions older than 25 days can still be edited, but not added, and a session a day or longer can only be removed.
 
 ## 0.15.8 - 2026-11-04
