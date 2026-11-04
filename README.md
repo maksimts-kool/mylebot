@@ -32,7 +32,7 @@ Check it is up at `http://127.0.0.1:3000/health` and `/ready` (`/ready` also che
 docker compose up --build -d
 ```
 
-This starts three containers from one image: `server` (HTTP API, runs migrations), `bot` (Discord), and `db` (PostgreSQL 17). Only `server` is published, on `127.0.0.1:3000`. For Portainer, use [`compose.portainer.yml`](compose.portainer.yml) and put the `.env` values in the stack environment.
+This starts three containers from one image: `server` (HTTP API, runs migrations), `bot` (Discord), and `db` (PostgreSQL 17). Only `server` is published, on `127.0.0.1:3000`. For Portainer, use [`compose.portainer.yml`](compose.portainer.yml) and put the `.env` values in the stack environment. Deploy it as a Git stack from this repository so a pull-and-redeploy follows `main`. On a host that already runs a shared PostgreSQL, add [`compose.shared-db.yml`](compose.shared-db.yml) as an additional compose path: it disables the bundled `db` and points both containers at `shared-postgres` on the external `shared-db` network (override with `SHARED_DB_HOST` and `SHARED_DB_NETWORK`).
 
 Put an HTTPS reverse proxy in front of the API — Roblox must reach it over HTTPS.
 
