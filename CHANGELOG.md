@@ -4,6 +4,10 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+_Nothing yet._
+
+## 0.16.0 - 2026-11-04
+
 - Added badges. Members earn 10, 50, 150, 500, and 1000 hours badges from active time on shift, **Staff of the month** and **Top 3** for each finished month on the leaderboard, and **Veteran** after a year on the team. Everything except Veteran counts from launch day, and the bot DMs the member when they earn one.
 - Added `/profile [user]`, which posts an image card with the member's Roblox avatar and rank, their shift stats for the past 12 months, every badge, and their progress to the next hours badge. Each badge has its own picture: the hours badges climb as rank insignia, from one chevron to three chevrons under three stars, and the leaderboard and Veteran badges show a starred calendar month, a podium of lifts, and a shield.
 - Added `/badges`, a private guide to every badge, how to earn it, and how close you are.
