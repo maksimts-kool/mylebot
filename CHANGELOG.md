@@ -4,6 +4,10 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+_Nothing yet._
+
+## 0.15.8 - 2026-11-04
+
 - Removed **All time** from `/leaderboard`; sessions are only kept for a year, so it was the same as a rolling year.
 - A leaderboard period no longer starts before the first recorded session, so **This year** shows when tracking actually began instead of Jan 1.
 - Every leaderboard period now reads as a date range, e.g. `Nov 1 – Nov 30, 2026` for a month instead of `November 2026`.
