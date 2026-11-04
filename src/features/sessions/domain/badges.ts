@@ -1,12 +1,13 @@
 import { DateTime } from "luxon";
+import { sessionRetentionCutoff } from "./policy.js";
 
 /**
  * The badge catalogue and the rules for earning each badge. Everything here is
  * pure, so the awarding job, the profile card and the `/badges` guide all read
  * the same definitions and cannot drift apart.
  *
- * Every badge counts from the moment badges launched except Veteran, which
- * honours the member's real history.
+ * Every badge counts from the member's first tracked shift: hours and months
+ * from before badges existed count the same as any since.
  */
 
 export type BadgeGroup = "hours" | "leaderboard" | "special";
@@ -153,21 +154,31 @@ export function monthLabel(month: string, timezone: string): string {
 }
 
 /**
- * Months whose leaderboard badges are due, oldest first. Only whole months
- * after launch count — a month badges launched in part-way through would rank
- * people on time from before launch — and a month is only due once it has
- * ended and settled. Months up to `awardedThrough` were handed out already.
+ * Months whose leaderboard badges are due, oldest first, starting with the
+ * month of the first tracked shift: that month is ranked on everything the
+ * tracker saw in it, as `/leaderboard` would rank it. A month is only due once
+ * it has ended and settled, and months up to `awardedThrough` were handed out
+ * already.
+ *
+ * Retention deletes sessions after a year, so a month it has started eating
+ * into would rank people on part of their time. Ranking starts no earlier than
+ * the first whole month retention still holds; in practice that only matters
+ * if ranking begins more than a year after the first shift.
  */
 export function monthsToAward(
-  launchedAt: Date,
+  firstShiftAt: Date | null,
   awardedThrough: string | null,
   now: Date,
   timezone: string,
   settleMs = MONTH_SETTLE_MILLISECONDS,
 ): string[] {
-  const launch = DateTime.fromJSDate(launchedAt, { zone: timezone });
-  let month = launch.startOf("month");
-  if (month < launch) month = month.plus({ months: 1 });
+  if (!firstShiftAt) return [];
+  let month = DateTime.fromJSDate(firstShiftAt, { zone: timezone }).startOf("month");
+  const retained = DateTime.fromJSDate(sessionRetentionCutoff(now), { zone: timezone });
+  if (month < retained) {
+    month = retained.startOf("month");
+    if (month < retained) month = month.plus({ months: 1 });
+  }
   if (awardedThrough) {
     const after = DateTime.fromFormat(awardedThrough, "yyyy-LL", { zone: timezone }).plus({ months: 1 });
     if (after.isValid && after > month) month = after;

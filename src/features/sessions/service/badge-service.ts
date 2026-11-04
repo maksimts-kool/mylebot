@@ -13,8 +13,7 @@ const SETTINGS_ID = "global";
 export const BADGE_NOTIFY_BATCH = 25;
 
 export type BadgeStanding = {
-  launchedAt: Date;
-  /** Active time credited since launch, from settled sessions. */
+  /** Active time credited from every settled session, back to the first shift. */
   activeMs: number;
   firstTrackedAt: Date | null;
   awards: BadgeAward[];
@@ -34,6 +33,9 @@ export async function purgeBadges(tx: Prisma.TransactionClient, robloxUserId: bi
  * Hands out badges from session data. Discord is not involved here: awards are
  * rows, and the notifier tells people about rows still owed a DM.
  *
+ * Everything counts from each member's first tracked shift, including shifts
+ * from before badges existed.
+ *
  * Hours are counted from per-session credits rather than from the sessions
  * themselves, because sessions are deleted after a year and the hours they
  * earned must not go with them. A credit follows its session while the session
@@ -43,13 +45,13 @@ export async function purgeBadges(tx: Prisma.TransactionClient, robloxUserId: bi
 export class BadgeService {
   constructor(private readonly db: Db, private readonly config: Config) {}
 
-  /** The launch instant, fixed the first time it is asked for. */
-  async settings(now = new Date()): Promise<{ launchedAt: Date; monthsAwardedThrough: string | null }> {
+  /** How far the monthly ranking has got. The row is created the first time it is asked for. */
+  private async settings(now: Date): Promise<{ monthsAwardedThrough: string | null }> {
     return this.db.badgeSettings.upsert({
       where: { id: SETTINGS_ID },
       create: { id: SETTINGS_ID, launchedAt: now },
       update: {},
-      select: { launchedAt: true, monthsAwardedThrough: true },
+      select: { monthsAwardedThrough: true },
     });
   }
 
@@ -57,10 +59,10 @@ export class BadgeService {
   async award(now = new Date()): Promise<number> {
     const settings = await this.settings(now);
     await this.syncProgress();
-    await this.syncCredits(settings.launchedAt);
+    await this.syncCredits();
     let awarded = await this.awardHours();
     awarded += await this.awardVeteran(now);
-    awarded += await this.awardMonths(settings.launchedAt, settings.monthsAwardedThrough, now);
+    awarded += await this.awardMonths(settings.monthsAwardedThrough, now);
     return awarded;
   }
 
@@ -88,10 +90,10 @@ export class BadgeService {
     if (missing.length) await this.db.badgeProgress.createMany({ data: missing, skipDuplicates: true });
   }
 
-  /** Brings every credit in line with the settled session it came from. */
-  private async syncCredits(launchedAt: Date): Promise<void> {
+  /** Brings every credit in line with the settled session it came from, however old. */
+  private async syncCredits(): Promise<void> {
     const sessions = await this.db.session.findMany({
-      where: { state: "ENDED", startedAt: { gte: launchedAt } },
+      where: { state: "ENDED" },
       select: {
         id: true, deletedAt: true, activeMilliseconds: true, inactiveMilliseconds: true,
         identity: { select: { robloxUserId: true } },
@@ -149,10 +151,13 @@ export class BadgeService {
       .map((row) => ({ robloxUserId: row.robloxUserId, badge: "veteran" })));
   }
 
-  /** Ranks each finished month once, exactly as `/leaderboard` would have. */
-  private async awardMonths(launchedAt: Date, awardedThrough: string | null, now: Date): Promise<number> {
+  /** Ranks each finished month once, back to the first tracked shift, exactly as `/leaderboard` would have. */
+  private async awardMonths(awardedThrough: string | null, now: Date): Promise<number> {
+    const first = await this.db.session.findFirst({
+      where: { deletedAt: null }, orderBy: { startedAt: "asc" }, select: { startedAt: true },
+    });
     let awarded = 0;
-    for (const month of monthsToAward(launchedAt, awardedThrough, now, this.config.REPORT_TIMEZONE)) {
+    for (const month of monthsToAward(first?.startedAt ?? null, awardedThrough, now, this.config.REPORT_TIMEZONE)) {
       const { start, end } = monthRange(month, this.config.REPORT_TIMEZONE);
       const identities = await this.db.identity.findMany({
         select: {
@@ -183,15 +188,13 @@ export class BadgeService {
   }
 
   /** Everything the profile and the guide show about one person's badges. */
-  async standing(robloxUserId: bigint, now = new Date()): Promise<BadgeStanding> {
-    const { launchedAt } = await this.settings(now);
+  async standing(robloxUserId: bigint): Promise<BadgeStanding> {
     const [credits, progress, awards] = await Promise.all([
       this.db.badgeCredit.aggregate({ where: { robloxUserId }, _sum: { activeMilliseconds: true } }),
       this.db.badgeProgress.findUnique({ where: { robloxUserId }, select: { firstTrackedAt: true } }),
       this.db.badgeAward.findMany({ where: { robloxUserId }, orderBy: { awardedAt: "asc" } }),
     ]);
     return {
-      launchedAt,
       activeMs: Number(credits._sum.activeMilliseconds ?? 0n),
       firstTrackedAt: progress?.firstTrackedAt ?? null,
       awards,

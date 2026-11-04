@@ -105,16 +105,16 @@ Manager commands and `/badges` reply privately; the rest reply in the channel. C
 
 ### Badges
 
-Badges are earned automatically and each one is announced to the member by DM. Hours and leaderboard badges count from the moment the first badge pass ran after deploying this version — nothing is back-filled from older shifts.
+Badges are earned automatically and each one is announced to the member by DM, several new badges arriving together in one message. Everything counts from the member's first tracked shift, including shifts from before badges existed.
 
 | Badge | How it is earned |
 | --- | --- |
 | 10, 50, 150, 500, 1000 hours | Active time on shift (inactive time does not count). |
 | Staff of the month | Finishing a calendar month #1 on `/leaderboard`. Repeatable. |
 | Top 3 | Finishing a calendar month in the top 3. Repeatable. |
-| Veteran | One year since the member was first tracked, using their real history. |
+| Veteran | One year since the member was first tracked. |
 
-A month is ranked an hour after it ends in `REPORT_TIMEZONE`, and only whole months after launch count. Badges and the hours behind them are kept when old sessions are deleted, but a member purged for dropping below `ROBLOX_MIN_RANK` loses them too. A member with closed DMs still gets the badge.
+A month is ranked an hour after it ends in `REPORT_TIMEZONE`, starting with the month of the first tracked shift. Badges and the hours behind them are kept when old sessions are deleted, but a member purged for dropping below `ROBLOX_MIN_RANK` loses them too. A member with closed DMs still gets the badge.
 
 ## Development
 

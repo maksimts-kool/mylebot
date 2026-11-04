@@ -13,7 +13,6 @@ import type { ProfileCardModel } from "./profile-card.js";
 const HOUR_MS = 3_600_000;
 
 export type BadgeStandingView = {
-  launchedAt: Date;
   activeMs: number;
   firstTrackedAt: Date | null;
   awards: ReadonlyArray<{ badge: string; period: string; awardedAt: Date }>;
@@ -23,14 +22,33 @@ function wholeHours(milliseconds: number): string {
   return `${Math.floor(milliseconds / HOUR_MS)}h`;
 }
 
-function launchMonth(launchedAt: Date, timezone: string): string {
-  return DateTime.fromJSDate(launchedAt, { zone: timezone }).toFormat("LLL yyyy");
+function shortMonth(date: Date, timezone: string): string {
+  return DateTime.fromJSDate(date, { zone: timezone }).toFormat("LLL yyyy");
+}
+
+/**
+ * Each staff role's Discord colour, keyed by its rank in the Roblox group
+ * (6820891), so the rank pill on the card matches the role the member wears in
+ * Discord. The banner stays one colour for everybody.
+ * Rank numbers rather than names: the names carry a tag such as "[LE]" and may
+ * be reworded, while the numbers are what the rest of the bot keys on.
+ */
+export const RANK_COLORS: ReadonlyArray<{ ranks: readonly number[]; color: string }> = [
+  { ranks: [10, 254, 255], color: "#369876" }, // Staff Manager, Lead Manager, Owner
+  { ranks: [8, 9], color: "#be00ff" }, // Surfers and Engineers Supervisor
+  { ranks: [6, 7], color: "#d4843d" }, // Lift Surfer, Lift Engineer
+  { ranks: [5], color: "#4c59d0" }, // Trainee Surfer
+  { ranks: [0], color: "#e74c3c" }, // Guest
+];
+
+/** The role colour for a group rank, or null for a rank with no staff role (plain Member). */
+export function rankColor(rankNumber: number): string | null {
+  return RANK_COLORS.find(({ ranks }) => ranks.includes(rankNumber))?.color ?? null;
 }
 
 export function profileCardModel(input: {
   robloxUsername: string;
-  discordName: string | null;
-  rank: string | null;
+  rank: { name: string; number: number } | null;
   avatar: Buffer | null;
   stats: ProfileStats | null;
   standing: BadgeStandingView;
@@ -43,8 +61,8 @@ export function profileCardModel(input: {
   const dash = "—";
   return {
     title: input.robloxUsername,
-    subtitle: input.discordName ? `@${input.discordName} · Discord` : null,
-    rank: input.rank,
+    rank: input.rank?.name ?? null,
+    rankColor: input.rank ? rankColor(input.rank.number) : null,
     avatar: input.avatar,
     onShift: stats?.onShift ?? false,
     tiles: [
@@ -63,7 +81,7 @@ export function profileCardModel(input: {
       count: held.get(badge.key)?.count ?? 0,
     })),
     badgeSummary: `${held.size} of ${BADGES.length}`,
-    sinceLabel: `Since launch · ${launchMonth(standing.launchedAt, timezone)}`,
+    sinceLabel: standing.firstTrackedAt ? `Since first shift · ${shortMonth(standing.firstTrackedAt, timezone)}` : "Since first shift",
     next: next
       ? {
         label: `Next: ${next.name}`,
@@ -109,13 +127,12 @@ export type BadgeGuide = { description: string; fields: Array<{ name: string; va
  * progress when the tracker knows them. Somebody never tracked sees the rules
  * only, never a row of zeros.
  */
-export function badgeGuide(input: { launchedAt: Date; standing: BadgeStandingView | null; now: Date; timezone: string }): BadgeGuide {
+export function badgeGuide(input: { standing: BadgeStandingView | null; now: Date; timezone: string }): BadgeGuide {
   const { standing, now, timezone } = input;
   const held = standing ? heldBadges(standing.awards) : new Map<string, HeldBadge>();
-  const launched = shortDate(input.launchedAt, timezone);
   const description = standing
-    ? `Badges count from launch day (${launched}), except Veteran. You have **${held.size} of ${BADGES.length}**.`
-    : `Badges count from launch day (${launched}), except Veteran. Your progress shows here once you've been tracked on shift.`;
+    ? `Badges count from your first tracked shift. You have **${held.size} of ${BADGES.length}**.`
+    : "Badges count from your first tracked shift. Your progress shows here once you've been tracked on shift.";
   const fields = BADGE_GROUPS.map(({ group, title, emoji }) => ({
     name: `${emoji} ${title}`,
     value: BADGES.filter((badge) => badge.group === group).map((badge) => {
@@ -130,7 +147,7 @@ export function badgeGuide(input: { launchedAt: Date; standing: BadgeStandingVie
 export function awardSentence(badge: BadgeDefinition, period: string, activeMs: number, timezone: string): string {
   if (badge.thresholdMs !== undefined) {
     const next = nextHoursBadge(Math.max(activeMs, badge.thresholdMs));
-    return `You've spent ${badge.name} on shift since badges launched.${next ? ` Next up: ${next.name}.` : " That's every hours badge."}`;
+    return `You've spent ${badge.name} on shift.${next ? ` Next up: ${next.name}.` : " That's every hours badge."}`;
   }
   if (badge.key === "monthly-first") return `You finished ${monthLabel(period, timezone)} at #1 on the staff leaderboard.`;
   if (badge.key === "monthly-top3") return `You finished ${monthLabel(period, timezone)} in the top 3 on the staff leaderboard.`;

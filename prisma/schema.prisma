@@ -335,6 +335,8 @@ model CommandBlock {
 /// first badge pass.
 model BadgeSettings {
   id          String   @id
+  /// When the first badge pass ran. Nothing counts from it any more — badges
+  /// count from each member's first tracked shift — so it is only a record.
   launchedAt  DateTime @default(now())
   /// The last calendar month (`2026-12`) whose leaderboard badges were handed
   /// out, so a month is ranked once rather than on every pass.

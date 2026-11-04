@@ -10,7 +10,7 @@ import { BadgeService } from "../../src/features/sessions/service/badge-service.
 
 const HOUR = 3_600_000;
 const TZ = "Europe/Tallinn";
-const launchedAt = new Date("2026-11-05T10:00:00Z");
+const firstShiftAt = new Date("2026-07-11T10:00:00Z");
 
 describe("badge rules", () => {
   it("awards hours badges at their thresholds, inclusively", () => {
@@ -31,19 +31,27 @@ describe("badge rules", () => {
     expect(monthlyAwards([])).toEqual([]);
   });
 
-  it("ranks only whole months after launch, once they have ended and settled", () => {
-    // Launched part-way through November: November is never ranked.
-    expect(monthsToAward(launchedAt, null, new Date("2026-12-31T22:00:00Z"), TZ)).toEqual([]);
-    // December ends at 22:00 UTC (midnight in Tallinn) and settles an hour later.
-    expect(monthsToAward(launchedAt, null, new Date("2026-12-31T22:30:00Z"), TZ)).toEqual([]);
-    expect(monthsToAward(launchedAt, null, new Date("2026-12-31T23:00:00Z"), TZ, 30 * 60_000)).toEqual(["2026-12"]);
-    expect(monthsToAward(launchedAt, null, new Date("2027-03-02T00:00:00Z"), TZ)).toEqual(["2026-12", "2027-01", "2027-02"]);
-    expect(monthsToAward(launchedAt, "2027-01", new Date("2027-03-02T00:00:00Z"), TZ)).toEqual(["2027-02"]);
+  it("ranks every month back to the first shift, once each has ended and settled", () => {
+    // The first shift was part-way through July: July still counts, on what the tracker saw.
+    expect(monthsToAward(firstShiftAt, null, new Date("2026-11-05T12:00:00Z"), TZ)).toEqual(["2026-07", "2026-08", "2026-09", "2026-10"]);
+    // October ends at 22:00 UTC (midnight in Tallinn, back on winter time) and settles an hour later.
+    expect(monthsToAward(firstShiftAt, "2026-09", new Date("2026-10-31T22:30:00Z"), TZ)).toEqual([]);
+    expect(monthsToAward(firstShiftAt, "2026-09", new Date("2026-10-31T22:30:00Z"), TZ, 30 * 60_000)).toEqual(["2026-10"]);
+    expect(monthsToAward(firstShiftAt, "2026-08", new Date("2026-11-05T12:00:00Z"), TZ)).toEqual(["2026-09", "2026-10"]);
   });
 
-  it("counts the launch month when badges launched exactly as it began", () => {
-    const atMonthStart = monthRange("2026-12", TZ).start;
-    expect(monthsToAward(atMonthStart, null, new Date("2027-01-02T00:00:00Z"), TZ)).toEqual(["2026-12"]);
+  it("ranks nothing before anybody has been tracked", () => {
+    expect(monthsToAward(null, null, new Date("2026-11-05T12:00:00Z"), TZ)).toEqual([]);
+  });
+
+  it("never ranks a month that session retention has started deleting", () => {
+    // Fourteen months after the first shift, retention has removed everything
+    // before 2026-09-05; September is only partly held, so October comes first.
+    const now = new Date("2027-09-05T12:00:00Z");
+    expect(monthsToAward(firstShiftAt, null, now, TZ)[0]).toBe("2026-10");
+    // A cutoff exactly at a month's start keeps that month whole.
+    const atMonthStart = monthRange("2026-10", TZ).start;
+    expect(monthsToAward(firstShiftAt, null, new Date(atMonthStart.getTime() + 365 * 86_400_000), TZ)[0]).toBe("2026-10");
   });
 
   it("makes Veteran due one year after first tracked", () => {
@@ -93,7 +101,8 @@ describe("badge guide", () => {
   const now = new Date("2027-01-20T12:00:00Z");
 
   it("shows only the rules to someone never tracked, never a row of zeros", () => {
-    const guide = badgeGuide({ launchedAt, standing: null, now, timezone: TZ });
+    const guide = badgeGuide({ standing: null, now, timezone: TZ });
+    expect(guide.description).toContain("first tracked shift");
     const text = guide.fields.map((field) => field.value).join("\n");
     expect(text).toContain("Spend 10 hours of active time on shift.");
     expect(text).not.toContain("0h /");
@@ -103,9 +112,7 @@ describe("badge guide", () => {
 
   it("shows earned badges, a bar toward the next hours badge, and Veteran's countdown", () => {
     const guide = badgeGuide({
-      launchedAt,
       standing: {
-        launchedAt,
         activeMs: 72 * HOUR,
         firstTrackedAt: new Date("2026-02-01T12:00:00Z"),
         awards: [
@@ -129,7 +136,7 @@ describe("badge guide", () => {
 
   it("words the DM for each kind of badge", () => {
     const byKey = (key: string) => BADGES.find((badge) => badge.key === key)!;
-    expect(awardSentence(byKey("hours-50"), "", 51 * HOUR, TZ)).toBe("You've spent 50 hours on shift since badges launched. Next up: 150 hours.");
+    expect(awardSentence(byKey("hours-50"), "", 51 * HOUR, TZ)).toBe("You've spent 50 hours on shift. Next up: 150 hours.");
     expect(awardSentence(byKey("hours-1000"), "", 1000 * HOUR, TZ)).toContain("every hours badge");
     expect(awardSentence(byKey("monthly-first"), "2026-12", 0, TZ)).toBe("You finished December 2026 at #1 on the staff leaderboard.");
   });
@@ -137,20 +144,37 @@ describe("badge guide", () => {
 
 describe("profile card", () => {
   const now = new Date("2027-01-20T12:00:00Z");
-  const standing = { launchedAt, activeMs: 72 * HOUR, firstTrackedAt: null, awards: [] };
+  const standing = { activeMs: 72 * HOUR, firstTrackedAt: firstShiftAt, awards: [] };
 
   it("draws dashes rather than zeros when the member has no recent shifts", () => {
     const model = profileCardModel({
-      robloxUsername: "Kuro", discordName: "kuro", rank: null, avatar: null, stats: null, standing, now, timezone: TZ,
+      robloxUsername: "Kuro", rank: null, avatar: null, stats: null, standing, now, timezone: TZ,
     });
     expect(model.tiles.map((tile) => tile.value)).toEqual(["—", "—", "—", "—", "—"]);
     expect(model.badgeSummary).toBe("0 of 8");
+    expect(model.sinceLabel).toBe("Since first shift · Jul 2026");
     expect(model.next).toMatchObject({ label: "Next: 150 hours", progressLabel: "72h / 150h" });
+  });
+
+  it("names the rank without its number and fills its pill with the member's role colour", () => {
+    const card = (rank: { name: string; number: number } | null) => profileCardModel({
+      robloxUsername: "Kuro", rank, avatar: null, stats: null, standing, now, timezone: TZ,
+    });
+    const engineer = card({ name: "[LE] Lift Engineer", number: 7 });
+    expect(engineer.rank).toBe("[LE] Lift Engineer");
+    expect(engineer.rankColor).toBe("#d4843d");
+    expect(card({ name: "[OW] Owner", number: 255 }).rankColor).toBe("#369876");
+    expect(card({ name: "[ES] Engineers Supervisor", number: 9 }).rankColor).toBe("#be00ff");
+    expect(card({ name: "[TS] Trainee Surfer", number: 5 }).rankColor).toBe("#4c59d0");
+    // A rank with no Discord role, and somebody with no shift yet, get no role colour.
+    expect(card({ name: "Member", number: 1 }).rankColor).toBeNull();
+    expect(card(null)).toMatchObject({ rank: null, rankColor: null });
+    expect(engineer).not.toHaveProperty("subtitle");
   });
 
   it("renders a PNG of the card's size, and a badge icon", async () => {
     const model = profileCardModel({
-      robloxUsername: "Kuro", discordName: "kuro", rank: "Moderator · 12", avatar: Buffer.from("not an image"),
+      robloxUsername: "Kuro", rank: { name: "[LE] Lift Engineer", number: 7 }, avatar: Buffer.from("not an image"),
       stats: null, standing, now, timezone: TZ,
     });
     const png = await renderProfileCard(model);
@@ -188,12 +212,12 @@ describe("badge awarding", () => {
   function fakeDb(options: { sessions: unknown[]; credits: Array<{ sessionId: string; activeMilliseconds: bigint }>; creditTotals?: unknown[] }) {
     return {
       badgeSettings: {
-        upsert: vi.fn().mockResolvedValue({ launchedAt, monthsAwardedThrough: null }),
+        upsert: vi.fn().mockResolvedValue({ monthsAwardedThrough: null }),
         update: vi.fn(),
       },
       identity: { findMany: vi.fn().mockResolvedValue([]) },
       badgeProgress: { findMany: vi.fn().mockResolvedValue([]), createMany: vi.fn(), update: vi.fn() },
-      session: { findMany: vi.fn().mockResolvedValue(options.sessions) },
+      session: { findMany: vi.fn().mockResolvedValue(options.sessions), findFirst: vi.fn().mockResolvedValue(null) },
       badgeCredit: {
         findMany: vi.fn().mockResolvedValue(options.credits),
         createMany: vi.fn(),
@@ -208,7 +232,7 @@ describe("badge awarding", () => {
     id, deletedAt, activeMilliseconds: BigInt(activeMs), inactiveMilliseconds: 0n, identity: { robloxUserId: 7n },
   });
 
-  it("credits new sessions, follows edits, and drops removed ones, counting only from launch", async () => {
+  it("credits new sessions, follows edits, and drops removed ones, back to the very first shift", async () => {
     const db = fakeDb({
       sessions: [session("new", 2 * HOUR), session("edited", 3 * HOUR), session("removed", HOUR, new Date()), session("tiny", 30_000)],
       credits: [
@@ -218,12 +242,22 @@ describe("badge awarding", () => {
     });
     await new BadgeService(db as never, { REPORT_TIMEZONE: TZ } as never).award(new Date("2026-11-20T00:00:00Z"));
 
-    expect(db.session.findMany.mock.calls[0]![0].where).toEqual({ state: "ENDED", startedAt: { gte: launchedAt } });
+    // No date floor: shifts from before badges existed earn hours too.
+    expect(db.session.findMany.mock.calls[0]![0].where).toEqual({ state: "ENDED" });
     expect(db.badgeCredit.createMany).toHaveBeenCalledWith({
       data: [{ sessionId: "new", robloxUserId: 7n, activeMilliseconds: BigInt(2 * HOUR) }], skipDuplicates: true,
     });
     expect(db.badgeCredit.update).toHaveBeenCalledWith({ where: { sessionId: "edited" }, data: { activeMilliseconds: BigInt(3 * HOUR) } });
     expect(db.badgeCredit.deleteMany).toHaveBeenCalledWith({ where: { sessionId: { in: ["removed"] } } });
+  });
+
+  it("ranks the months before badges existed, starting from the first shift", async () => {
+    const db = fakeDb({ sessions: [], credits: [] });
+    db.session.findFirst.mockResolvedValue({ startedAt: firstShiftAt });
+    await new BadgeService(db as never, { REPORT_TIMEZONE: TZ } as never).award(new Date("2026-11-05T12:00:00Z"));
+
+    expect(db.badgeSettings.update.mock.calls.map(([call]) => call.data.monthsAwardedThrough))
+      .toEqual(["2026-07", "2026-08", "2026-09", "2026-10"]);
   });
 
   it("grants every hours badge a credited total reaches, without duplicates", async () => {

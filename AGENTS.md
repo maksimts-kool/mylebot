@@ -101,10 +101,10 @@ Useful entry points:
 ### Badges and profiles
 
 - The catalogue lives only in [`src/features/sessions/domain/badges.ts`](src/features/sessions/domain/badges.ts); the awarding job, the `/profile` card, and the `/badges` guide all read it.
-- Badges count from `BadgeSettings.launchedAt` — never back-fill from older shifts. Veteran is the one exception and uses the member's first tracked instant.
+- Badges count from each member's first tracked shift, including shifts from before badges existed. `BadgeSettings.launchedAt` is only a record of when the first pass ran; nothing counts from it.
 - Hours come from `BadgeCredit` rows, one per settled session, with no relation to `Session`. A credit follows its session while it exists (edits update it, soft-deletes drop it) and survives the one-year retention delete. Do not compute hours from `Session` directly.
 - Awards are rows first and DMs second. `notifiedAt` is set when the DM is sent or can never be (no linked Discord, DMs closed); any other failure leaves it owed. A badge, once awarded, is never revoked.
-- A month is ranked once, through `buildLeaderboard`, after `MONTH_SETTLE_MILLISECONDS`; only whole months after launch count.
+- A month is ranked once, through `buildLeaderboard`, after `MONTH_SETTLE_MILLISECONDS`, starting with the month of the first tracked shift — but never a month that session retention has started deleting, which would rank people on part of their time.
 - The card's fonts are in `assets/fonts` (Nunito, OFL) and the runtime image copies that folder; the slim base image has no fonts.
 - Badge artwork is stroked SVG paths on a 24×24 grid in [`src/features/sessions/discord/badge-icons.ts`](src/features/sessions/discord/badge-icons.ts), drawn for this bot. The hours badges are one family of rank insignia (chevrons, then stars) so they read as a ladder; the leaderboard and Veteran badges carry the lift theme. Keep icons free of numbers; the badge name carries the threshold. Check a change on a large icon sheet before it ships.
 

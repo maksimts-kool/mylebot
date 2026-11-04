@@ -17,8 +17,9 @@ export type ProfileCardBadge = Pick<BadgeDefinition, "name" | "color" | "icon" |
 
 export type ProfileCardModel = {
   title: string;
-  subtitle: string | null;
   rank: string | null;
+  /** The rank pill's fill as `#rrggbb`: the member's Discord role colour, or null for a rank with none. */
+  rankColor: string | null;
   avatar: Buffer | null;
   onShift: boolean;
   tiles: Array<{ label: string; value: string }>;
@@ -47,9 +48,6 @@ const PALETTE = {
   bar: "#8b98ff",
   onShift: "#34d399",
   offShift: "#6b7280",
-  pillFill: "rgba(140,120,255,0.20)",
-  pillStroke: "rgba(170,150,255,0.50)",
-  pillText: "#ddd4ff",
   lockedFill: "#1d1f28",
   lockedStroke: "#3a3d4a",
   lockedGlyph: "#4b4f5e",
@@ -214,32 +212,196 @@ function drawMedallion(ctx: SKRSContext2D, badge: Pick<ProfileCardBadge, "color"
   if (!badge.earned) drawLock(ctx, cx + radius * 0.72, cy + radius * 0.72);
 }
 
-function drawBackground(ctx: SKRSContext2D): void {
+const BANNER_HEIGHT = 136;
+
+/** A small filled triangle pointing up (`direction` -1) or down (1), centred on `cx, cy`. */
+function triangle(ctx: SKRSContext2D, cx: number, cy: number, size: number, direction: 1 | -1): void {
+  ctx.beginPath();
+  ctx.moveTo(cx - size, cy - (direction * size) / 2);
+  ctx.lineTo(cx + size, cy - (direction * size) / 2);
+  ctx.lineTo(cx, cy + (direction * size) / 2);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/**
+ * The banner's picture: a row of lift shafts with their cars stopped at
+ * different floors, drawn in the same light strokes as the rest of the card
+ * and faded out toward the wordmark on the left.
+ */
+function drawLiftShafts(ctx: SKRSContext2D): void {
+  // Starts after the logo and one-line wordmark, which end near x 775.
+  const left = 810;
+  const shaftWidth = 70;
+  const gap = 26;
+  const carHeight = 54;
+  // Top of each car; some sit half out of frame, mid-journey. The last three
+  // stay clear of the "STAFF PROFILE" label (y 30–66).
+  const cars: ReadonlyArray<{ top: number; heading: 1 | -1 | 0 }> = [
+    { top: 20, heading: 0 },
+    { top: 70, heading: -1 },
+    { top: 76, heading: 1 },
+    { top: -26, heading: -1 },
+    { top: 72, heading: 0 },
+  ];
+  const carFill = mix(PALETTE.banner, "#ffffff", 0.1);
+
+  // Floors run behind the shafts.
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "rgba(255,255,255,0.08)";
+  for (const y of [34, 88]) {
+    ctx.beginPath();
+    ctx.moveTo(left - 40, y);
+    ctx.lineTo(CARD_WIDTH, y);
+    ctx.stroke();
+  }
+
+  cars.forEach((car, index) => {
+    const x = left + index * (shaftWidth + gap);
+    // Guide rails.
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = PALETTE.bannerLine;
+    for (const railX of [x, x + shaftWidth]) {
+      ctx.beginPath();
+      ctx.moveTo(railX, 0);
+      ctx.lineTo(railX, BANNER_HEIGHT);
+      ctx.stroke();
+    }
+    // Hoist cable.
+    const cx = x + shaftWidth / 2;
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "rgba(255,255,255,0.22)";
+    ctx.beginPath();
+    ctx.moveTo(cx, 0);
+    ctx.lineTo(cx, car.top);
+    ctx.stroke();
+
+    // The car: a header with its direction lamp, and a pair of doors.
+    const carX = x + 7;
+    const carWidth = shaftWidth - 14;
+    roundedRect(ctx, carX, car.top, carWidth, carHeight, 6);
+    ctx.fillStyle = carFill;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(255,255,255,0.34)";
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(carX, car.top + 14);
+    ctx.lineTo(carX + carWidth, car.top + 14);
+    ctx.moveTo(cx, car.top + 14);
+    ctx.lineTo(cx, car.top + carHeight);
+    ctx.stroke();
+    if (car.heading !== 0) {
+      ctx.fillStyle = "rgba(255,255,255,0.55)";
+      triangle(ctx, cx, car.top + 7.5, 5, car.heading);
+    }
+  });
+
+  // Fade the scene out toward the wordmark.
+  const fade = ctx.createLinearGradient(left - 40, 0, left + 180, 0);
+  fade.addColorStop(0, PALETTE.banner);
+  fade.addColorStop(1, alpha(PALETTE.banner, 0));
+  ctx.fillStyle = fade;
+  ctx.fillRect(left - 40, 0, 220, BANNER_HEIGHT);
+}
+
+/** The game logo's own box, which every coordinate in `drawGameLogo` is drawn in. */
+const LOGO_BOX = { width: 74, height: 88 } as const;
+
+/** One of the logo's two doors: down the shaft at `x`, then out along the floor to `endX`. */
+function logoRail(ctx: SKRSContext2D, x: number, floorY: number, endX: number, radius: number): void {
+  const outward = Math.sign(endX - x);
+  ctx.beginPath();
+  ctx.moveTo(x, 0);
+  ctx.lineTo(x, floorY - radius);
+  ctx.arcTo(x, floorY, x + outward * radius, floorY, radius);
+  ctx.lineTo(endX, floorY);
+  ctx.stroke();
+}
+
+/**
+ * The My Lifts - Elevators logo's doors, redrawn as vectors in the banner's own
+ * blues and drawn straight onto the banner, with no tile behind them: two doors
+ * that drop down a shaft and turn out along the floor, each with its closing
+ * sensor. `height` sets its size; returns the width it took.
+ */
+function drawGameLogo(ctx: SKRSContext2D, x: number, y: number, height: number): number {
+  const scale = height / LOGO_BOX.height;
+  const { width } = LOGO_BOX;
+  const center = width / 2;
+  const floor = LOGO_BOX.height - 3;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+
+  ctx.lineCap = "butt";
+  ctx.lineJoin = "round";
+  for (const side of [-1, 1] as const) {
+    const at = (offset: number) => center + side * offset;
+    // The light edge runs just outside the white door and turns inside its corner.
+    ctx.lineWidth = 1.2;
+    ctx.strokeStyle = PALETTE.ring;
+    logoRail(ctx, at(13.8), floor - 4.9, at(center), 2);
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = "#ffffff";
+    logoRail(ctx, at(9.3), floor, at(center), 4);
+    // The door's closing sensor: a few bold dashes down the shaft, not along the floor.
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = PALETTE.banner;
+    ctx.setLineDash([9, 6]);
+    ctx.beginPath();
+    ctx.moveTo(at(9.3), 4);
+    ctx.lineTo(at(9.3), floor - 7);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.restore();
+  return width * scale;
+}
+
+/** The game's logo and name, in the banner's open space. */
+function drawWordmark(ctx: SKRSContext2D, x: number): void {
+  const logoHeight = 80;
+  const logoTop = (BANNER_HEIGHT - logoHeight) / 2;
+  const logoWidth = drawGameLogo(ctx, x, logoTop, logoHeight);
+
+  // One line: the name in white, the subtitle a step quieter. ExtraBold is the
+  // heaviest Nunito we ship, so a stroke in the text's own colour thickens it.
+  const baseline = logoTop + logoHeight / 2 + 15;
+  let textX = x + logoWidth + 20;
+  ctx.save();
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.font = `44px ${FONT.bold}`;
+  ctx.lineJoin = "round";
+  ctx.lineWidth = 2.5;
+  // Open tracking, so the heavy letters do not run into each other.
+  ctx.letterSpacing = "2.5px";
+  const heavyText = (text: string, color: string) => {
+    ctx.fillStyle = color;
+    ctx.strokeStyle = color;
+    ctx.strokeText(text, textX, baseline);
+    ctx.fillText(text, textX, baseline);
+  };
+  heavyText("My Lifts", "#ffffff");
+  textX += ctx.measureText("My Lifts ").width;
+  heavyText("– Elevators", mix(PALETTE.banner, "#ffffff", 0.84));
+  ctx.restore();
+}
+
+function drawBackground(ctx: SKRSContext2D, wordmarkX: number): void {
   ctx.fillStyle = PALETTE.background;
   ctx.fillRect(0, 0, CARD_WIDTH, CARD_HEIGHT);
 
-  const bannerHeight = 136;
+  const bannerHeight = BANNER_HEIGHT;
   ctx.fillStyle = PALETTE.banner;
   ctx.fillRect(0, 0, CARD_WIDTH, bannerHeight);
   ctx.save();
   ctx.beginPath();
   ctx.rect(0, 0, CARD_WIDTH, bannerHeight);
   ctx.clip();
-  // Stroked contour lines and rings, like a calm sea, instead of shading.
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = PALETTE.bannerLine;
-  for (let line = 0; line < 5; line += 1) {
-    const base = 30 + line * 26;
-    ctx.beginPath();
-    ctx.moveTo(480, base + 20);
-    ctx.bezierCurveTo(700, base - 40, 880, base + 60, CARD_WIDTH, base - 10);
-    ctx.stroke();
-  }
-  for (const [x, y, r] of [[1040, 10, 120], [1040, 10, 170], [300, -40, 110]] as const) {
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.stroke();
-  }
+  drawLiftShafts(ctx);
+  drawWordmark(ctx, wordmarkX);
   ctx.restore();
   ctx.lineWidth = 2;
   ctx.strokeStyle = "rgba(255,255,255,0.22)";
@@ -306,6 +468,9 @@ function drawHeader(ctx: SKRSContext2D, model: ProfileCardModel, nameX: number):
   const label = "STAFF PROFILE";
   const labelWidth = ctx.measureText(label).width + 32;
   roundedRect(ctx, CARD_WIDTH - PAD - labelWidth, 30, labelWidth, 36, 18);
+  // Solid first, so the lift shafts behind it do not show through the label.
+  ctx.fillStyle = PALETTE.banner;
+  ctx.fill();
   ctx.fillStyle = "rgba(255,255,255,0.16)";
   ctx.fill();
   ctx.fillStyle = "rgba(255,255,255,0.92)";
@@ -319,27 +484,21 @@ function drawHeader(ctx: SKRSContext2D, model: ProfileCardModel, nameX: number):
   fitFont(ctx, model.title, FONT.bold, 42, maxWidth, 26);
   ctx.fillText(truncate(ctx, model.title, maxWidth), nameX, 194);
 
-  let x = nameX;
   if (model.rank) {
     ctx.font = `20px ${FONT.semibold}`;
-    const rank = truncate(ctx, model.rank, 420);
+    const rank = truncate(ctx, model.rank, maxWidth - 36);
     const width = ctx.measureText(rank).width + 36;
-    roundedRect(ctx, x, 208, width, 34, 17);
-    ctx.fillStyle = PALETTE.pillFill;
+    roundedRect(ctx, nameX, 208, width, 34, 17);
+    // Filled with the member's Discord role colour, like the role in Discord;
+    // a rank with no role colour gets a quiet neutral pill instead.
+    ctx.fillStyle = model.rankColor ?? "rgba(255,255,255,0.1)";
     ctx.fill();
     ctx.lineWidth = 1.5;
-    ctx.strokeStyle = PALETTE.pillStroke;
+    ctx.strokeStyle = model.rankColor ? mix(model.rankColor, "#ffffff", 0.3) : "rgba(255,255,255,0.24)";
     ctx.stroke();
-    ctx.fillStyle = PALETTE.pillText;
+    ctx.fillStyle = "#ffffff";
     ctx.textBaseline = "middle";
-    ctx.fillText(rank, x + 18, 226);
-    x += width + 16;
-  }
-  if (model.subtitle) {
-    ctx.fillStyle = PALETTE.muted;
-    ctx.font = `21px ${FONT.regular}`;
-    ctx.textBaseline = "middle";
-    ctx.fillText(truncate(ctx, model.subtitle, CARD_WIDTH - PAD - x), x, 226);
+    ctx.fillText(rank, nameX + 18, 226);
   }
   ctx.textBaseline = "alphabetic";
 }
@@ -440,11 +599,12 @@ export async function renderProfileCard(model: ProfileCardModel): Promise<Buffer
 
   roundedRect(ctx, 0, 0, CARD_WIDTH, CARD_HEIGHT, 32);
   ctx.clip();
-  drawBackground(ctx);
-
   const avatarRadius = 76;
+  const nameX = PAD + avatarRadius * 2 + 46;
+  drawBackground(ctx, nameX);
+
   await drawAvatar(ctx, model, PAD + avatarRadius + 8, 160, avatarRadius);
-  drawHeader(ctx, model, PAD + avatarRadius * 2 + 46);
+  drawHeader(ctx, model, nameX);
   drawTiles(ctx, model, 268);
   drawBadges(ctx, model, 396);
 
