@@ -17,15 +17,16 @@ import { requiredPermission, sessionCommandNames } from "./definitions.js";
 import { HISTORY_IDS, parseAddCustomId, replyHistory, updateHistoryPage } from "./history.js";
 import { firstRecordedSession, presetDates, renderLeaderboard } from "./leaderboard.js";
 import {
-  addSession, editEnded, removeSession, showActive, showAddModal, showEditEndedModal, showManagePanel,
+  addSession, editEnded, removeSession, reopenSessionForm, showActive, showAddModal, showEditEndedModal, showManagePanel,
   showSessionDetails, showView,
 } from "./session-commands.js";
+import { SESSION_RETRY_PREFIX } from "./session-form.js";
 
 /** Component identifiers this feature answers for. Everything else is another feature's. */
 const EXACT_CUSTOM_IDS = new Set<string>(["leaderboard-user", HISTORY_IDS.manage]);
 const CUSTOM_ID_PREFIXES = [
   "refresh:", "details:", "history:", HISTORY_IDS.page,
-  "leaderboard:", "editended:", "remove:", HISTORY_IDS.add,
+  "leaderboard:", "editended:", "remove:", HISTORY_IDS.add, SESSION_RETRY_PREFIX,
 ];
 
 function ownsCustomId(customId: string): boolean {
@@ -151,6 +152,11 @@ export class SessionCommandHandler {
       await this.ctx.requirePermission(interaction, PermissionLevel.STAFF);
       const [, identityId, page] = interaction.customId.split(":");
       await updateHistoryPage(this.ctx, interaction, identityId!, Number(page));
+      return;
+    }
+    if (interaction.customId.startsWith(SESSION_RETRY_PREFIX)) {
+      // Sits on a private error reply, and the answers it refills are the clicker's own.
+      await reopenSessionForm(this.ctx, interaction, interaction.customId.slice(SESSION_RETRY_PREFIX.length));
       return;
     }
     const addFor = parseAddCustomId(interaction.customId);

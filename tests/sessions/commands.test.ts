@@ -8,11 +8,7 @@ import {
 } from "../../src/features/sessions/discord/commands/definitions.js";
 import { addCustomId, parseAddCustomId } from "../../src/features/sessions/discord/commands/history.js";
 import { leaderboardComponents, presetDates } from "../../src/features/sessions/discord/commands/leaderboard.js";
-import {
-  formatSessionDateTime,
-  friendlyPeriod,
-  parseSessionDateTime,
-} from "../../src/features/sessions/discord/commands/format.js";
+import { friendlyPeriod } from "../../src/features/sessions/discord/commands/format.js";
 import { PermissionLevel } from "../../src/shared/permissions.js";
 
 describe("Discord command permissions", () => {
@@ -104,19 +100,6 @@ describe("deployed command set", () => {
       VERIFICATION_UNVERIFIED_ROLE_ID: "1087383526078423070",
     })).map((command) => command.name);
     expect(withVerification).toContain("verification");
-  });
-});
-
-describe("manual session date input", () => {
-  it("accepts a simple local date and time in the reporting timezone", () => {
-    const parsed = parseSessionDateTime("11/07/2026 14:30", "Europe/Tallinn");
-    expect(parsed.toISOString()).toBe("2026-07-11T11:30:00.000Z");
-    expect(formatSessionDateTime(parsed, "Europe/Tallinn")).toBe("11/07/2026 14:30");
-  });
-
-  it("keeps accepting ISO timestamps and gives a useful error for invalid input", () => {
-    expect(parseSessionDateTime("2026-07-11T14:30:00Z", "Europe/Tallinn").toISOString()).toBe("2026-07-11T14:30:00.000Z");
-    expect(() => parseSessionDateTime("tomorrow afternoon", "Europe/Tallinn")).toThrow(/11\/07\/2026 14:30/);
   });
 });
 

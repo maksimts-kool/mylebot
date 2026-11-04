@@ -1,4 +1,3 @@
-import { ActionRowBuilder, TextInputBuilder, TextInputStyle } from "discord.js";
 import { appLogger } from "../../core/logger.js";
 
 export const PUBLIC_COMPONENT_LIFETIME_MS = 15 * 60_000;
@@ -42,11 +41,4 @@ export class PublicComponentTracker {
     this.track(messageId, userId, registration.onExpire);
     return "allowed";
   }
-}
-
-/** A single-line modal text field wrapped in the action row Discord requires. */
-export function textInputRow(id: string, label: string, value = "", required = true): ActionRowBuilder<TextInputBuilder> {
-  const field = new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(TextInputStyle.Short).setRequired(required);
-  if (value) field.setValue(value);
-  return new ActionRowBuilder<TextInputBuilder>().addComponents(field);
 }

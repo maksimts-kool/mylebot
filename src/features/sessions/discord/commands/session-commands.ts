@@ -1,18 +1,21 @@
 import {
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, ModalBuilder, MessageFlags,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, MessageFlags,
   type ButtonInteraction, type ChatInputCommandInteraction, type ModalSubmitInteraction, type StringSelectMenuInteraction,
 } from "discord.js";
-import { userError } from "../../../../core/errors.js";
+import { UserFacingError, userError } from "../../../../core/errors.js";
 import { BRAND_COLOR, SUCCESS_COLOR } from "../../../../shared/discord/colors.js";
-import { textInputRow } from "../../../../shared/discord/components.js";
 import { PermissionLevel } from "../../../../shared/permissions.js";
 import { commandActivityDuring, type CommandActivity } from "../../../../shared/staff-activity.js";
-import { assertDurationInvariant, formatDuration, totalsForPeriod } from "../../domain/accounting.js";
+import { assertDurationInvariant, totalsForPeriod } from "../../domain/accounting.js";
+import {
+  buildManualSession, clockTime, formDuration, localDate, type ManualSession, type SessionFormInput,
+} from "../../domain/manual-entry.js";
 import { recordedTimeMeetsSessionMinimum } from "../../domain/policy.js";
 import { sessionDetailEmbed, sessionOwner, statusIcon, statusLabel } from "../session-embed.js";
 import type { SessionCommandContext } from "./context.js";
-import { formatSessionDateTime, friendlyDuration, parseDuration, parseSessionDateTime } from "./format.js";
-import { addCustomId, replyHistory, type HistorySubject } from "./history.js";
+import { friendlyDuration } from "./format.js";
+import { addCustomId, parseAddCustomId, replyHistory, type HistorySubject } from "./history.js";
+import { SessionFormDrafts, readSessionForm, retryRow, sessionFormModal } from "./session-form.js";
 
 /** How many live sessions the roster lists before it stops and counts the rest. */
 const ACTIVE_ROSTER_LIMIT = 15;
@@ -32,18 +35,58 @@ async function commandsDuring(
   });
 }
 
-/** The add form, opened from the history's Add button. */
-export async function showAddModal(ctx: SessionCommandContext, interaction: ButtonInteraction, subject: HistorySubject): Promise<void> {
+/** Answers to add/edit forms the bot rejected, waiting for "Fix and resubmit". */
+const formDrafts = new SessionFormDrafts();
+
+/** The add form, opened from the history's Add button, or refilled after a mistake. */
+export async function showAddModal(
+  ctx: SessionCommandContext,
+  interaction: ButtonInteraction,
+  subject: HistorySubject,
+  values?: SessionFormInput,
+): Promise<void> {
   await ctx.requirePermission(interaction, PermissionLevel.ADMIN);
   if ("discordUserId" in subject && !await ctx.bloxlink.robloxForDiscord(subject.discordUserId)) {
     userError("That Discord user has no Bloxlink mapping");
   }
-  const modal = new ModalBuilder().setCustomId(addCustomId(subject)).setTitle("➕ Add completed session").addComponents(
-    textInputRow("start", "Start (example: 11/07/2026 14:30)"), textInputRow("end", "End (example: 11/07/2026 16:45)"),
-    textInputRow("active", "Active time (example: 2h 15m)"), textInputRow("inactive", "Inactive time (example: 10m)"),
-    textInputRow("note", "Reason for adding this session"),
-  );
-  await interaction.showModal(modal);
+  await interaction.showModal(sessionFormModal({
+    customId: addCustomId(subject), title: "➕ Add completed session", reasonLabel: "Reason for adding it",
+    timezone: ctx.config.REPORT_TIMEZONE, now: new Date(), ...(values ? { values } : {}),
+  }));
+}
+
+/** "Fix and resubmit" on a rejected form: the same form, with what was typed. */
+export async function reopenSessionForm(ctx: SessionCommandContext, interaction: ButtonInteraction, formId: string): Promise<void> {
+  const draft = formDrafts.get(interaction.user.id, formId);
+  if (!draft) userError("That form has expired. Open it again from the session history.");
+  const addFor = parseAddCustomId(formId);
+  if (addFor) await showAddModal(ctx, interaction, addFor, draft);
+  else if (formId.startsWith("editended:")) await showEditEndedModal(ctx, interaction, formId.slice("editended:".length), draft);
+}
+
+/**
+ * Reads a submitted add/edit form. When it is wrong, keeps the answers and says
+ * what to fix next to a button that reopens the form filled in, then returns null.
+ */
+async function acceptForm(
+  interaction: ModalSubmitInteraction,
+  build: (input: SessionFormInput) => ManualSession,
+): Promise<{ input: SessionFormInput; session: ManualSession } | null> {
+  const input = readSessionForm(interaction);
+  try {
+    const session = build(input);
+    if (!recordedTimeMeetsSessionMinimum(session.activeMs, session.inactiveMs)) userError("A session must be at least one minute long.");
+    formDrafts.forget(interaction.user.id, interaction.customId);
+    return { input, session };
+  } catch (error) {
+    if (!(error instanceof UserFacingError)) throw error;
+    formDrafts.save(interaction.user.id, interaction.customId, input);
+    const reply = { content: `Error: ${error.message}`, embeds: [], components: [retryRow(interaction.customId)] };
+    // Fixing it a second time replaces the last error instead of stacking another.
+    if (interaction.isFromMessage() && interaction.message.flags.has(MessageFlags.Ephemeral)) await interaction.update(reply);
+    else await interaction.reply({ ...reply, flags: MessageFlags.Ephemeral });
+    return null;
+  }
 }
 
 type ManagedSession = {
@@ -179,12 +222,10 @@ export async function showSessionDetails(ctx: SessionCommandContext, interaction
 
 export async function addSession(ctx: SessionCommandContext, interaction: ModalSubmitInteraction, subject: HistorySubject): Promise<void> {
   await ctx.requirePermission(interaction, PermissionLevel.ADMIN);
-  const start = parseSessionDateTime(interaction.fields.getTextInputValue("start"), ctx.config.REPORT_TIMEZONE);
-  const end = parseSessionDateTime(interaction.fields.getTextInputValue("end"), ctx.config.REPORT_TIMEZONE);
-  const active = parseDuration(interaction.fields.getTextInputValue("active"));
-  const inactive = parseDuration(interaction.fields.getTextInputValue("inactive"));
+  const accepted = await acceptForm(interaction, (input) => buildManualSession(input, ctx.config.REPORT_TIMEZONE, new Date()));
+  if (!accepted) return;
+  const { start, end, activeMs: active, inactiveMs: inactive } = accepted.session;
   assertDurationInvariant(start, end, active, inactive);
-  if (!recordedTimeMeetsSessionMinimum(active, inactive)) userError("A completed session must contain at least one minute of recorded time");
   let identity;
   if ("identityId" in subject) {
     identity = await ctx.db.identity.findUnique({ where: { id: subject.identityId } });
@@ -208,30 +249,34 @@ export async function addSession(ctx: SessionCommandContext, interaction: ModalS
     const activeEnd = new Date(start.getTime() + active);
     if (active) await tx.timeSegment.create({ data: { sessionId: created.id, state: "ACTIVE", startedAt: start, endedAt: activeEnd } });
     if (inactive) await tx.timeSegment.create({ data: { sessionId: created.id, state: "INACTIVE", startedAt: activeEnd, endedAt: end } });
-    await tx.auditEntry.create({ data: { sessionId: created.id, actorType: "DISCORD", actorId: interaction.user.id, action: "SESSION_ADD", note: interaction.fields.getTextInputValue("note") } });
+    await tx.auditEntry.create({ data: { sessionId: created.id, actorType: "DISCORD", actorId: interaction.user.id, action: "SESSION_ADD", note: accepted.input.note } });
     return created;
   });
   await ctx.publisher.refresh(session.id);
-  await interaction.reply({
+  const added = {
     embeds: [new EmbedBuilder().setColor(SUCCESS_COLOR).setTitle("✅ Session added").setDescription(`A completed session was added for **${identity.robloxUsername}**.`).addFields(
       { name: "🗓️ When", value: `<t:${Math.floor(start.getTime() / 1000)}:f> to <t:${Math.floor(end.getTime() / 1000)}:t>` },
       { name: "⏱️ Time recorded", value: `${friendlyDuration(active)} active · ${friendlyDuration(inactive)} inactive` },
       { name: "🆔 Session ID", value: `\`${session.id}\`` },
     )],
-    flags: MessageFlags.Ephemeral,
-  });
+    content: "",
+    components: [],
+  };
+  // Resubmitted from an error reply: turn that reply into the confirmation.
+  if (interaction.isFromMessage() && interaction.message.flags.has(MessageFlags.Ephemeral)) await interaction.update(added);
+  else await interaction.reply({ ...added, flags: MessageFlags.Ephemeral });
 }
 
 export async function editEnded(ctx: SessionCommandContext, interaction: ModalSubmitInteraction): Promise<void> {
   await ctx.requirePermission(interaction, PermissionLevel.ADMIN);
   const id = interaction.customId.slice("editended:".length);
-  const start = parseSessionDateTime(interaction.fields.getTextInputValue("start"), ctx.config.REPORT_TIMEZONE);
-  const end = parseSessionDateTime(interaction.fields.getTextInputValue("end"), ctx.config.REPORT_TIMEZONE);
-  const active = parseDuration(interaction.fields.getTextInputValue("active")); const inactive = parseDuration(interaction.fields.getTextInputValue("inactive"));
   const current = await ctx.db.session.findUnique({ where: { id } }); if (!current || current.state !== "ENDED" || current.deletedAt) userError("Completed session not found");
+  // Old rows can carry reconnecting time; it stays as it was and active time absorbs the rest.
   const reconnect = Number(current.reconnectMilliseconds);
+  const accepted = await acceptForm(interaction, (input) => buildManualSession(input, ctx.config.REPORT_TIMEZONE, new Date(), reconnect));
+  if (!accepted) return;
+  const { start, end, activeMs: active, inactiveMs: inactive } = accepted.session;
   assertDurationInvariant(start, end, active, inactive + reconnect);
-  if (!recordedTimeMeetsSessionMinimum(active, inactive)) userError("A completed session must contain at least one minute of recorded time");
   await ctx.db.$transaction(async (tx) => {
     await tx.timeSegment.deleteMany({ where: { sessionId: id } }); const activeEnd = new Date(start.getTime() + active);
     if (active) await tx.timeSegment.create({ data: { sessionId: id, state: "ACTIVE", startedAt: start, endedAt: activeEnd } });
@@ -241,29 +286,42 @@ export async function editEnded(ctx: SessionCommandContext, interaction: ModalSu
     await tx.session.update({ where: { id }, data: { startedAt: start, endedAt: end, lastEventAt: end, lastStateAt: end, activeMilliseconds: BigInt(active), inactiveMilliseconds: BigInt(inactive), reconnectMilliseconds: BigInt(reconnect) } });
     await tx.auditEntry.create({ data: {
       sessionId: id, actorType: "DISCORD", actorId: interaction.user.id, action: "SESSION_EDIT_ENDED",
-      note: interaction.fields.getTextInputValue("note"),
+      note: accepted.input.note,
       before: { startedAt: current.startedAt, endedAt: current.endedAt, activeMilliseconds: current.activeMilliseconds.toString(), inactiveMilliseconds: current.inactiveMilliseconds.toString(), reconnectMilliseconds: current.reconnectMilliseconds.toString() },
       after: { startedAt: start, endedAt: end, activeMilliseconds: String(active), inactiveMilliseconds: String(inactive), reconnectMilliseconds: String(reconnect) },
     } });
   });
   await ctx.publisher.refresh(id);
   // The form is opened from the manage panel, so show the new values there.
-  const panel = managePanel(await manageableSession(ctx, id), "✅ Session updated");
+  const panel = { ...managePanel(await manageableSession(ctx, id), "✅ Session updated"), content: "" };
   if (interaction.isFromMessage()) await interaction.update(panel);
   else await interaction.reply({ ...panel, flags: MessageFlags.Ephemeral });
 }
 
-export async function showEditEndedModal(ctx: SessionCommandContext, interaction: ButtonInteraction, id: string): Promise<void> {
+/** A form holds a start and an end time of day, so it can describe anything shorter than a day. */
+const FORM_MAX_LENGTH_MS = 24 * 3_600_000;
+
+export async function showEditEndedModal(
+  ctx: SessionCommandContext,
+  interaction: ButtonInteraction,
+  id: string,
+  values?: SessionFormInput,
+): Promise<void> {
   await ctx.requirePermission(interaction, PermissionLevel.ADMIN);
   const session = await manageableSession(ctx, id);
-  const modal = new ModalBuilder().setCustomId(`editended:${id}`).setTitle("✏️ Edit completed session").addComponents(
-    textInputRow("start", "Start (example: 11/07/2026 14:30)", formatSessionDateTime(session.startedAt, ctx.config.REPORT_TIMEZONE)),
-    textInputRow("end", "End (example: 11/07/2026 16:45)", formatSessionDateTime(session.endedAt!, ctx.config.REPORT_TIMEZONE)),
-    textInputRow("active", "Active time (example: 2h 15m)", formatDuration(session.activeMilliseconds)),
-    textInputRow("inactive", "Inactive time (example: 10m)", formatDuration(session.inactiveMilliseconds)),
-    textInputRow("note", "Reason for this edit"),
-  );
-  await interaction.showModal(modal);
+  const timezone = ctx.config.REPORT_TIMEZONE;
+  if (session.endedAt!.getTime() - session.startedAt.getTime() >= FORM_MAX_LENGTH_MS) {
+    userError("This session is a day or longer, which the edit form can't describe. It can only be removed.");
+  }
+  await interaction.showModal(sessionFormModal({
+    customId: `editended:${id}`, title: "✏️ Edit completed session", reasonLabel: "Reason for this edit", timezone, now: new Date(),
+    values: values ?? {
+      date: localDate(session.startedAt, timezone),
+      start: clockTime(session.startedAt, timezone),
+      end: clockTime(session.endedAt!, timezone),
+      inactive: formDuration(Number(session.inactiveMilliseconds)),
+    },
+  }));
 }
 
 export async function removeSession(ctx: SessionCommandContext, interaction: ButtonInteraction, id: string): Promise<void> {

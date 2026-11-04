@@ -23,14 +23,6 @@ export function totalsForPeriod(
   return { activeMs, inactiveMs, totalMs: activeMs + inactiveMs };
 }
 
-export function formatDuration(milliseconds: number | bigint): string {
-  const seconds = Math.max(0, Math.floor(Number(milliseconds) / 1000));
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const remainder = seconds % 60;
-  return `${hours}h ${minutes}m ${remainder}s`;
-}
-
 export function assertDurationInvariant(start: Date, end: Date, activeMs: number, inactiveMs: number): void {
   const total = end.getTime() - start.getTime();
   if (total < 0 || activeMs < 0 || inactiveMs < 0 || activeMs + inactiveMs !== total) {
