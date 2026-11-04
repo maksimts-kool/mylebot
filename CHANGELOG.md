@@ -4,7 +4,10 @@ All notable changes are recorded here.
 
 ## Unreleased
 
-_Nothing yet._
+- Badges now count from each member's first tracked shift instead of from launch day. Every shift since tracking began earns hours, and every month since then is ranked for **Staff of the month** and **Top 3**, so the first badge pass after deploying hands out what people have already earned. Each member gets one DM listing their new badges together. A month that the one-year session retention has started deleting is never ranked, so nobody wins on part of their time.
+- Gave the `/profile` card a banner: the My Lifts – Elevators doors logo and the game's name in bold, spaced lettering, beside a row of lift shafts with cars stopped at different floors.
+- The rank under a member's name on `/profile` is now filled with their Discord role colour — green for Managers and the Owner, purple for Supervisors, orange for Lift Engineers and Surfers, blue for Trainee Surfers — and shows the rank name without its number.
+- Removed the `@username · Discord` label from the `/profile` card, and its badge heading now reads **Since first shift** with the month the member was first tracked.
 
 ## 0.16.0 - 2026-11-04
 
