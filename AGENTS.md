@@ -11,23 +11,46 @@ The session data flow is:
 1. [`roblox/`](roblox/) observes player presence and sends authenticated event batches.
 2. [`src/features/sessions/api/routes.ts`](src/features/sessions/api/routes.ts) authenticates and validates ingestion requests.
 3. [`src/features/sessions/service/session-service.ts`](src/features/sessions/service/session-service.ts) owns lifecycle transitions, accounting, idempotency, and persistence.
-4. [`src/features/sessions/discord/publisher.ts`](src/features/sessions/discord/publisher.ts) publishes session state; [`src/features/sessions/discord/commands/`](src/features/sessions/discord/commands/) provides reporting and administration.
+4. [`src/features/sessions/service/publisher.ts`](src/features/sessions/service/publisher.ts) decides what Discord shows and keeps the message rows; [`src/features/sessions/discord/messenger.ts`](src/features/sessions/discord/messenger.ts) renders and posts it in the bot half; [`src/features/sessions/discord/commands/`](src/features/sessions/discord/commands/) provides reporting and administration.
 
 Discord is a projection and administration surface, not the source of session truth. Do not move lifecycle rules into API routes, jobs, or Discord handlers.
+
+## The two halves
+
+The application runs as two processes from one image, or as one process with `APP_ROLE=all`:
+
+- **server** — owns PostgreSQL and every integration: Roblox ingestion, command logs, the Taiga client and webhook, the portal endpoints, Bloxlink and the Roblox web APIs. It answers every external HTTP request and runs every scheduled job. It holds no Discord token and never loads `discord.js`.
+- **bot** — owns the Discord gateway and nothing else. It never creates a database client: everything it shows comes from the server half, and everything the server half wants shown arrives through the bot's ports.
+
+The halves talk through *ports* ([`src/core/link.ts`](src/core/link.ts)): object literals of async methods, named after the feature. Calls cross the container network on `LINK_PORT`, authenticated with `INTERNAL_SECRET`, or go straight into the same process under `APP_ROLE=all`. `LINK_PORT` is separate from `API_PORT` so that publishing the API, or proxying the portal's `/internal/*` routes, never exposes the link. Never register the link routes on the API server, and never publish `LINK_PORT`. Both paths run the same codec, so a single-process run fails on anything the wire could not carry.
+
+- Keep the split honest. [`tests/core/split.test.ts`](tests/core/split.test.ts) walks the runtime import graph: `src/bot.ts` must never reach `src/core/db.ts`, a feature's `service/`, `@prisma/client` or `pg`, and `src/server.ts` must never reach a `discord/` folder or `discord.js`. Type-only imports are fine and erased.
+- A port is an object literal. Only its own enumerable methods can be called, so never expose a class instance.
+- Values cross as `Date`, `bigint`, `Buffer`, `Map` and `Set` through the codec. Never hand-serialize a Roblox id; the codec never puts a native `bigint` on the wire.
+- A `UserFacingError` thrown in one half arrives as a `UserFacingError` in the other, so refusals keep their wording. Anything else arrives as a `RemoteError`, logged in full where it was thrown.
+- `LinkUnavailableError` means "the other half cannot act right now" — it is restarting, or Discord is not connected. Bot ports throw it when the gateway is not ready. Work on a timer treats it as "try later" and stays quiet. Never record something as shown in Discord when this was thrown.
+- Each half owns orchestration of what it starts. Jobs, webhooks and ingestion are the server's: it decides, asks the bot to draw and post, then records what the bot says it did. Interactions are the bot's: it renders, and calls one server method per action. Refusal reasons are decided in the server method, next to the rows they are about.
+- The bot asks the server which features run (`capabilities`) before it logs in, so Taiga's privileged intents follow the server's configuration. It reports `botReady` once the gateway is up, and the server runs every feature's `onBotReady` to catch Discord up. A server that restarts under a running bot asks the bot's `core.status` port instead.
 
 ## Feature architecture
 
 Code belongs to exactly one of three layers:
 
-- `src/core/` — configuration, database client, HTTP server, Discord client, logger, scheduler, the link between the two containers, and the `Feature` contract. Core must never import from `src/features/`.
-- `src/shared/` — services more than one feature needs (Bloxlink, runtime settings, permission levels, reusable Discord components).
-- `src/features/<name>/` — one self-contained slice, with `domain/` (pure), `service/` (orchestration and persistence), `api/` (transport), `discord/` (gateway surface), and an `index.ts` exporting `create<Name>Feature(ctx): Feature`.
+- `src/core/` — configuration, database client, HTTP server, Discord client, logger, scheduler, the link between the two halves, and the feature contracts. Core must never import from `src/features/`.
+- `src/shared/` — services more than one feature needs. Server-side: Bloxlink, runtime settings, permission roles, staff activity. Bot-side, under `src/shared/discord/`: access checks, presets, interaction logging. The shared server port is in [`src/shared/server-port.ts`](src/shared/server-port.ts).
+- `src/features/<name>/` — one self-contained slice:
+  - `domain/` — pure.
+  - `service/` and `api/` — the server half: orchestration, persistence and transport.
+  - `discord/` — the bot half.
+  - `link.ts` — the contract between the halves: port names and the shapes they carry, nothing either half runs.
+  - `server.ts` — exports `create<Name>Server(ctx): ServerFeature`.
+  - `bot.ts` — exports `create<Name>Bot(ctx): BotFeature`.
 
-A feature declares its routes, slash commands, background jobs, and lifecycle hooks through the `Feature` object; [`src/index.ts`](src/index.ts) only composes them. When adding a feature:
+A feature declares its routes, jobs, ports and lifecycle hooks on its `ServerFeature`, and its slash commands, `/config` pages, help and ports on its `BotFeature`. [`src/server.ts`](src/server.ts) and [`src/bot.ts`](src/bot.ts) compose them, and [`src/index.ts`](src/index.ts) only picks which half or halves this process runs. When adding a feature:
 
-- Decide which half of a split deployment each route belongs to. `Feature.routes` needs nothing but the database and runs in the `server` role; `Feature.gatewayRoutes` needs the Discord gateway, runs in the `bot` role, and lists the path patterns the server forwards there instead of answering. Getting this wrong is not a compile error — it is an endpoint that 500s only in production, in the container that cannot serve it.
-
-- Register it in [`src/index.ts`](src/index.ts), and in [`src/features/command-data.ts`](src/features/command-data.ts) if it deploys a slash command of its own — that file is what `scripts/deploy-commands.ts` deploys. Keep the two gated identically so a manual deploy cannot install a command the running bot ignores. A feature that only has settings contributes a `ConfigSection` instead of a command, and adds nothing to `command-data.ts`.
+- Put every HTTP route on the server half. The bot has no public endpoints. If a route needs Discord, it calls a bot port.
+- Give the bot half nothing that needs the database or an integration. If it needs data, add a method to the feature's server port.
+- Register it in [`src/server.ts`](src/server.ts) and [`src/bot.ts`](src/bot.ts), and in [`src/features/command-data.ts`](src/features/command-data.ts) if it deploys a slash command of its own — that file is what `scripts/deploy-commands.ts` deploys. Keep the two gated identically so a manual deploy cannot install a command the running bot ignores. A feature that only has settings contributes a `ConfigSection` instead of a command, and adds nothing to `command-data.ts`.
 - Namespace every component `customId` with the feature name. Features share the `interactionCreate` event, so each handler must ignore interactions it does not own.
 - Return `null` from the factory when the feature is not configured, rather than half-registering it.
 - Features must not import from each other. Promote anything genuinely shared into `src/shared/`.
@@ -48,12 +71,14 @@ Useful entry points:
 | --- | --- | --- |
 | Configuration and environment validation | [`src/core/config.ts`](src/core/config.ts) | API and service tests |
 | HTTP server, health checks, error contract | [`src/core/http.ts`](src/core/http.ts) | [`tests/sessions/api.test.ts`](tests/sessions/api.test.ts) |
-| Feature contract and composition | [`src/core/feature.ts`](src/core/feature.ts), [`src/index.ts`](src/index.ts) | — |
+| Feature contracts and composition | [`src/core/feature.ts`](src/core/feature.ts), [`src/server.ts`](src/server.ts), [`src/bot.ts`](src/bot.ts), [`src/index.ts`](src/index.ts) | [`tests/core/split.test.ts`](tests/core/split.test.ts) |
+| The link between the halves | [`src/core/link.ts`](src/core/link.ts) | [`tests/core/link.test.ts`](tests/core/link.test.ts) |
 | Roblox event ingestion | [`src/features/sessions/api/routes.ts`](src/features/sessions/api/routes.ts) | [`tests/sessions/api.test.ts`](tests/sessions/api.test.ts), [`tests/sessions/session-validation.test.ts`](tests/sessions/session-validation.test.ts) |
 | Session lifecycle | [`src/features/sessions/service/session-service.ts`](src/features/sessions/service/session-service.ts) | [`tests/sessions/session-validation.test.ts`](tests/sessions/session-validation.test.ts) |
 | Time accounting and reports | [`src/features/sessions/domain/`](src/features/sessions/domain/) | [`tests/sessions/accounting.test.ts`](tests/sessions/accounting.test.ts), [`tests/sessions/reporting.test.ts`](tests/sessions/reporting.test.ts) |
 | Runtime configuration | [`src/shared/runtime-settings.ts`](src/shared/runtime-settings.ts) | [`tests/shared/runtime-settings.test.ts`](tests/shared/runtime-settings.test.ts) |
-| Discord permissions | [`src/shared/permissions.ts`](src/shared/permissions.ts) | [`tests/sessions/commands.test.ts`](tests/sessions/commands.test.ts) |
+| Discord permissions | [`src/shared/permissions.ts`](src/shared/permissions.ts), [`src/shared/discord/access.ts`](src/shared/discord/access.ts), [`src/shared/permission-roles.ts`](src/shared/permission-roles.ts) | [`tests/sessions/commands.test.ts`](tests/sessions/commands.test.ts) |
+| Session publishing | [`src/features/sessions/service/publisher.ts`](src/features/sessions/service/publisher.ts), [`src/features/sessions/discord/messenger.ts`](src/features/sessions/discord/messenger.ts) | [`tests/sessions/publisher.test.ts`](tests/sessions/publisher.test.ts) |
 | Session commands | [`src/features/sessions/discord/commands/`](src/features/sessions/discord/commands/) | [`tests/sessions/commands.test.ts`](tests/sessions/commands.test.ts) |
 | `/config` panel and its sections | [`src/features/config/`](src/features/config/), [`src/shared/discord/config-section.ts`](src/shared/discord/config-section.ts) | [`tests/config/`](tests/config/) |
 | `/help` | [`src/features/help/`](src/features/help/), [`src/shared/discord/help.ts`](src/shared/discord/help.ts) | [`tests/help/`](tests/help/) |
@@ -116,24 +141,25 @@ Useful entry points:
 - Deleting a card means "declined" in every column except `In game`, where it means the shipped card was cleared off the board and the post keeps its `Approved` tag.
 - The bot flags a card row `deleting` before deleting the story in Taiga, so the webhook its own delete triggers is not read as somebody declining the post.
 - Webhook deliveries are deduplicated on a hash of the raw body. A delivery is claimed before it is applied, so a partially failed delivery is repaired by the reconcile sweep, not by a retry.
+- The webhook is answered by the server half even while the bot is away. A column change or decline whose post the bot could not retag (`LinkUnavailableError`) is put back on the card row, so the reconcile sweep that runs on `onBotReady` sees the difference and redoes it. Preserve that revert and its regression test in [`tests/taiga/sync.test.ts`](tests/taiga/sync.test.ts); without it a bot outage leaves posts stuck in their old column for good.
 - The reconcile sweep may only treat missing cards as deleted when the entire board was read successfully. Preserve that guard and its regression test; without it one failed API call declines every post.
 - Nothing older than `TaigaSettings.activatedAt` is ever touched. The integration must never back-fill existing forum posts.
 - Taiga `PATCH`/`PUT` requires the object's current `version`; read before writing if an edit path is ever added.
 
 ### Runtime settings and Discord
 
-- Every server setting is configured through `/config` and stored in PostgreSQL; none has an environment fallback. A feature contributes a settings page by returning a `ConfigSection` on `Feature.configSections`; `src/index.ts` collects those and passes them to the configuration feature, so features stay independent of one another. Only credentials and hosts come from the environment.
+- Every server setting is configured through `/config` and stored in PostgreSQL; none has an environment fallback. A feature contributes a settings page by returning a `ConfigSection` on `BotFeature.configSections`, reading and writing through its server port; `src/bot.ts` collects those and passes them to the configuration feature, so features stay independent of one another. Only credentials and hosts come from the environment.
 - A section renders itself and applies its own component interactions. The panel owns the command, the manager check, navigation, and the acknowledgement. Namespace every section component with `config:<sectionId>:`, and keep a section to four action rows so the panel's navigation row fits.
 - Build every page from the presets in [`src/shared/discord/config-presets.ts`](src/shared/discord/config-presets.ts) — `configPage`, the field-value helpers, and the button and select builders — rather than hand-rolling an embed or component. The presets are what keep independently contributed pages looking like one panel: they derive the page title from the section's own emoji and label, apply the brand colour, enforce the four-row limit, and give every page the same wording for an unset setting and the same shape of on/off switch. Extend the presets when a page needs something new.
-- `/help` is built the same way from `Feature.help`, so it can never list a command the bot does not answer.
-- Message intents are privileged and are requested only when Taiga is configured. Do not add them unconditionally — an unconfigured deployment would fail to log in.
-- Discord access is cumulative. Guild administrators have manager access; otherwise take the maximum permission level from database roles.
+- `/help` is built the same way from `BotFeature.help`, so it can never list a command the bot does not answer.
+- Message intents are privileged and are requested only when the server half reports that it runs Taiga. Do not add them unconditionally — an unconfigured deployment would fail to log in.
+- Discord access is cumulative. Guild administrators have manager access; otherwise take the maximum permission level from database roles. The bot reads the member's roles off the interaction and asks the server half which level they grant.
 - Slash-command definitions synchronize at startup. When command shapes change, keep startup synchronization, [`scripts/deploy-commands.ts`](scripts/deploy-commands.ts), tests, and README documentation aligned.
-- `DiscordPublisher.refresh` serialises per session id, and a first post claims its row with an insert on the unique `sessionId` rather than an upsert. Both halves of that matter: three independent callers drive refreshes (the sweep job, the periodic refresh job, the presence endpoint), and two arriving together used to read "no message yet", both post, and leave one message orphaned — stuck at whatever state it was posted in, next to a live one. A pass that loses the claim deletes the message it just sent. Do not turn either back into a plain upsert.
+- `SessionPublisher.refresh` (server half) serialises per session id, and a first post claims its row with an insert on the unique `sessionId` rather than an upsert. Both parts matter. Three independent callers drive refreshes: the sweep job, the periodic refresh job, and the presence endpoint. Two arriving together used to read "no message yet", both post, and leave one message orphaned — stuck at whatever state it was posted in, next to a live one. The bot's messenger only edits or posts and says which; a pass that loses the claim has the bot delete the message it just sent. Do not turn either back into a plain upsert.
 - A session owns two independent Discord messages: the full record in the logs channel (`DiscordMessage`) and the short staff-chat announcement (`SessionAnnouncement`). Either channel may be unset. The announcement is written once when the shift starts and again when it ends or is removed — never on the periodic refresh — so live sessions are not edited every minute.
 - The staff-chat announcement is a notification, not a record. `ANNOUNCEMENT_RETENTION_MILLISECONDS` after a shift settles, the `announcement cleanup` job takes the message down and drops its row; the logs channel keeps the permanent copy. Retention runs from `endedAt ?? deletedAt`, so removing an old session never resurrects its announcement. The job removes the message before deleting the row, so a failed removal retries instead of orphaning a message. The publisher enforces the same rule, and must keep doing so, or a restore or refresh would repost a shift that is already gone.
 - Anything that removes a session's data must take both messages down: the sub-minute check in the publisher, the low-rank purge, and the retention cleanup.
-- `DiscordPublisher.restore` runs on every bot start and re-renders only live sessions, announcements still up, and records whose `Session.updatedAt` falls inside `RESTORE_WINDOW_MILLISECONDS`. A finished record can only be stale if its row changed while the bot could not show it; do not widen this back to every record on file, which cost a burst of Discord calls per restart.
+- `SessionPublisher.restore` runs whenever the bot's gateway comes up (`onBotReady`). It first takes down removals queued while the bot was unreachable, then re-renders only live sessions, announcements still up, and records whose `Session.updatedAt` falls inside `RESTORE_WINDOW_MILLISECONDS`. A finished record can only be stale if its row changed while the bot could not show it; do not widen this back to every record on file, which cost a burst of Discord calls per restart.
 - Sessions and command logs describe the same people, and [`src/shared/staff-activity.ts`](src/shared/staff-activity.ts) is the only place allowed to read both features' tables — neither feature may reach into the other. Keep what it answers honest in both directions: somebody the session tracker has never seen is *untracked*, never "off shift", and command records are kept for `PROCESSED_EVENT_RETENTION_DAYS` while sessions are kept for a year, so an old shift answers "nothing ran" because its records are gone. Surfaces must show nothing in both cases rather than a zero or an accusation.
 - Discord publication failures must not become session state authority or corrupt persisted lifecycle state.
 
@@ -141,7 +167,7 @@ Useful entry points:
 
 - This is strict TypeScript with NodeNext ESM. Local TypeScript imports must use their emitted `.js` suffix.
 - Preserve `strict`, `noUncheckedIndexedAccess`, and `exactOptionalPropertyTypes` behavior from [`tsconfig.json`](tsconfig.json); fix types instead of weakening the compiler configuration.
-- Within a feature, keep pure logic in `domain/`, orchestration and persistence in `service/`, transport validation in `api/`, and Discord-specific behavior in `discord/`. Prefer putting new logic in `domain/` where it can be unit tested without a client or a database.
+- Within a feature, keep pure logic in `domain/`, orchestration and persistence in `service/`, transport validation in `api/`, and Discord-specific behavior in `discord/`. Prefer putting new logic in `domain/` where it can be unit tested without a client or a database. `service/` and `api/` are the server half and `discord/` is the bot half; neither imports the other, and both may import `domain/` and `link.ts`.
 - Reuse existing Zod schemas, Prisma transaction patterns, and error conventions before introducing new abstractions.
 - Validate at external boundaries: HTTP payloads, environment variables, Discord modal input, and external-service responses.
 - Avoid broad catch blocks and silent recovery. Expected user errors should remain distinguishable from operational failures.

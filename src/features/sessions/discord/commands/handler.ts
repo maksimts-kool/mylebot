@@ -4,20 +4,18 @@ import {
   type Interaction, type ModalSubmitInteraction, type StringSelectMenuInteraction,
 } from "discord.js";
 import type { Config } from "../../../../core/config.js";
-import type { Db } from "../../../../core/db.js";
 import { UserFacingError, userError } from "../../../../core/errors.js";
 import { appLogger } from "../../../../core/logger.js";
-import type { BloxlinkService } from "../../../../shared/bloxlink.js";
+import { hasPermission, requirePermission } from "../../../../shared/discord/access.js";
 import { PublicComponentTracker } from "../../../../shared/discord/components.js";
 import { InteractionLog, type InteractionOutcome } from "../../../../shared/discord/interaction-log.js";
-import { PermissionLevel, hasPermission, permissionLabel } from "../../../../shared/permissions.js";
-import type { RuntimeSettingsService } from "../../../../shared/runtime-settings.js";
-import type { BadgeService } from "../../service/badge-service.js";
-import type { DiscordPublisher } from "../publisher.js";
+import { PermissionLevel } from "../../../../shared/permissions.js";
+import type { SharedServerPort } from "../../../../shared/server-port.js";
+import type { SessionsServerPort } from "../../link.js";
 import type { SessionCommandContext } from "./context.js";
 import { requiredPermission, sessionCommandNames } from "./definitions.js";
 import { HISTORY_IDS, parseAddCustomId, replyHistory, updateHistoryPage } from "./history.js";
-import { firstRecordedSession, presetDates, renderLeaderboard } from "./leaderboard.js";
+import { presetDates, renderLeaderboard } from "./leaderboard.js";
 import { showBadgeGuide, showProfile } from "./profile.js";
 import {
   addSession, editEnded, removeSession, reopenSessionForm, showActive, showAddModal, showEditEndedModal, showManagePanel,
@@ -42,20 +40,15 @@ export class SessionCommandHandler {
 
   constructor(
     private readonly client: Client,
-    private readonly db: Db,
     private readonly config: Config,
-    publisher: DiscordPublisher,
-    bloxlink: BloxlinkService,
-    settings: RuntimeSettingsService,
-    badges: BadgeService,
+    sessions: SessionsServerPort,
+    shared: SharedServerPort,
   ) {
     this.ctx = {
-      db, config, publisher, bloxlink, settings, badges,
+      config, sessions, shared,
       publicComponents: this.publicComponents,
-      hasPermission: (interaction, required) => hasPermission(db, interaction, required),
-      requirePermission: async (interaction, required, message) => {
-        if (!await hasPermission(db, interaction, required)) userError(message ?? `${permissionLabel(required)} role required`);
-      },
+      hasPermission: (interaction, required) => hasPermission(shared, interaction, required),
+      requirePermission: (interaction, required, message) => requirePermission(shared, interaction, required, message),
       requirePublicComponentOwner: (interaction) => this.requirePublicComponentOwner(interaction),
     };
   }
@@ -112,7 +105,7 @@ export class SessionCommandHandler {
     if (interaction.commandName === "leaderboard") {
       await interaction.deferReply();
       const period = interaction.options.getString("period") ?? "month";
-      const { startDate, endDate } = presetDates(this.config, period, await firstRecordedSession(this.ctx));
+      const { startDate, endDate } = presetDates(this.config, period, await this.ctx.sessions.firstRecordedSession());
       return renderLeaderboard(this.ctx, interaction, startDate, endDate, 0, 0);
     }
     if (interaction.commandName === "profile") return showProfile(this.ctx, interaction);
@@ -133,7 +126,7 @@ export class SessionCommandHandler {
     if (interaction.customId.startsWith("refresh:")) {
       await interaction.deferUpdate();
       const sessionId = interaction.customId.slice(8);
-      await this.ctx.publisher.refresh(sessionId);
+      await this.ctx.sessions.refresh(sessionId);
       return { did: "refreshed the session message", fields: { sessionId } };
     }
     if (interaction.customId.startsWith("details:")) {

@@ -4,7 +4,7 @@ import {
   type ConfigSectionMeta,
 } from "../../../shared/discord/config-presets.js";
 import type { ConfigSection, ConfigView } from "../../../shared/discord/config-section.js";
-import type { VerificationService } from "../service/verification-service.js";
+import type { VerificationServerPort } from "../link.js";
 
 const META: ConfigSectionMeta = {
   id: "verification",
@@ -17,7 +17,7 @@ const META: ConfigSectionMeta = {
  * the environment, so this page reports what is configured and how the current
  * cycle stands; `/verification status` is the per-member drill-down.
  */
-export function verificationConfigSection(config: Config, service: VerificationService): ConfigSection {
+export function verificationConfigSection(config: Config, service: VerificationServerPort): ConfigSection {
   async function view(): Promise<ConfigView> {
     const status = await service.status();
     const now = new Date();

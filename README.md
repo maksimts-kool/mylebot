@@ -32,7 +32,17 @@ Check it is up at `http://127.0.0.1:3000/health` and `/ready` (`/ready` also che
 docker compose up --build -d
 ```
 
-This starts three containers from one image: `server` (HTTP API, runs migrations), `bot` (Discord), and `db` (PostgreSQL 17). Only `server` is published, on `127.0.0.1:3000`. For Portainer, use [`compose.portainer.yml`](compose.portainer.yml) and put the `.env` values in the stack environment. Deploy it as a Git stack from this repository so a pull-and-redeploy follows `main`. On a host that already runs a shared PostgreSQL, add [`compose.shared-db.yml`](compose.shared-db.yml) as an additional compose path: it disables the bundled `db` and points both containers at `shared-postgres` on the external `shared-db` network (override with `SHARED_DB_HOST` and `SHARED_DB_NETWORK`).
+This starts three containers from one image:
+
+- `server` — owns PostgreSQL and every integration: the Roblox API, command logs, the Taiga webhook, the portal endpoints, Bloxlink, and every scheduled job. It runs the migrations and is the only container published, on `127.0.0.1:3000`. It has no Discord token.
+- `bot` — holds the Discord gateway and nothing else. It has no database connection and no published port. It gets data from `server` and posts what `server` asks it to.
+- `db` — PostgreSQL 17.
+
+The two app containers call each other on port `3001` over the compose network, authenticated with `INTERNAL_SECRET`. That port is never published. Keep it out of your reverse proxy too: the proxy only needs port `3000`. If `bot` is down, `server` keeps recording sessions, command runs and Taiga changes, and Discord catches up when `bot` reconnects. If `server` is down, slash commands answer with an error.
+
+For Portainer on a host that already runs a shared PostgreSQL, deploy [`compose.portainer.yml`](compose.portainer.yml) as a Git stack from this repository, so a pull-and-redeploy follows `main`. Put the `.env` values in the stack environment. It has no bundled database: `server` connects to `shared-postgres` on the external `shared-db` network (override with `SHARED_DB_HOST` and `SHARED_DB_NETWORK`), and only `server` joins that network.
+
+Setting `APP_ROLE=all` instead runs both halves in one process, which is what `npm run dev` does.
 
 Put an HTTPS reverse proxy in front of the API — Roblox must reach it over HTTPS.
 
@@ -42,15 +52,16 @@ Every variable is listed in [`.env.example`](.env.example). The important ones:
 
 | Variable | Purpose |
 | --- | --- |
-| `DATABASE_URL` | PostgreSQL connection. Use host `db` inside Docker, `127.0.0.1` outside it. |
+| `DATABASE_URL` | PostgreSQL connection, used by `server` only. Use host `db` inside Docker, `127.0.0.1` outside it. |
 | `POSTGRES_PASSWORD` | Database password for Compose. Change it. |
-| `DISCORD_TOKEN` | Bot token. Empty runs the API only. |
+| `DISCORD_TOKEN` | Bot token, used by `bot` only. With `APP_ROLE=all`, empty runs the API only. |
 | `DISCORD_APPLICATION_ID`, `DISCORD_GUILD_ID` | Your Discord application and server. |
 | `BLOXLINK_API_KEY` | Maps Discord accounts to Roblox accounts. |
 | `ROBLOX_INGESTION_SECRET` | Shared secret with the Roblox game. Use 32+ random characters. |
 | `ROBLOX_UNIVERSE_ID`, `ROBLOX_GROUP_ID`, `ROBLOX_ALLOWED_PLACE_IDS` | Which game, group, and places are accepted. |
 | `ROBLOX_MIN_RANK`, `ROBLOX_MAX_RANK` | Group ranks that are tracked. |
 | `REPORT_TIMEZONE` | Timezone for reports and typed dates, e.g. `Europe/Tallinn`. |
+| `INTERNAL_SECRET` | Shared secret `server` and `bot` use with each other. Use 32+ random characters. |
 
 Optional features switch on when their variables are set:
 
@@ -143,7 +154,8 @@ GitHub runs the tests, raises the version, moves the changelog entries under it,
 ## Troubleshooting
 
 - **Won't start:** a required variable is missing or invalid — the error names it.
-- **`/ready` returns 503:** the database is unreachable or migrations have not run.
+- **`/ready` returns 503:** on `server`, the database is unreachable or migrations have not run. On `bot`, the Discord gateway is not connected yet.
+- **Commands answer "could not be completed":** `bot` cannot reach `server`. Check that `server` is healthy and both containers have the same `INTERNAL_SECRET`.
 - **Roblox gets 401:** the game's secret and `ROBLOX_INGESTION_SECRET` differ.
 - **No session messages:** pick a logs channel in `/config` and check the tracking page's health.
 - **Commands missing:** check the token and IDs, then run `npm run commands:deploy`.

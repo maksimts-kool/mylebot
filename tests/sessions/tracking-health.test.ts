@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   SWEEP_GRACE_MS, channelProblem, trackingConfigSection, trackingProblems,
 } from "../../src/features/sessions/discord/config-section.js";
+import { sessionsServerPort } from "../../src/features/sessions/service/sessions-port.js";
 
 function clientWith(channels: Record<string, object>, ready = true) {
   return {
@@ -61,7 +62,12 @@ describe("session tracking health", () => {
     const count = vi.fn().mockResolvedValueOnce(4).mockResolvedValueOnce(1);
     const db = { session: { count }, processedEvent: { findFirst: vi.fn().mockResolvedValue({ receivedAt: new Date("2026-11-04T12:00:00Z") }) } };
     const settings = { get: vi.fn().mockResolvedValue({ trackingEnabled: true, logsChannelId: "1", staffChannelId: "" }) };
-    const section = trackingConfigSection(clientWith({ 1: textChannel(ALL) }) as never, db as never, { HEARTBEAT_STALE_SECONDS: 75 } as never, settings as never);
+    // The counts come from the server half; the channel check is the bot's own.
+    const sessions = sessionsServerPort({
+      db: db as never, config: { HEARTBEAT_STALE_SECONDS: 75 } as never, settings: settings as never,
+      bloxlink: {} as never, badges: {} as never, publisher: {} as never,
+    });
+    const section = trackingConfigSection(clientWith({ 1: textChannel(ALL) }) as never, sessions);
 
     const before = Date.now();
     const fields = (await section.view()).embeds[0]!.toJSON().fields ?? [];

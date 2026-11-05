@@ -4,7 +4,9 @@ All notable changes are recorded here.
 
 ## Unreleased
 
-_Nothing yet._
+- Split the work between the two containers by what each one is for. `server` now owns PostgreSQL and every integration: the Roblox API, command logs, the Taiga webhook and board, the portal endpoints, Bloxlink, and every scheduled job. `bot` holds the Discord gateway and nothing else. It has no database connection and no Discord-unrelated secrets, and it gets everything it shows from `server`. `server` has no Discord token; it asks `bot` to post, edit and DM.
+- `server` now answers every external URL itself instead of forwarding command runs, the Taiga webhook and the portal endpoints to `bot`. While `bot` is down, command runs and Taiga changes are still recorded, and Discord catches up when it reconnects: queued session message removals, live sessions, and a Taiga reconcile. Previously those requests failed with `bot_unavailable`.
+- Merged `compose.shared-db.yml` into [`compose.portainer.yml`](compose.portainer.yml), which now always uses the shared PostgreSQL. Only `server` joins the `shared-db` network, and each container gets only the settings it needs. For a stack with its own database, use [`compose.yml`](compose.yml). Redeploying an existing Portainer stack needs the additional compose path removed. `bot` now needs `SERVER_INTERNAL_URL`, which both compose files set.
 
 ## 0.16.2 - 2026-11-05
 

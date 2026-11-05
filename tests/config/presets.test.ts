@@ -138,19 +138,27 @@ describe("reading a configuration interaction", () => {
 
 describe("every configuration page", () => {
   it("uses the panel's house style, so the pages read as one surface", async () => {
-    const settings = {
-      get: vi.fn().mockResolvedValue({ trackingEnabled: true, logsChannelId: "1", staffChannelId: "" }),
+    const sessions = {
+      trackingOverview: vi.fn().mockResolvedValue({
+        settings: { trackingEnabled: true, logsChannelId: "1", staffChannelId: "" },
+        liveSessions: 0,
+        overdueSessions: 0,
+        lastEventAt: null,
+      }),
+      setLogsChannel: vi.fn(),
+      setStaffChannel: vi.fn(),
+      setTrackingEnabled: vi.fn(),
     };
-    const db = {
-      permissionRole: { findMany: vi.fn().mockResolvedValue([]) },
-      session: { count: vi.fn().mockResolvedValue(0) },
-      processedEvent: { findFirst: vi.fn().mockResolvedValue(null) },
+    const roles = {
+      permissionRoles: vi.fn().mockResolvedValue([]),
+      permissionRole: vi.fn().mockResolvedValue(null),
+      setPermissionRole: vi.fn(),
+      removePermissionRole: vi.fn(),
     };
     const client = { guilds: { cache: { get: () => undefined } }, isReady: () => false };
-    const config = { HEARTBEAT_STALE_SECONDS: 75 };
     const sections = [
-      trackingConfigSection(client as never, db as never, config as never, settings as never),
-      permissionsSection(db as never, client as never, "guild-1"),
+      trackingConfigSection(client as never, sessions),
+      permissionsSection(roles, client as never, "guild-1"),
     ];
 
     for (const section of sections) {

@@ -2,12 +2,12 @@ import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, StringSelectMenuBuilder,
   type MessageActionRowComponentBuilder,
 } from "discord.js";
-import type { CommandLogThread } from "@prisma/client";
 import { BRAND_COLOR, ENDED_COLOR } from "../../../shared/discord/colors.js";
 import { compactDuration, timeIntoShift, type ShiftStatus } from "../../../shared/staff-activity.js";
 import { BLOCK_MINUTES } from "../domain/policy.js";
 import type { StoredStaff } from "../domain/roster.js";
 import { tierName } from "../domain/staff-ladder.js";
+import type { PanelServer } from "../link.js";
 
 /** Namespace for every component this feature owns. */
 export const CUSTOM_ID_PREFIX = "cmdlog";
@@ -70,7 +70,7 @@ function staffLine(member: StoredStaff, blockedUntil: BlockedUntil, shifts: Shif
  * and every control is in one place instead of repeated under each of them.
  */
 export function serverPanelEmbed(
-  server: CommandLogThread,
+  server: PanelServer,
   staff: StoredStaff[],
   blockedUntil: BlockedUntil,
   shifts: Shifts = new Map(),
@@ -130,7 +130,7 @@ function pickMenu(action: string, placeholder: string, staff: StoredStaff[], blo
  * the panel never shows a control that cannot do anything.
  */
 export function serverPanelComponents(
-  server: CommandLogThread,
+  server: PanelServer,
   staff: StoredStaff[],
   blockedUntil: BlockedUntil,
 ): ActionRowBuilder<MessageActionRowComponentBuilder>[] {
@@ -167,14 +167,4 @@ export function threadName(server: { serverType: string; jobId: string }): strin
   return `${label} ${server.jobId}`.slice(0, 100);
 }
 
-/** What the thread says when somebody moves a person's access from the panel. */
-export function accessNotice(
-  action: "disabled" | "restored",
-  username: string,
-  by: string,
-  until?: Date,
-): string {
-  return action === "disabled"
-    ? `🔒 ${by} disabled **${username}**'s command access for ${BLOCK_MINUTES} minutes${until ? `, until ${timestamp(until, "t")}` : ""}.`
-    : `🔓 ${by} gave **${username}**'s command access back.`;
-}
+export { accessNotice } from "../domain/notices.js";

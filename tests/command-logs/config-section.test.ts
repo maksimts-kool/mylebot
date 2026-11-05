@@ -2,6 +2,7 @@ import { ChannelType } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 import { UserFacingError } from "../../src/core/errors.js";
 import { commandLogsConfigSection } from "../../src/features/command-logs/discord/config-section.js";
+import { commandLogsServerPort } from "../../src/features/command-logs/service/command-logs-port.js";
 import { CONFIG_MAX_ROWS, NOT_CONFIGURED } from "../../src/shared/discord/config-presets.js";
 import type { CommandLogService } from "../../src/features/command-logs/service/command-log-service.js";
 import type { CommandLogSettings, CommandLogSettingsService } from "../../src/features/command-logs/service/settings.js";
@@ -32,7 +33,8 @@ function build(overrides: Partial<CommandLogSettings> = {}) {
   const service = {
     stats: vi.fn().mockResolvedValue({ servers: 3, blocks: 1, runsToday: 42 }),
   } as unknown as CommandLogService;
-  return { section: commandLogsConfigSection(settings, service), settings, service };
+  // The page in the bot half, talking to the settings in the server half.
+  return { section: commandLogsConfigSection(commandLogsServerPort({ settings, service })), settings, service };
 }
 
 describe("the command logs configuration page", () => {

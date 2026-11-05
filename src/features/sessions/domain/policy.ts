@@ -6,6 +6,12 @@ export const MINIMUM_SESSION_MILLISECONDS = 60_000;
 export const SESSION_RETENTION_YEARS = 1;
 
 /**
+ * The sweep runs every 15 seconds. A live session this far past its heartbeat
+ * deadline means the sweep is not closing it.
+ */
+export const SWEEP_GRACE_MS = 60_000;
+
+/**
  * How long a staff-chat announcement stays up once its shift is over. The
  * announcement is a notification, not a record — the logs channel keeps the
  * permanent copy — so it is taken down shortly after the shift settles instead
@@ -14,10 +20,11 @@ export const SESSION_RETENTION_YEARS = 1;
 export const ANNOUNCEMENT_RETENTION_MILLISECONDS = 5 * 60_000;
 
 /**
- * How far back the bot's startup pass re-renders finished session records.
+ * How far back the pass that runs when the bot's gateway comes up re-renders
+ * finished session records.
  *
  * A finished record can only be out of date in Discord if its session changed
- * while the bot could not show it: the API half ended the shift during a bot
+ * while the bot could not show it: the server half ended the shift during a bot
  * outage, or the startup sweep ended it before the gateway was ready. Either
  * way the row was written then, so its `updatedAt` says so. Re-editing every
  * record of the past year on each restart bought nothing but a burst of

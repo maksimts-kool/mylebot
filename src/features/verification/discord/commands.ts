@@ -13,13 +13,14 @@ import {
   type Interaction,
 } from "discord.js";
 import type { Config } from "../../../core/config.js";
-import type { Db } from "../../../core/db.js";
 import { UserFacingError, errorType, userError } from "../../../core/errors.js";
 import { appLogger } from "../../../core/logger.js";
+import { hasPermission, type AccessSource } from "../../../shared/discord/access.js";
 import type { HelpSection } from "../../../shared/discord/help.js";
 import { InteractionLog, type InteractionOutcome } from "../../../shared/discord/interaction-log.js";
-import { PermissionLevel, hasPermission } from "../../../shared/permissions.js";
-import type { VerificationService, VerificationStatus, VerificationStatusMember } from "../service/verification-service.js";
+import { PermissionLevel } from "../../../shared/permissions.js";
+import type { VerificationServerPort } from "../link.js";
+import type { VerificationStatus, VerificationStatusMember } from "../service/verification-service.js";
 
 export const verificationCommandData = [
   new SlashCommandBuilder()
@@ -167,9 +168,9 @@ export class VerificationCommandHandler {
 
   constructor(
     private readonly client: Client,
-    private readonly db: Db,
     private readonly config: Config,
-    private readonly service: VerificationService,
+    private readonly access: AccessSource,
+    private readonly service: VerificationServerPort,
   ) {}
 
   register(): void {
@@ -197,7 +198,7 @@ export class VerificationCommandHandler {
     if (interaction.isButton() && interaction.customId === VERIFICATION_CLOSE_ID) return this.close(interaction);
     if (!interaction.isChatInputCommand() || interaction.commandName !== "verification") return;
     if (interaction.guildId !== this.config.DISCORD_GUILD_ID) userError("This command is not available in this server");
-    if (!await hasPermission(this.db, interaction, PermissionLevel.MANAGER)) userError("Manager role required");
+    if (!await hasPermission(this.access, interaction, PermissionLevel.MANAGER)) userError("Manager role required");
     return this.replyStatus(interaction);
   }
 

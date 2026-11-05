@@ -1,12 +1,12 @@
 import { PermissionFlagsBits, type Client } from "discord.js";
-import type { Config } from "../../../core/config.js";
-import type { Db } from "../../../core/db.js";
 import {
   channelValue, configPage, configRow, countValue, enabledValue, field, note, problemsValue, refreshButton,
   selectedChannel, textChannelSelect, timeValue, toggleButton, toggleChoice, type ConfigSectionMeta,
 } from "../../../shared/discord/config-presets.js";
 import type { ConfigComponentInteraction, ConfigSection, ConfigView } from "../../../shared/discord/config-section.js";
-import type { RuntimeSettingsService } from "../../../shared/runtime-settings.js";
+import type { SessionsServerPort } from "../link.js";
+
+export { SWEEP_GRACE_MS } from "../domain/policy.js";
 
 const META: ConfigSectionMeta = {
   id: "tracking",
@@ -15,12 +15,6 @@ const META: ConfigSectionMeta = {
 };
 
 const ACTIONS = { logs: "logs", staff: "staff", toggle: "toggle" } as const;
-
-/**
- * The sweep runs every 15 seconds. A live session this far past its heartbeat
- * deadline means the sweep is not closing it.
- */
-export const SWEEP_GRACE_MS = 60_000;
 
 /** What the publisher needs in a channel to post, edit, and find its messages. */
 const CHANNEL_PERMISSIONS = [
@@ -65,17 +59,14 @@ export function channelProblem(client: Client, channelId: string, label: string)
   return missing.length ? `${label} is missing: ${missing.join(", ")}.` : null;
 }
 
-/** Session tracking: the on/off switch, where session messages go, and whether it is healthy. */
-export function trackingConfigSection(client: Client, db: Db, config: Config, settings: RuntimeSettingsService): ConfigSection {
+/**
+ * Session tracking: the on/off switch, where session messages go, and whether
+ * it is healthy. The counts come from the server half; whether the bot can
+ * post to each channel is read off the gateway here.
+ */
+export function trackingConfigSection(client: Client, sessions: Pick<SessionsServerPort, "trackingOverview" | "setLogsChannel" | "setStaffChannel" | "setTrackingEnabled">): ConfigSection {
   async function view(): Promise<ConfigView> {
-    const current = await settings.get();
-    const live = { state: { not: "ENDED" as const }, deletedAt: null };
-    const overdueBefore = new Date(Date.now() - config.HEARTBEAT_STALE_SECONDS * 1000 - SWEEP_GRACE_MS);
-    const [liveSessions, overdueSessions, lastEvent] = await Promise.all([
-      db.session.count({ where: live }),
-      db.session.count({ where: { ...live, lastEventAt: { lt: overdueBefore } } }),
-      db.processedEvent.findFirst({ orderBy: { receivedAt: "desc" }, select: { receivedAt: true } }),
-    ]);
+    const { settings: current, liveSessions, overdueSessions, lastEventAt } = await sessions.trackingOverview();
     const problems = trackingProblems({
       trackingEnabled: current.trackingEnabled,
       logsChannelId: current.logsChannelId,
@@ -92,7 +83,7 @@ export function trackingConfigSection(client: Client, db: Db, config: Config, se
         field("Logs channel", channelValue(current.logsChannelId)),
         field("Staff chat channel", channelValue(current.staffChannelId)),
         field("Live sessions", countValue(liveSessions)),
-        field("Last Roblox event", timeValue(lastEvent?.receivedAt, "R", "None on record")),
+        field("Last Roblox event", timeValue(lastEventAt, "R", "None on record")),
         note("Health", problemsValue(problems)),
       ],
       rows: [
@@ -105,15 +96,15 @@ export function trackingConfigSection(client: Client, db: Db, config: Config, se
 
   async function apply(interaction: ConfigComponentInteraction, action: string): Promise<ConfigView | null> {
     if (action === ACTIONS.logs) {
-      await settings.setLogsChannel(selectedChannel(interaction, "text", "Choose a text channel for session logs").id);
+      await sessions.setLogsChannel(selectedChannel(interaction, "text", "Choose a text channel for session logs").id);
       return null;
     }
     if (action === ACTIONS.staff) {
-      await settings.setStaffChannel(selectedChannel(interaction, "text", "Choose a text channel for staff announcements").id);
+      await sessions.setStaffChannel(selectedChannel(interaction, "text", "Choose a text channel for staff announcements").id);
       return null;
     }
     const enable = toggleChoice(action, ACTIONS.toggle);
-    if (enable !== null) await settings.setTrackingEnabled(enable);
+    if (enable !== null) await sessions.setTrackingEnabled(enable);
     return null;
   }
 

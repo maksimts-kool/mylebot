@@ -14,7 +14,7 @@ const THUMBNAIL_HOST = /(^|\.)rbxcdn\.com$/;
  * avatar never fails a profile.
  */
 export async function robloxHeadshot(robloxUserId: bigint, fetcher: typeof fetch = fetch): Promise<Buffer | null> {
-  const log = appLogger().child({ category: "discord" });
+  const log = appLogger().child({ category: "session" });
   try {
     const url = `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${robloxUserId}&size=420x420&format=Png&isCircular=false`;
     const response = await fetcher(url, { signal: AbortSignal.timeout(5_000) });

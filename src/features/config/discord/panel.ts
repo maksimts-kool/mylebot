@@ -3,13 +3,13 @@ import {
   type Client, type Interaction, type MessageActionRowComponentBuilder,
 } from "discord.js";
 import type { Config } from "../../../core/config.js";
-import type { Db } from "../../../core/db.js";
 import { UserFacingError, errorType, userError } from "../../../core/errors.js";
 import { appLogger } from "../../../core/logger.js";
+import { hasPermission, type AccessSource } from "../../../shared/discord/access.js";
 import { BRAND_COLOR } from "../../../shared/discord/colors.js";
 import type { ConfigComponentInteraction, ConfigRow, ConfigSection, ConfigView } from "../../../shared/discord/config-section.js";
 import { InteractionLog, type InteractionOutcome } from "../../../shared/discord/interaction-log.js";
-import { PermissionLevel, hasPermission } from "../../../shared/permissions.js";
+import { PermissionLevel } from "../../../shared/permissions.js";
 import {
   CONFIG_CLOSE_VALUE, CONFIG_CUSTOM_ID_PREFIX, CONFIG_HOME_VALUE, CONFIG_NAV_CUSTOM_ID,
 } from "./definitions.js";
@@ -34,7 +34,7 @@ function chosen(interaction: ConfigComponentInteraction): string | undefined {
 export class ConfigPanelHandler {
   constructor(
     private readonly client: Client,
-    private readonly db: Db,
+    private readonly access: AccessSource,
     private readonly config: Config,
     private readonly sections: ConfigSection[],
   ) {}
@@ -68,7 +68,7 @@ export class ConfigPanelHandler {
     if (this.config.DISCORD_GUILD_ID && interaction.guildId !== this.config.DISCORD_GUILD_ID) {
       userError("This command is not available in this server");
     }
-    if (!await hasPermission(this.db, interaction, PermissionLevel.MANAGER)) userError("Manager role required");
+    if (!await hasPermission(this.access, interaction, PermissionLevel.MANAGER)) userError("Manager role required");
 
     // Sections read Discord and the board over the network, which can outlast
     // the three-second acknowledgement window. Acknowledge first, always.

@@ -1,7 +1,10 @@
 import { Prisma } from "@prisma/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { localPeer, PortRegistry } from "../../src/core/link.js";
 import { createLogger } from "../../src/core/logger.js";
-import { buildAnnouncementActionRow, buildSessionActionRow, DiscordPublisher } from "../../src/features/sessions/discord/publisher.js";
+import { buildAnnouncementActionRow, buildSessionActionRow, SessionMessenger } from "../../src/features/sessions/discord/messenger.js";
+import { SESSIONS_PORT, type SessionsBotPort } from "../../src/features/sessions/link.js";
+import { SessionPublisher } from "../../src/features/sessions/service/publisher.js";
 
 const silent = createLogger({ service: "test", level: "silent" });
 
@@ -71,11 +74,17 @@ function liveSession(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** A publisher wired to in-memory channels, one per configured channel id. */
+/**
+ * The server half's publisher talking to the bot half's messenger exactly as
+ * the two containers do: through a port, with every argument and answer
+ * encoded and decoded on the way. The messenger posts to in-memory channels,
+ * one per configured channel id.
+ */
 function publisherFor(
   session: Record<string, unknown>,
   settings: Record<string, string>,
   commandGroups: Array<{ commandName: string; risk: string; _count: { _all: number } }> = [],
+  ready = true,
 ) {
   const channels = new Map<string, {
     id: string;
@@ -103,7 +112,7 @@ function publisherFor(
     return created;
   };
   const client = {
-    isReady: vi.fn().mockReturnValue(true),
+    isReady: vi.fn().mockReturnValue(ready),
     channels: { fetch: vi.fn(async (channelId: string) => channelFor(channelId)) },
   };
   const db = {
@@ -112,17 +121,21 @@ function publisherFor(
     sessionAnnouncement: { create: vi.fn().mockResolvedValue({}), upsert: vi.fn().mockResolvedValue({}), deleteMany: vi.fn() },
     commandLogEntry: { groupBy: vi.fn().mockResolvedValue(commandGroups) },
   };
-  const publisher = new DiscordPublisher(
-    client as never,
+  const config = { REPORT_TIMEZONE: "Europe/Tallinn" } as never;
+  const botPorts = new PortRegistry(silent);
+  botPorts.expose(SESSIONS_PORT, new SessionMessenger(client as never, config, silent).port());
+  const publisher = new SessionPublisher(
     db as never,
-    { REPORT_TIMEZONE: "Europe/Tallinn" } as never,
+    config,
     { discordForRoblox: vi.fn() } as never,
     { get: vi.fn().mockResolvedValue({ trackingEnabled: true, logsChannelId: "", staffChannelId: "", ...settings }) } as never,
+    localPeer(botPorts).port<SessionsBotPort>(SESSIONS_PORT),
     silent,
   );
   return {
     publisher,
     db,
+    client,
     channels,
     /** What a message was edited to, or undefined when it was never edited. */
     editsTo: (messageId: string) => edits.get(messageId),
@@ -341,6 +354,30 @@ describe("concurrent refreshes of one session", () => {
  * every restart. Only a session that changed while the bot could not show it
  * can be out of date, and its row says when it changed.
  */
+describe("while the bot cannot reach Discord", () => {
+  it("leaves every message alone and posts nothing", async () => {
+    const { publisher, db, channels } = publisherFor(liveSession(), { logsChannelId: "logs", staffChannelId: "staff" }, [], false);
+
+    await publisher.refreshMany(["session-1", "session-2"]);
+
+    expect(channels.size).toBe(0);
+    expect(db.discordMessage.create).not.toHaveBeenCalled();
+    // The first session already said Discord is away; the second is not tried.
+    expect(db.session.findUnique).toHaveBeenCalledTimes(1);
+  });
+
+  it("queues removals instead of forgetting them, and takes them down once Discord is back", async () => {
+    const { publisher, client, channels } = publisherFor(liveSession(), { logsChannelId: "logs" }, [], false);
+
+    expect(await publisher.removeMessages([{ channelId: "logs", messageId: "old-1" }])).toBe(false);
+    expect(channels.size).toBe(0);
+
+    client.isReady.mockReturnValue(true);
+    await publisher.restore();
+    expect(channels.get("logs")!.messages.delete).toHaveBeenCalledWith("old-1");
+  });
+});
+
 describe("catching Discord up after startup", () => {
   it("re-renders live sessions, open announcements, and only recently changed records", async () => {
     const { publisher, db } = publisherFor(liveSession(), { logsChannelId: "logs" });

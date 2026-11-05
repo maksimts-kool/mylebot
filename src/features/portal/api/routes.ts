@@ -44,8 +44,8 @@ export function portalRoutes({
   listVerifiedGuildMembers = async () => [],
 }: PortalRouteOptions): FastifyPluginAsync {
   return async (app) => {
-    // Internal endpoint used by the store-owners site to DM a Discord user through
-    // the bot's existing gateway connection. Authenticated with a shared secret.
+    // Internal endpoint used by the store-owners site to DM a Discord user. This
+    // half answers it; the bot half sends the DM. Authenticated with a shared secret.
     app.post("/internal/notify", async (request, reply) => {
       if (!config.SITE_NOTIFY_SECRET) return reply.code(503).send({ error: "notify_disabled" });
       if (!secretMatches(request.headers.authorization, config.SITE_NOTIFY_SECRET)) {

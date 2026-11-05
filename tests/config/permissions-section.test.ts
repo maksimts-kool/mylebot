@@ -1,6 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
-import { permissionsSection } from "../../src/features/config/sections/permissions.js";
+import { permissionsSection, type PermissionRoleStore } from "../../src/features/config/sections/permissions.js";
+import { PermissionRoleService } from "../../src/shared/permission-roles.js";
 import { PermissionLevel } from "../../src/shared/permissions.js";
+
+/** The page in the bot half, reading and writing through the server half's role table. */
+function rolesIn(db: unknown): PermissionRoleStore {
+  const service = new PermissionRoleService(db as never);
+  return {
+    permissionRoles: () => service.list(),
+    permissionRole: (roleId) => service.get(roleId),
+    setPermissionRole: (roleId, level) => service.set(roleId, level),
+    removePermissionRole: (roleId) => service.remove(roleId),
+  };
+}
 
 function guildClient(roleNames: Record<string, string>) {
   return {
@@ -48,7 +60,7 @@ describe("role permission management", () => {
         ]),
       },
     };
-    const section = permissionsSection(db as never, guildClient({ 10: "Leads", 20: "Moderators" }) as never, "guild-1");
+    const section = permissionsSection(rolesIn(db), guildClient({ 10: "Leads", 20: "Moderators" }) as never, "guild-1");
 
     const view = await section.view();
     const embed = view.embeds[0]!.toJSON();
@@ -60,13 +72,13 @@ describe("role permission management", () => {
 
   it("offers only the revoke menu once at least one role is configured", async () => {
     const db = { permissionRole: { findMany: vi.fn().mockResolvedValue([]) } };
-    const section = permissionsSection(db as never, guildClient({}) as never, "guild-1");
+    const section = permissionsSection(rolesIn(db), guildClient({}) as never, "guild-1");
     expect((await section.view()).components).toHaveLength(1);
   });
 
   it("asks which level a newly chosen role should get", async () => {
     const db = { permissionRole: { findUnique: vi.fn().mockResolvedValue(null) } };
-    const section = permissionsSection(db as never, guildClient({ 30: "Helpers" }) as never, "guild-1");
+    const section = permissionsSection(rolesIn(db), guildClient({ 30: "Helpers" }) as never, "guild-1");
 
     const view = await section.apply(roleSelect("30") as never, "role");
     expect(view?.embeds[0]!.toJSON().description).toContain("<@&30>");
@@ -78,7 +90,7 @@ describe("role permission management", () => {
     const upsert = vi.fn();
     const deleteMany = vi.fn();
     const db = { permissionRole: { findMany: vi.fn().mockResolvedValue([]), upsert, deleteMany } };
-    const section = permissionsSection(db as never, guildClient({}) as never, "guild-1");
+    const section = permissionsSection(rolesIn(db), guildClient({}) as never, "guild-1");
 
     await section.apply(button as never, `level:40:${PermissionLevel.ADMIN}`);
     expect(upsert).toHaveBeenCalledWith({
@@ -96,7 +108,7 @@ describe("role permission management", () => {
 
   it("refuses a level that is not one of the three assignable ones", async () => {
     const db = { permissionRole: { upsert: vi.fn() } };
-    const section = permissionsSection(db as never, guildClient({}) as never, "guild-1");
+    const section = permissionsSection(rolesIn(db), guildClient({}) as never, "guild-1");
     await expect(section.apply(button as never, "level:60:1")).rejects.toThrow(/Invalid permission level/);
     expect(db.permissionRole.upsert).not.toHaveBeenCalled();
   });

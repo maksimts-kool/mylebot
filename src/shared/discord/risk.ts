@@ -18,9 +18,6 @@ const RISK_COLOR: Record<CommandRisk, number> = {
   LOW: ACTIVE_COLOR, MEDIUM: INACTIVE_COLOR, HIGH: HIGH_COLOR, CRITICAL: DANGER_COLOR,
 };
 
-/** Worst first, which is the order anything summarising a run of them reads in. */
-export const RISK_ORDER: readonly CommandRisk[] = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
-
 export function riskLabel(risk: CommandRisk): string {
   return RISK_LABEL[risk];
 }

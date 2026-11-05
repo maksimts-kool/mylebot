@@ -6,16 +6,28 @@ const csv = z.string().default("").transform((value) => value.split(",").map((v)
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   /**
-   * Which half of the application this process runs. `all` is one container
-   * doing both, which is how a single-container deployment stays working;
-   * `server` answers HTTP, `bot` talks to Discord and runs the scheduled jobs.
+   * Which half of the application this process runs. `server` owns the
+   * database and every integration — Roblox, Taiga, Bloxlink — and runs the
+   * scheduled jobs; `bot` holds the Discord gateway and never touches the
+   * database. `all` is one process doing both, for a single container.
    */
   APP_ROLE: z.enum(["all", "server", "bot"]).default("all"),
   /**
-   * Where the `server` role reaches the `bot` role, on the private container
-   * network — `http://bot:3000`. Unused when one process runs both halves.
+   * Where the `server` role reaches the `bot` role's link port, on the private
+   * container network — `http://bot:3001`. Unused when one process runs both halves.
    */
   BOT_INTERNAL_URL: z.string().url().or(z.literal("")).default(""),
+  /**
+   * Where the `bot` role reaches the `server` role's link port —
+   * `http://server:3001`. Unused when one process runs both halves.
+   */
+  SERVER_INTERNAL_URL: z.string().url().or(z.literal("")).default(""),
+  /**
+   * The port the two halves call each other on. It is kept apart from
+   * `API_PORT` so that publishing the API, or proxying `/internal/*` to it for
+   * the portal, never exposes the link. Never publish it.
+   */
+  LINK_PORT: z.coerce.number().int().min(1).max(65_535).default(3001),
   /** Shared secret for the endpoints only the two containers talk to. */
   INTERNAL_SECRET: z
     .string()
@@ -26,7 +38,8 @@ const schema = z.object({
   LOG_FORMAT: z.enum(["pretty", "json"]).default("pretty"),
   /** Containers have no TTY, so `auto` drops colour there; `always` keeps it. */
   LOG_COLOR: z.enum(["auto", "always", "never"]).default("auto"),
-  DATABASE_URL: z.string().min(1),
+  /** Only the `server` half connects to PostgreSQL; the `bot` half never reads this. */
+  DATABASE_URL: z.string().default(""),
   DISCORD_TOKEN: z.string().default(""),
   DISCORD_APPLICATION_ID: z.string().default(""),
   DISCORD_GUILD_ID: z.string().default(""),
@@ -36,15 +49,18 @@ const schema = z.object({
   VERIFICATION_UNVERIFIED_ROLE_ID: z.string().default(""),
   BLOXLINK_API_KEY: z.string().default(""),
   BLOXLINK_BASE_URL: z.string().url().default("https://api.blox.link/v4/public"),
-  ROBLOX_INGESTION_SECRET: z.string().min(16),
+  ROBLOX_INGESTION_SECRET: z
+    .string()
+    .default("")
+    .refine((value) => value === "" || value.length >= 16, "ROBLOX_INGESTION_SECRET must be at least 16 characters"),
   // Shared secret for the store-owners site's DM notification endpoint.
   // Empty disables POST /internal/notify entirely.
   SITE_NOTIFY_SECRET: z
     .string()
     .default("")
     .refine((value) => value === "" || value.length >= 16, "SITE_NOTIFY_SECRET must be at least 16 characters when set"),
-  ROBLOX_UNIVERSE_ID: z.coerce.bigint().refine((value) => value > 0n, "ROBLOX_UNIVERSE_ID must be positive"),
-  ROBLOX_GROUP_ID: z.coerce.bigint().refine((value) => value > 0n, "ROBLOX_GROUP_ID must be positive"),
+  ROBLOX_UNIVERSE_ID: z.coerce.bigint().refine((value) => value >= 0n, "ROBLOX_UNIVERSE_ID must be positive").default(0n),
+  ROBLOX_GROUP_ID: z.coerce.bigint().refine((value) => value >= 0n, "ROBLOX_GROUP_ID must be positive").default(0n),
   ROBLOX_ALLOWED_PLACE_IDS: csv.transform((ids, context) => ids.map((id) => {
     try {
       const value = BigInt(id);
@@ -80,14 +96,40 @@ const schema = z.object({
 
 export type Config = z.infer<typeof schema>;
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const parsed = schema.parse(env);
+/** Whether this process runs the half that owns the database and the integrations. */
+export function runsServer(config: Pick<Config, "APP_ROLE">): boolean {
+  return config.APP_ROLE !== "bot";
+}
+
+/** Whether this process runs the half that holds the Discord gateway. */
+export function runsBot(config: Pick<Config, "APP_ROLE">): boolean {
+  return config.APP_ROLE !== "server";
+}
+
+/**
+ * What only the `server` half needs. The `bot` half has no database and talks
+ * to no integration, so it is not asked for any of it.
+ */
+function validateServer(parsed: Config): void {
+  if (!parsed.DATABASE_URL) throw new Error("DATABASE_URL must be set");
+  if (!parsed.ROBLOX_INGESTION_SECRET) throw new Error("ROBLOX_INGESTION_SECRET must be set");
+  if (parsed.ROBLOX_UNIVERSE_ID <= 0n) throw new Error("ROBLOX_UNIVERSE_ID must be positive");
+  if (parsed.ROBLOX_GROUP_ID <= 0n) throw new Error("ROBLOX_GROUP_ID must be positive");
   if (parsed.ROBLOX_MIN_RANK > parsed.ROBLOX_MAX_RANK) {
     throw new Error("ROBLOX_MIN_RANK cannot exceed ROBLOX_MAX_RANK");
   }
   if (parsed.ROBLOX_ALLOWED_PLACE_IDS.length === 0) {
     throw new Error("ROBLOX_ALLOWED_PLACE_IDS must contain at least one place ID");
   }
+  const taigaFields = [parsed.TAIGA_USERNAME, parsed.TAIGA_PASSWORD, parsed.TAIGA_PROJECT_SLUG];
+  if (taigaFields.some(Boolean) && !taigaFields.every(Boolean)) {
+    throw new Error("TAIGA_USERNAME, TAIGA_PASSWORD, and TAIGA_PROJECT_SLUG must be set together");
+  }
+}
+
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  const parsed = schema.parse(env);
+  if (runsServer(parsed)) validateServer(parsed);
   try {
     new Intl.DateTimeFormat("en", { timeZone: parsed.REPORT_TIMEZONE }).format();
   } catch {
@@ -100,9 +142,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (parsed.APP_ROLE === "server" && !parsed.BOT_INTERNAL_URL) {
     throw new Error("BOT_INTERNAL_URL must point at the bot container when APP_ROLE is 'server'");
   }
-  const taigaFields = [parsed.TAIGA_USERNAME, parsed.TAIGA_PASSWORD, parsed.TAIGA_PROJECT_SLUG];
-  if (taigaFields.some(Boolean) && !taigaFields.every(Boolean)) {
-    throw new Error("TAIGA_USERNAME, TAIGA_PASSWORD, and TAIGA_PROJECT_SLUG must be set together");
+  if (parsed.APP_ROLE === "bot") {
+    if (!parsed.SERVER_INTERNAL_URL) throw new Error("SERVER_INTERNAL_URL must point at the server container when APP_ROLE is 'bot'");
+    // A bot container without a token has nothing to do at all.
+    if (!parsed.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN must be set when APP_ROLE is 'bot'");
   }
   return parsed;
 }

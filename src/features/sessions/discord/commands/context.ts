@@ -1,23 +1,18 @@
 import type { ButtonInteraction, Interaction, StringSelectMenuInteraction } from "discord.js";
 import type { Config } from "../../../../core/config.js";
-import type { Db } from "../../../../core/db.js";
-import type { BloxlinkService } from "../../../../shared/bloxlink.js";
 import type { PublicComponentTracker } from "../../../../shared/discord/components.js";
-import type { RuntimeSettingsService } from "../../../../shared/runtime-settings.js";
-import type { BadgeService } from "../../service/badge-service.js";
-import type { DiscordPublisher } from "../publisher.js";
+import type { SharedServerPort } from "../../../../shared/server-port.js";
+import type { SessionsServerPort } from "../../link.js";
 
 /**
  * Everything the individual command modules need. The handler owns the shared
- * state and the permission checks; the modules stay free of wiring.
+ * state and the permission checks; the modules stay free of wiring. Session
+ * state lives with the server half, reached through `sessions`.
  */
 export interface SessionCommandContext {
-  db: Db;
   config: Config;
-  publisher: DiscordPublisher;
-  badges: BadgeService;
-  bloxlink: BloxlinkService;
-  settings: RuntimeSettingsService;
+  sessions: SessionsServerPort;
+  shared: SharedServerPort;
   publicComponents: PublicComponentTracker;
   /** Throws a user-facing "<Level> role required" error when the caller is short. */
   requirePermission(interaction: Interaction, required: number, message?: string): Promise<void>;

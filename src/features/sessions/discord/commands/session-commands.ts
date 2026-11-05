@@ -6,7 +6,6 @@ import { UserFacingError, userError } from "../../../../core/errors.js";
 import { BRAND_COLOR, SUCCESS_COLOR } from "../../../../shared/discord/colors.js";
 import type { InteractionOutcome } from "../../../../shared/discord/interaction-log.js";
 import { PermissionLevel } from "../../../../shared/permissions.js";
-import { commandActivityDuring, type CommandActivity } from "../../../../shared/staff-activity.js";
 import { assertDurationInvariant, totalsForPeriod } from "../../domain/accounting.js";
 import {
   buildManualSession, clockTime, formDuration, localDate, type ManualSession, type SessionFormInput,
@@ -21,21 +20,6 @@ import { SessionFormDrafts, readSessionForm, retryRow, sessionFormModal } from "
 /** How many live sessions the roster lists before it stops and counts the rest. */
 const ACTIVE_ROSTER_LIMIT = 15;
 
-/**
- * The Adonis commands run during a shift. A shift still running is asked about
- * up to this moment, so the reply counts everything typed so far.
- */
-async function commandsDuring(
-  ctx: SessionCommandContext,
-  session: { startedAt: Date; endedAt: Date | null; identity: { robloxUserId: bigint } },
-): Promise<CommandActivity> {
-  return commandActivityDuring(ctx.db, {
-    robloxUserId: session.identity.robloxUserId,
-    from: session.startedAt,
-    to: session.endedAt ?? new Date(),
-  });
-}
-
 /** Answers to add/edit forms the bot rejected, waiting for "Fix and resubmit". */
 const formDrafts = new SessionFormDrafts();
 
@@ -47,7 +31,7 @@ export async function showAddModal(
   values?: SessionFormInput,
 ): Promise<InteractionOutcome> {
   await ctx.requirePermission(interaction, PermissionLevel.ADMIN);
-  if ("discordUserId" in subject && !await ctx.bloxlink.robloxForDiscord(subject.discordUserId)) {
+  if ("discordUserId" in subject && !await ctx.shared.robloxForDiscord(subject.discordUserId)) {
     userError("That Discord user has no Bloxlink mapping");
   }
   await interaction.showModal(sessionFormModal({
@@ -105,15 +89,6 @@ type ManagedSession = {
   identity: { robloxUsername: string; discordUserId: string | null };
 };
 
-/** A completed session that may be edited or removed by hand, or a user error. */
-async function manageableSession(ctx: SessionCommandContext, id: string) {
-  const session = await ctx.db.session.findUnique({ where: { id }, include: { identity: true } });
-  if (!session || session.deletedAt) userError("Session not found");
-  if (session.state !== "ENDED") userError("Live sessions cannot be managed");
-  if (!recordedTimeMeetsSessionMinimum(session.activeMilliseconds, session.inactiveMilliseconds)) userError("Session not found");
-  return session;
-}
-
 /** The private edit/remove panel for one completed session. */
 function managePanel(session: ManagedSession, notice?: string): { embeds: EmbedBuilder[]; components: Array<ActionRowBuilder<ButtonBuilder>> } {
   const totals = Number(session.activeMilliseconds) + Number(session.inactiveMilliseconds);
@@ -135,7 +110,7 @@ export async function showManagePanel(ctx: SessionCommandContext, interaction: S
   await ctx.requirePermission(interaction, PermissionLevel.ADMIN);
   const id = interaction.values[0];
   if (!id) userError("Choose a session");
-  const session = await manageableSession(ctx, id);
+  const session = await ctx.sessions.manageableSession(id);
   await interaction.reply({ ...managePanel(session), flags: MessageFlags.Ephemeral });
   return { did: `opened the manage panel for ${session.identity.robloxUsername}'s session`, fields: { sessionId: id } };
 }
@@ -148,13 +123,7 @@ export async function showManagePanel(ctx: SessionCommandContext, interaction: S
 export async function showView(ctx: SessionCommandContext, interaction: ChatInputCommandInteraction): Promise<InteractionOutcome> {
   await interaction.deferReply();
   const user = interaction.options.getUser("user", true);
-  let identity = await ctx.db.identity.findFirst({ where: { discordUserId: user.id } });
-  if (!identity) {
-    const mapped = await ctx.bloxlink.robloxForDiscord(user.id);
-    if (!mapped) userError("That member hasn't linked a Roblox account with Bloxlink yet");
-    identity = await ctx.db.identity.findUnique({ where: { robloxUserId: mapped.userId } });
-  }
-  return replyHistory(ctx, interaction, identity ? { identityId: identity.id } : { discordUserId: user.id }, "public");
+  return replyHistory(ctx, interaction, await ctx.sessions.historySubject(user.id), "public");
 }
 
 export async function showActive(ctx: SessionCommandContext, interaction: ChatInputCommandInteraction): Promise<InteractionOutcome> {
@@ -165,25 +134,9 @@ export async function showActive(ctx: SessionCommandContext, interaction: ChatIn
   if (!isSelf) {
     await ctx.requirePermission(interaction, PermissionLevel.ADMIN, "Admin role required to view another member's active session");
   }
-  let identity = await ctx.db.identity.findFirst({ where: { discordUserId: target.id } });
-  if (!identity) {
-    // No local record yet — that only exists once we've tracked a session for
-    // them. Resolve via Bloxlink so we can tell "never verified" apart from
-    // "verified but never tracked / not in game right now".
-    const mapped = await ctx.bloxlink.robloxForDiscord(target.id);
-    if (!mapped) userError(isSelf ? "You haven't linked a Roblox account with Bloxlink yet" : "That member hasn't linked a Roblox account with Bloxlink yet");
-    identity = await ctx.db.identity.findUnique({ where: { robloxUserId: mapped.userId } });
-  }
-  if (!identity) userError(isSelf ? "You have no active session right now" : "That member has no active session right now");
-  const session = await ctx.db.session.findFirst({
-    where: { identityId: identity.id, state: { not: "ENDED" }, deletedAt: null },
-    include: { segments: true, identity: true },
-    orderBy: { startedAt: "desc" },
-  });
-  if (!session) userError(isSelf ? "You have no active session right now" : `${identity.robloxUsername} has no active session right now`);
-  const commands = await commandsDuring(ctx, session);
-  await interaction.editReply({ embeds: [sessionDetailEmbed({ ...session, commands })] });
-  return { did: `sent ${identity.robloxUsername}'s live session`, fields: { state: session.state, commands: commands.total } };
+  const session = await ctx.sessions.liveSessionFor(target.id, isSelf);
+  await interaction.editReply({ embeds: [sessionDetailEmbed(session)] });
+  return { did: `sent ${session.identity.robloxUsername}'s live session`, fields: { state: session.state, commands: session.commands.total } };
 }
 
 /**
@@ -192,11 +145,7 @@ export async function showActive(ctx: SessionCommandContext, interaction: ChatIn
  */
 async function replyActiveRoster(ctx: SessionCommandContext, interaction: ChatInputCommandInteraction): Promise<InteractionOutcome> {
   const now = new Date();
-  const sessions = await ctx.db.session.findMany({
-    where: { state: { not: "ENDED" }, deletedAt: null },
-    include: { identity: true, segments: true },
-    orderBy: { startedAt: "asc" },
-  });
+  const sessions = await ctx.sessions.liveRoster();
   const listed = sessions.slice(0, ACTIVE_ROSTER_LIMIT).map((session) => {
     const totals = totalsForPeriod(session.segments, session.startedAt, now, now);
     return [
@@ -224,13 +173,11 @@ async function replyActiveRoster(ctx: SessionCommandContext, interaction: ChatIn
  */
 export async function showSessionDetails(ctx: SessionCommandContext, interaction: ButtonInteraction, id: string): Promise<InteractionOutcome> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const session = await ctx.db.session.findUnique({ where: { id }, include: { identity: true, segments: true } });
-  if (!session || session.deletedAt) userError("Session not found");
-  const commands = await commandsDuring(ctx, session);
-  await interaction.editReply({ embeds: [sessionDetailEmbed({ ...session, commands })] });
+  const session = await ctx.sessions.sessionDetails(id);
+  await interaction.editReply({ embeds: [sessionDetailEmbed(session)] });
   return {
     did: `sent the details of ${session.identity.robloxUsername}'s session privately`,
-    fields: { sessionId: id, state: session.state, commands: commands.total },
+    fields: { sessionId: id, state: session.state, commands: session.commands.total },
   };
 }
 
@@ -244,35 +191,11 @@ export async function addSession(
   if ("rejected" in accepted) return { did: `rejected the add-session form: ${accepted.rejected}` };
   const { start, end, activeMs: active, inactiveMs: inactive } = accepted.session;
   assertDurationInvariant(start, end, active, inactive);
-  let identity;
-  if ("identityId" in subject) {
-    identity = await ctx.db.identity.findUnique({ where: { id: subject.identityId } });
-    if (!identity) userError("That member is no longer tracked");
-  } else {
-    const mapped = await ctx.bloxlink.robloxForDiscord(subject.discordUserId);
-    if (!mapped) userError("That Discord user has no Bloxlink mapping");
-    identity = await ctx.db.identity.upsert({
-      where: { robloxUserId: mapped.userId },
-      create: { robloxUserId: mapped.userId, robloxUsername: mapped.username, discordUserId: subject.discordUserId },
-      update: { robloxUsername: mapped.username, discordUserId: subject.discordUserId },
-    });
-  }
-  const identityId = identity.id;
-  const session = await ctx.db.$transaction(async (tx) => {
-    const created = await tx.session.create({ data: {
-      identityId, state: "ENDED", startedAt: start, endedAt: end, lastEventAt: end, lastStateAt: end,
-      activeMilliseconds: BigInt(active), inactiveMilliseconds: BigInt(inactive), rankNumber: ctx.config.ROBLOX_MIN_RANK,
-      rankName: "Manual entry", universeId: ctx.config.ROBLOX_UNIVERSE_ID, placeId: ctx.config.ROBLOX_ALLOWED_PLACE_IDS[0]!, jobId: "manual",
-    } });
-    const activeEnd = new Date(start.getTime() + active);
-    if (active) await tx.timeSegment.create({ data: { sessionId: created.id, state: "ACTIVE", startedAt: start, endedAt: activeEnd } });
-    if (inactive) await tx.timeSegment.create({ data: { sessionId: created.id, state: "INACTIVE", startedAt: activeEnd, endedAt: end } });
-    await tx.auditEntry.create({ data: { sessionId: created.id, actorType: "DISCORD", actorId: interaction.user.id, action: "SESSION_ADD", note: accepted.input.note } });
-    return created;
+  const session = await ctx.sessions.addManualSession({
+    subject, start, end, activeMs: active, inactiveMs: inactive, note: accepted.input.note, actorDiscordId: interaction.user.id,
   });
-  await ctx.publisher.refresh(session.id);
   const added = {
-    embeds: [new EmbedBuilder().setColor(SUCCESS_COLOR).setTitle("✅ Session added").setDescription(`A completed session was added for **${identity.robloxUsername}**.`).addFields(
+    embeds: [new EmbedBuilder().setColor(SUCCESS_COLOR).setTitle("✅ Session added").setDescription(`A completed session was added for **${session.robloxUsername}**.`).addFields(
       { name: "🗓️ When", value: `<t:${Math.floor(start.getTime() / 1000)}:f> to <t:${Math.floor(end.getTime() / 1000)}:t>` },
       { name: "⏱️ Time recorded", value: `${friendlyDuration(active)} active · ${friendlyDuration(inactive)} inactive` },
       { name: "🆔 Session ID", value: `\`${session.id}\`` },
@@ -284,7 +207,7 @@ export async function addSession(
   if (interaction.isFromMessage() && interaction.message.flags.has(MessageFlags.Ephemeral)) await interaction.update(added);
   else await interaction.reply({ ...added, flags: MessageFlags.Ephemeral });
   return {
-    did: `added a ${friendlyDuration(active + inactive)} session for ${identity.robloxUsername}`,
+    did: `added a ${friendlyDuration(active + inactive)} session for ${session.robloxUsername}`,
     fields: { sessionId: session.id, active: friendlyDuration(active), inactive: friendlyDuration(inactive) },
   };
 }
@@ -292,36 +215,21 @@ export async function addSession(
 export async function editEnded(ctx: SessionCommandContext, interaction: ModalSubmitInteraction): Promise<InteractionOutcome> {
   await ctx.requirePermission(interaction, PermissionLevel.ADMIN);
   const id = interaction.customId.slice("editended:".length);
-  const current = await ctx.db.session.findUnique({ where: { id }, include: { identity: true } });
-  if (!current || current.state !== "ENDED" || current.deletedAt) userError("Completed session not found");
   // Old rows can carry reconnecting time; it stays as it was and active time absorbs the rest.
-  const reconnect = Number(current.reconnectMilliseconds);
+  const { reconnectMilliseconds: reconnect } = await ctx.sessions.editableSession(id);
   const accepted = await acceptForm(interaction, (input) => buildManualSession(input, ctx.config.REPORT_TIMEZONE, new Date(), reconnect));
   if ("rejected" in accepted) return { did: `rejected the edit form: ${accepted.rejected}`, fields: { sessionId: id } };
   const { start, end, activeMs: active, inactiveMs: inactive } = accepted.session;
   assertDurationInvariant(start, end, active, inactive + reconnect);
-  await ctx.db.$transaction(async (tx) => {
-    await tx.timeSegment.deleteMany({ where: { sessionId: id } }); const activeEnd = new Date(start.getTime() + active);
-    if (active) await tx.timeSegment.create({ data: { sessionId: id, state: "ACTIVE", startedAt: start, endedAt: activeEnd } });
-    const inactiveEnd = new Date(activeEnd.getTime() + inactive);
-    if (inactive) await tx.timeSegment.create({ data: { sessionId: id, state: "INACTIVE", startedAt: activeEnd, endedAt: inactiveEnd } });
-    if (reconnect) await tx.timeSegment.create({ data: { sessionId: id, state: "RECONNECTING", startedAt: inactiveEnd, endedAt: end } });
-    await tx.session.update({ where: { id }, data: { startedAt: start, endedAt: end, lastEventAt: end, lastStateAt: end, activeMilliseconds: BigInt(active), inactiveMilliseconds: BigInt(inactive), reconnectMilliseconds: BigInt(reconnect) } });
-    await tx.auditEntry.create({ data: {
-      sessionId: id, actorType: "DISCORD", actorId: interaction.user.id, action: "SESSION_EDIT_ENDED",
-      note: accepted.input.note,
-      before: { startedAt: current.startedAt, endedAt: current.endedAt, activeMilliseconds: current.activeMilliseconds.toString(), inactiveMilliseconds: current.inactiveMilliseconds.toString(), reconnectMilliseconds: current.reconnectMilliseconds.toString() },
-      after: { startedAt: start, endedAt: end, activeMilliseconds: String(active), inactiveMilliseconds: String(inactive), reconnectMilliseconds: String(reconnect) },
-    } });
+  const edited = await ctx.sessions.editEndedSession({
+    sessionId: id, start, end, activeMs: active, inactiveMs: inactive, note: accepted.input.note, actorDiscordId: interaction.user.id,
   });
-  await ctx.publisher.refresh(id);
   // The form is opened from the manage panel, so show the new values there.
-  const panel = { ...managePanel(await manageableSession(ctx, id), "✅ Session updated"), content: "" };
+  const panel = { ...managePanel(await ctx.sessions.manageableSession(id), "✅ Session updated"), content: "" };
   if (interaction.isFromMessage()) await interaction.update(panel);
   else await interaction.reply({ ...panel, flags: MessageFlags.Ephemeral });
-  const before = Number(current.activeMilliseconds + current.inactiveMilliseconds);
   return {
-    did: `edited ${current.identity.robloxUsername}'s session from ${friendlyDuration(before)} to ${friendlyDuration(active + inactive)}`,
+    did: `edited ${edited.robloxUsername}'s session from ${friendlyDuration(edited.beforeMs)} to ${friendlyDuration(active + inactive)}`,
     fields: { sessionId: id },
   };
 }
@@ -336,7 +244,7 @@ export async function showEditEndedModal(
   values?: SessionFormInput,
 ): Promise<InteractionOutcome> {
   await ctx.requirePermission(interaction, PermissionLevel.ADMIN);
-  const session = await manageableSession(ctx, id);
+  const session = await ctx.sessions.manageableSession(id);
   const timezone = ctx.config.REPORT_TIMEZONE;
   if (session.endedAt!.getTime() - session.startedAt.getTime() >= FORM_MAX_LENGTH_MS) {
     userError("This session is a day or longer, which the edit form can't describe. It can only be removed.");
@@ -358,24 +266,13 @@ export async function showEditEndedModal(
 
 export async function removeSession(ctx: SessionCommandContext, interaction: ButtonInteraction, id: string): Promise<InteractionOutcome> {
   await ctx.requirePermission(interaction, PermissionLevel.ADMIN);
-  const current = await ctx.db.session.findUnique({ where: { id }, include: { identity: true } });
-  if (!current || current.deletedAt) userError("Session not found");
-  if (current.state !== "ENDED") userError("Live sessions cannot be managed");
-  const now = new Date();
-  await ctx.db.$transaction(async (tx) => {
-    await tx.session.update({ where: { id }, data: { deletedAt: now } });
-    await tx.auditEntry.create({ data: {
-      sessionId: id, actorType: "DISCORD", actorId: interaction.user.id, action: "SESSION_REMOVE",
-      before: { deletedAt: null }, after: { deletedAt: now },
-    } });
-  });
-  await ctx.publisher.refresh(id, true);
+  const removed = await ctx.sessions.removeSession(id, interaction.user.id);
   await interaction.update({
     embeds: [new EmbedBuilder().setColor(SUCCESS_COLOR).setTitle("🗑️ Session removed").setDescription(`Session \`${id}\` no longer counts towards any statistics.`)],
     components: [],
   });
   return {
-    did: `removed ${current.identity.robloxUsername}'s ${friendlyDuration(Number(current.activeMilliseconds + current.inactiveMilliseconds))} session`,
+    did: `removed ${removed.robloxUsername}'s ${friendlyDuration(removed.totalMs)} session`,
     fields: { sessionId: id },
   };
 }

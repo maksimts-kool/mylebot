@@ -9,6 +9,7 @@ import type { InteractionOutcome } from "../../../../shared/discord/interaction-
 import { PermissionLevel } from "../../../../shared/permissions.js";
 import { totalsForPeriod } from "../../domain/accounting.js";
 import { recordedTimeMeetsSessionMinimum, sessionMeetsMinimum } from "../../domain/policy.js";
+import type { HistorySubject, SessionHistory } from "../../link.js";
 import { sessionOwner, statusIcon, statusLabel } from "../session-embed.js";
 import type { SessionCommandContext } from "./context.js";
 import { formatSessionDateTime, friendlyDuration } from "./format.js";
@@ -31,7 +32,7 @@ export const HISTORY_IDS = {
  * Bloxlink-mapped member it has never seen. The second has no sessions, but an
  * Admin can still add their first one from it.
  */
-export type HistorySubject = { identityId: string } | { discordUserId: string };
+export type { HistorySubject };
 
 /**
  * `public` posts in the channel with controls only the caller can use;
@@ -75,13 +76,13 @@ async function renderHistory(
 
   let owner: string;
   let ownerName = "an untracked member";
-  let sessions: Awaited<ReturnType<typeof loadSessions>> = [];
+  let sessions: SessionHistory["sessions"] = [];
   if ("identityId" in subject) {
-    const identity = await ctx.db.identity.findUnique({ where: { id: subject.identityId } });
-    if (!identity) userError("No sessions found");
-    owner = sessionOwner(identity);
-    ownerName = identity.robloxUsername;
-    sessions = (await loadSessions(ctx, subject.identityId)).filter((session) => sessionMeetsMinimum(session, now));
+    const history = await ctx.sessions.history(subject.identityId);
+    if (!history) userError("No sessions found");
+    owner = sessionOwner(history.identity);
+    ownerName = history.identity.robloxUsername;
+    sessions = history.sessions.filter((session) => sessionMeetsMinimum(session, now));
   } else {
     owner = `<@${subject.discordUserId}>`;
   }
@@ -147,14 +148,6 @@ async function renderHistory(
       fields: { sessions: sessions.length },
     },
   };
-}
-
-function loadSessions(ctx: SessionCommandContext, identityId: string) {
-  return ctx.db.session.findMany({
-    where: { identityId, deletedAt: null },
-    include: { segments: true },
-    orderBy: { startedAt: "desc" },
-  });
 }
 
 /** Public controls go quiet once the caller stops using them. */

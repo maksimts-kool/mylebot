@@ -5,7 +5,7 @@ import {
 import { profileStats } from "../../src/features/sessions/domain/profile.js";
 import { CARD_HEIGHT, CARD_WIDTH, renderBadgeIcon, renderProfileCard } from "../../src/features/sessions/discord/profile-card.js";
 import { awardSentence, badgeGuide, profileCardModel, progressBar } from "../../src/features/sessions/discord/profile-view.js";
-import { robloxHeadshot } from "../../src/features/sessions/discord/roblox-avatar.js";
+import { robloxHeadshot } from "../../src/features/sessions/service/roblox-avatar.js";
 import { BadgeService } from "../../src/features/sessions/service/badge-service.js";
 
 const HOUR = 3_600_000;

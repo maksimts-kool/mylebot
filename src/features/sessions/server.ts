@@ -1,13 +1,11 @@
-import { botInternalRoutes } from "../../core/bot-link.js";
-import type { Feature, FeatureContext } from "../../core/feature.js";
+import type { ServerContext, ServerFeature } from "../../core/feature.js";
 import { sessionRoutes } from "./api/routes.js";
-import { sessionCommandData, sessionHelp } from "./discord/commands/definitions.js";
-import { SessionCommandHandler } from "./discord/commands/handler.js";
-import { trackingConfigSection } from "./discord/config-section.js";
-import { BadgeNotifier } from "./discord/badge-notifier.js";
-import { DiscordPublisher } from "./discord/publisher.js";
+import { SESSIONS_PORT, type DiscordMessageReference, type SessionsBotPort } from "./link.js";
+import { BadgeNotifier } from "./service/badge-notifier.js";
 import { BadgeService } from "./service/badge-service.js";
-import { SessionService, type DiscordMessageReference } from "./service/session-service.js";
+import { SessionPublisher } from "./service/publisher.js";
+import { SessionService } from "./service/session-service.js";
+import { sessionsServerPort } from "./service/sessions-port.js";
 
 /** `1 session` / `3 sessions`, so the log lines read as English. */
 function plural(count: number, noun: string, many = `${noun}s`): string {
@@ -15,35 +13,33 @@ function plural(count: number, noun: string, many = `${noun}s`): string {
 }
 
 /**
- * Roblox play-session tracking: HTTP ingestion, the session lifecycle, and the
- * Discord projection of it. Discord is a projection here, never the source of
- * session truth.
+ * Roblox play-session tracking, the half that owns it: HTTP ingestion, the
+ * session lifecycle, badges, and deciding what Discord should show. Discord
+ * is a projection, never the source of session truth, so the bot half is only
+ * ever asked to show what this half already recorded.
  */
-export function createSessionsFeature(ctx: FeatureContext): Feature {
+export function createSessionsServer(ctx: ServerContext): ServerFeature {
   const log = ctx.log.child({ category: "session" });
+  const discord = ctx.bot.port<SessionsBotPort>(SESSIONS_PORT);
   const sessions = new SessionService(ctx.db, ctx.config, ctx.settings, log);
-  const publisher = new DiscordPublisher(ctx.client, ctx.db, ctx.config, ctx.bloxlink, ctx.settings, ctx.log);
+  const publisher = new SessionPublisher(ctx.db, ctx.config, ctx.bloxlink, ctx.settings, discord, ctx.log);
   const badges = new BadgeService(ctx.db, ctx.config);
-  const badgeNotifier = new BadgeNotifier(ctx.client, ctx.db, ctx.config, badges, ctx.bloxlink, ctx.log);
-  // Slash commands answer on the gateway, so they are only worth wiring up in
-  // the process that holds one.
-  if (!ctx.bot) new SessionCommandHandler(ctx.client, ctx.db, ctx.config, publisher, ctx.bloxlink, ctx.settings, badges).register();
+  const badgeNotifier = new BadgeNotifier(ctx.db, badges, ctx.bloxlink, discord, ctx.log);
 
-  /** Brings Discord up to date, here or in the container that can. */
+  /** Brings Discord up to date with what a batch changed. */
   const publish = async (ids: string[], removedMessages?: DiscordMessageReference[]): Promise<void> => {
-    if (ctx.bot) return ctx.bot.sessionsChanged(ids, removedMessages);
     await publisher.refreshMany(ids);
     if (removedMessages) await publisher.removeMessages(removedMessages);
   };
 
   return {
     name: "sessions",
-    commands: sessionCommandData,
-    help: sessionHelp,
-    configSections: [trackingConfigSection(ctx.client, ctx.db, ctx.config, ctx.settings)],
     routes: sessionRoutes({ config: ctx.config, sessions, onChanged: publish }),
-    // The API half records the change and then asks this half to show it.
-    internalRoutes: botInternalRoutes({ config: ctx.config, onSessionsChanged: publish }),
+    ports: {
+      [SESSIONS_PORT]: sessionsServerPort({
+        db: ctx.db, config: ctx.config, bloxlink: ctx.bloxlink, settings: ctx.settings, badges, publisher,
+      }),
+    },
     onStart: async () => {
       const cleanup = await sessions.cleanupSessionData();
       await publisher.removeMessages(cleanup.removedMessages);
@@ -59,9 +55,9 @@ export function createSessionsFeature(ctx: FeatureContext): Feature {
       await publisher.refreshMany(ids);
       if (ids.length) log.info(`Closed ${plural(ids.length, "session")} left open by the last shutdown`);
     },
-    onReady: async () => {
+    onBotReady: async () => {
       const restored = await publisher.restore();
-      if (restored) log.info(`Brought ${plural(restored, "session")} up to date in Discord after startup`);
+      if (restored) log.info(`Brought ${plural(restored, "session")} up to date in Discord`);
     },
     jobs: [
       {
@@ -93,7 +89,7 @@ export function createSessionsFeature(ctx: FeatureContext): Feature {
           const expired = await sessions.expiredAnnouncements();
           if (!expired.length) return;
           const removed = await publisher.removeMessages(expired.map(({ channelId, messageId }) => ({ channelId, messageId })));
-          // Discord was not connected, so the removals were only queued. Keep
+          // Discord was not reachable, so the removals were only queued. Keep
           // the rows and take them down on a later pass.
           if (!removed) return;
           const forgotten = await sessions.forgetAnnouncements(expired.map(({ id }) => id));

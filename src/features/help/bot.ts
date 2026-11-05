@@ -1,15 +1,15 @@
-import type { Feature, FeatureContext } from "../../core/feature.js";
+import type { BotContext, BotFeature } from "../../core/feature.js";
 import type { HelpSection } from "../../shared/discord/help.js";
 import { PermissionLevel } from "../../shared/permissions.js";
 import { helpCommandData } from "./discord/definitions.js";
 import { HelpCommandHandler } from "./discord/handler.js";
 
 /**
- * `/help`. The sections come from the features `src/index.ts` composed, plus
+ * `/help`. The sections come from the features `src/bot.ts` composed, plus
  * this feature's own entry, so the listing always matches the deployed command
  * set.
  */
-export function createHelpFeature(ctx: FeatureContext, sections: HelpSection[]): Feature {
+export function createHelpBot(ctx: BotContext, sections: HelpSection[]): BotFeature {
   const help: HelpSection = {
     title: "Help",
     emoji: "📖",
@@ -17,7 +17,7 @@ export function createHelpFeature(ctx: FeatureContext, sections: HelpSection[]):
       { usage: "/help", description: "Shows this list of commands.", permission: PermissionLevel.EVERYONE },
     ],
   };
-  new HelpCommandHandler(ctx.client, ctx.db, ctx.config, [...sections, help]).register();
+  new HelpCommandHandler(ctx.client, ctx.shared, ctx.config, [...sections, help]).register();
 
   return { name: "help", commands: helpCommandData, help };
 }

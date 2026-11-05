@@ -121,7 +121,9 @@ describe("verification status close button", () => {
         })),
       } satisfies VerificationStatus),
     };
-    new VerificationCommandHandler(client as never, {} as never, { DISCORD_GUILD_ID: "guild" } as never, service as never).register();
+    // A guild administrator never needs the server's role table.
+    const access = { permissionLevel: vi.fn().mockResolvedValue(1) };
+    new VerificationCommandHandler(client as never, { DISCORD_GUILD_ID: "guild" } as never, access, service as never).register();
 
     const sent: Array<{ id: string; components: unknown[] }> = [];
     let next = 0;

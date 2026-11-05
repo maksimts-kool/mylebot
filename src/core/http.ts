@@ -99,7 +99,7 @@ export async function buildHttpServer(
       await readiness();
       return { status: "ready" };
     } catch (error) {
-      log.error({ category: "db", err: error, errorType: errorType(error) }, "Readiness check failed");
+      log.error({ category: "http", err: error, errorType: errorType(error) }, "Readiness check failed");
       return reply.code(503).send({ status: "not_ready" });
     }
   });

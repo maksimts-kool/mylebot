@@ -1,14 +1,11 @@
 import { ChannelType, type AnyThreadChannel, type Client, type ForumChannel } from "discord.js";
 import { KNOWN_FORUM_TAGS, sameName } from "../domain/mapping.js";
+import type { ForumState } from "../link.js";
+
+export type { ForumState };
 
 /** Discord refuses more than five tags on a post. */
 export const MAX_APPLIED_TAGS = 5;
-
-export type ForumState = {
-  /** Exact set of board-state tags the post should carry. */
-  tags: string[];
-  archived: boolean;
-};
 
 /**
  * The bot owns the four board-state tags and nothing else. Any other tag — a

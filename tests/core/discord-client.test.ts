@@ -33,4 +33,10 @@ describe("Discord client intents", () => {
     }));
     expect(withVerification.options.intents.has(GatewayIntentBits.GuildMembers)).toBe(true);
   });
+
+  it("asks for the privileged message intents only when the server half runs Taiga", () => {
+    const config = loadConfig(baseEnv);
+    expect(createDiscordClient(config).options.intents.has(GatewayIntentBits.MessageContent)).toBe(false);
+    expect(createDiscordClient(config, { taiga: true }).options.intents.has(GatewayIntentBits.MessageContent)).toBe(true);
+  });
 });

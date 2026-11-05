@@ -1,8 +1,7 @@
 import type { Config } from "../core/config.js";
 import type { Db } from "../core/db.js";
 import { appLogger } from "../core/logger.js";
-
-type RobloxMapping = { userId: bigint; username: string };
+import type { RobloxMapping } from "./server-port.js";
 
 const ROBLOX_MAPPING_CACHE_MS = 10 * 60 * 1_000;
 

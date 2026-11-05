@@ -1,3 +1,5 @@
+# Local stack with its own PostgreSQL. For Portainer on a host with a shared
+# PostgreSQL, use compose.portainer.yml instead.
 x-app: &app
   build: .
   restart: unless-stopped
@@ -5,7 +7,6 @@ x-app: &app
     - path: .env
       required: false
   environment: &app-env
-    DATABASE_URL: postgresql://${POSTGRES_USER:-session_tracker}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-session_tracker}?schema=public
     API_HOST: 0.0.0.0
     INTERNAL_SECRET: ${INTERNAL_SECRET:?set INTERNAL_SECRET}
     # Containers have no terminal, so colour is opt-in rather than detected.
@@ -20,16 +21,19 @@ x-healthcheck: &healthcheck
   start_period: 20s
 
 services:
-  # The only published port. Answers the Roblox ingestion API itself and hands
-  # the Discord-backed endpoints — /internal/* and the Taiga webhook — to the
-  # bot over this network, so every external URL stays what it always was.
-  # It also owns the schema: migrations run here and nowhere else.
+  # Owns the database and every integration: the Roblox ingestion API, command
+  # logs, the Taiga webhook, the portal endpoints, Bloxlink, and every scheduled
+  # job. The only published port, and the only container that applies
+  # migrations. It never talks to Discord itself; it asks the bot.
   server:
     <<: *app
     environment:
       <<: *app-env
       APP_ROLE: server
-      BOT_INTERNAL_URL: http://bot:3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-session_tracker}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-session_tracker}?schema=public
+      BOT_INTERNAL_URL: http://bot:3001
+      # Discord is the bot's alone.
+      DISCORD_TOKEN: ""
     ports:
       - "${APP_BIND_IP:-127.0.0.1}:${APP_PORT:-3000}:3000"
     depends_on:
@@ -37,17 +41,25 @@ services:
         condition: service_healthy
     healthcheck: *healthcheck
 
-  # Holds the Discord gateway: slash commands, session messages, the scheduled
-  # jobs. No published port — the server reaches it over the compose network.
+  # Holds the Discord gateway and nothing else: slash commands, buttons, and the
+  # messages the server asks it to post. No database connection and no
+  # published port. The two call each other on port 3001 over this network;
+  # never publish that port.
   bot:
     <<: *app
     environment:
       <<: *app-env
       APP_ROLE: bot
+      SERVER_INTERNAL_URL: http://server:3001
+      # Whatever .env holds for the server half stays out of this container.
+      DATABASE_URL: ""
+      ROBLOX_INGESTION_SECRET: ""
+      BLOXLINK_API_KEY: ""
+      SITE_NOTIFY_SECRET: ""
+      TAIGA_PASSWORD: ""
+      TAIGA_WEBHOOK_SECRET: ""
     depends_on:
-      db:
-        condition: service_healthy
-      # The server applies the migrations, so the bot waits for a schema to use.
+      # The bot asks the server which features run before it logs in.
       server:
         condition: service_healthy
     healthcheck: *healthcheck

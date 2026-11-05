@@ -6,18 +6,14 @@ import {
 } from "../domain/badges.js";
 import { recordedTimeMeetsSessionMinimum } from "../domain/policy.js";
 import { buildLeaderboard } from "../domain/reporting.js";
+import type { BadgeStanding } from "../link.js";
 
 const SETTINGS_ID = "global";
 
 /** How many owed DMs one pass hands out. Each is its own Discord call. */
 export const BADGE_NOTIFY_BATCH = 25;
 
-export type BadgeStanding = {
-  /** Active time credited from every settled session, back to the first shift. */
-  activeMs: number;
-  firstTrackedAt: Date | null;
-  awards: BadgeAward[];
-};
+export type { BadgeStanding };
 
 /**
  * Removes everything badges hold about one Roblox user. Called from the

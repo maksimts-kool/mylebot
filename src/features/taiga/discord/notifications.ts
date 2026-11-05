@@ -2,13 +2,12 @@ import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder,
   type Client, type SendableChannels,
 } from "discord.js";
-import type { TaigaCard, TaigaCardKind } from "@prisma/client";
+import type { TaigaCardKind } from "@prisma/client";
 import { errorType } from "../../../core/errors.js";
 import { appLogger } from "../../../core/logger.js";
-import type { TaigaClient } from "../client.js";
 import { TaigaColumn, sameName } from "../domain/mapping.js";
 import { discordThreadUrl } from "../domain/story.js";
-import type { TaigaSettingsService } from "../service/settings.js";
+import type { CardView, TaigaNotice } from "../link.js";
 
 const COLUMN_COLOR: Record<string, number> = {
   [TaigaColumn.SUGGESTED]: 0x3b82f6,
@@ -30,109 +29,29 @@ export function kindLabel(kind: TaigaCardKind): string {
   return kind === "BUG" ? "Bug report" : "Suggestion";
 }
 
-/** Posts the card lifecycle to the notifications channel. Never throws into the sync path. */
-export class TaigaNotifier {
-  constructor(
-    private readonly client: Client,
-    private readonly settings: TaigaSettingsService,
-    private readonly taiga: TaigaClient,
-  ) {}
+function forumButton(card: CardView): ButtonBuilder {
+  return new ButtonBuilder()
+    .setStyle(ButtonStyle.Link)
+    .setLabel("Forum post")
+    .setEmoji("💬")
+    .setURL(discordThreadUrl(card.guildId, card.threadId));
+}
 
-  private async channel(): Promise<SendableChannels | null> {
-    const { notificationChannelId } = await this.settings.get();
-    if (!notificationChannelId) return null;
-    const channel = await this.client.channels.fetch(notificationChannelId).catch(() => null);
-    if (!channel || channel.type === ChannelType.GuildForum || !channel.isSendable()) return null;
-    return channel;
-  }
-
-  private async send(embed: EmbedBuilder, buttons: ButtonBuilder[] = []): Promise<void> {
-    try {
-      const channel = await this.channel();
-      if (!channel) return;
-      const components = buttons.length ? [new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons)] : [];
-      await channel.send({ embeds: [embed], components });
-    } catch (error) {
-      appLogger().warn({ category: "taiga", err: error, errorType: errorType(error) }, "Could not post to the notifications channel");
-    }
-  }
-
-  private forumButton(card: TaigaCard): ButtonBuilder {
-    return new ButtonBuilder()
+function cardButtons(card: CardView, storyUrl: string): ButtonBuilder[] {
+  return [
+    forumButton(card),
+    new ButtonBuilder()
       .setStyle(ButtonStyle.Link)
-      .setLabel("Forum post")
-      .setEmoji("💬")
-      .setURL(discordThreadUrl(card.guildId, card.threadId));
-  }
+      .setLabel(`Taiga card #${card.taigaRef}`)
+      .setEmoji("📋")
+      .setURL(storyUrl),
+  ];
+}
 
-  private cardButtons(card: TaigaCard): ButtonBuilder[] {
-    return [
-      this.forumButton(card),
-      new ButtonBuilder()
-        .setStyle(ButtonStyle.Link)
-        .setLabel(`Taiga card #${card.taigaRef}`)
-        .setEmoji("📋")
-        .setURL(this.taiga.storyUrl(card.taigaRef)),
-    ];
-  }
-
-  async cardCreated(card: TaigaCard): Promise<void> {
-    await this.send(new EmbedBuilder()
-      .setTitle(`🆕 ${kindLabel(card.kind)} added to the board`)
-      .setDescription(`**${card.title}**`)
-      .setColor(columnColor(card.statusName))
-      .addFields(
-        { name: "Author", value: `<@${card.authorDiscordId}>`, inline: true },
-        { name: "Column", value: card.statusName, inline: true },
-      ), this.cardButtons(card));
-  }
-
-  async cardMoved(card: TaigaCard, from: string, to: string): Promise<void> {
-    await this.send(new EmbedBuilder()
-      .setTitle(`📦 ${kindLabel(card.kind)} moved to ${to}`)
-      .setDescription(`**${card.title}**`)
-      .setColor(columnColor(to))
-      .addFields(
-        { name: "From", value: from, inline: true },
-        { name: "To", value: to, inline: true },
-        { name: "Author", value: `<@${card.authorDiscordId}>`, inline: true },
-      ), this.cardButtons(card));
-  }
-
-  async cardDeclined(card: TaigaCard): Promise<void> {
-    await this.send(new EmbedBuilder()
-      .setTitle(`🚫 ${kindLabel(card.kind)} declined`)
-      .setDescription(`**${card.title}**`)
-      .setColor(DECLINED_COLOR)
-      .addFields(
-        { name: "Author", value: `<@${card.authorDiscordId}>`, inline: true },
-        { name: "Last column", value: card.statusName, inline: true },
-      ), [this.forumButton(card)]);
-  }
-
-  async postRemoved(card: TaigaCard): Promise<void> {
-    await this.send(new EmbedBuilder()
-      .setTitle(`🗑️ ${kindLabel(card.kind)} post deleted`)
-      .setDescription(`**${card.title}**\nThe forum post was deleted, so its Taiga card was removed too.`)
-      .setColor(REMOVED_COLOR)
-      .addFields(
-        { name: "Author", value: `<@${card.authorDiscordId}>`, inline: true },
-        { name: "Last column", value: card.statusName, inline: true },
-      ));
-  }
-
-  async shippedCardRemoved(card: TaigaCard): Promise<void> {
-    await this.send(new EmbedBuilder()
-      .setTitle(`🧹 Shipped ${kindLabel(card.kind).toLowerCase()} cleared from the board`)
-      .setDescription(`**${card.title}**\nThe card was deleted from *${TaigaColumn.IN_GAME}*, so the post keeps its Approved tag.`)
-      .setColor(REMOVED_COLOR));
-  }
-
-  async epicEvent(
-    epic: { id: number; ref: number; subject: string; statusName: string | null; isClosed: boolean },
-    action: "created" | "updated" | "closed",
-    relatedCards: TaigaCard[] = [],
-  ): Promise<void> {
+/** What one notice looks like in the notifications channel. */
+export function renderNotice(notice: TaigaNotice): { embed: EmbedBuilder; buttons: ButtonBuilder[] } {
+  if (notice.type === "epic") {
+    const { epic, action, relatedCards } = notice;
     const title = action === "created" ? "📘 New version epic" : action === "closed" ? "🚀 Version epic completed" : "📘 Version epic updated";
     const embed = new EmbedBuilder()
       .setTitle(title)
@@ -154,10 +73,87 @@ export class TaigaNotifier {
       }
       embed.addFields({ name: `Included posts (${relatedCards.length})`, value: lines.join("\n") });
     }
-    await this.send(embed, [new ButtonBuilder()
-      .setStyle(ButtonStyle.Link)
-      .setLabel(`Taiga epic #${epic.ref}`)
-      .setEmoji("📘")
-      .setURL(this.taiga.epicUrl(epic.ref))]);
+    return {
+      embed,
+      buttons: [new ButtonBuilder()
+        .setStyle(ButtonStyle.Link)
+        .setLabel(`Taiga epic #${epic.ref}`)
+        .setEmoji("📘")
+        .setURL(notice.epicUrl)],
+    };
+  }
+
+  const { card } = notice;
+  switch (notice.type) {
+    case "cardCreated":
+      return {
+        embed: new EmbedBuilder()
+          .setTitle(`🆕 ${kindLabel(card.kind)} added to the board`)
+          .setDescription(`**${card.title}**`)
+          .setColor(columnColor(card.statusName))
+          .addFields(
+            { name: "Author", value: `<@${card.authorDiscordId}>`, inline: true },
+            { name: "Column", value: card.statusName, inline: true },
+          ),
+        buttons: cardButtons(card, notice.storyUrl),
+      };
+    case "cardMoved":
+      return {
+        embed: new EmbedBuilder()
+          .setTitle(`📦 ${kindLabel(card.kind)} moved to ${notice.to}`)
+          .setDescription(`**${card.title}**`)
+          .setColor(columnColor(notice.to))
+          .addFields(
+            { name: "From", value: notice.from, inline: true },
+            { name: "To", value: notice.to, inline: true },
+            { name: "Author", value: `<@${card.authorDiscordId}>`, inline: true },
+          ),
+        buttons: cardButtons(card, notice.storyUrl),
+      };
+    case "cardDeclined":
+      return {
+        embed: new EmbedBuilder()
+          .setTitle(`🚫 ${kindLabel(card.kind)} declined`)
+          .setDescription(`**${card.title}**`)
+          .setColor(DECLINED_COLOR)
+          .addFields(
+            { name: "Author", value: `<@${card.authorDiscordId}>`, inline: true },
+            { name: "Last column", value: card.statusName, inline: true },
+          ),
+        buttons: [forumButton(card)],
+      };
+    case "postRemoved":
+      return {
+        embed: new EmbedBuilder()
+          .setTitle(`🗑️ ${kindLabel(card.kind)} post deleted`)
+          .setDescription(`**${card.title}**\nThe forum post was deleted, so its Taiga card was removed too.`)
+          .setColor(REMOVED_COLOR)
+          .addFields(
+            { name: "Author", value: `<@${card.authorDiscordId}>`, inline: true },
+            { name: "Last column", value: card.statusName, inline: true },
+          ),
+        buttons: [],
+      };
+    case "shippedCardRemoved":
+      return {
+        embed: new EmbedBuilder()
+          .setTitle(`🧹 Shipped ${kindLabel(card.kind).toLowerCase()} cleared from the board`)
+          .setDescription(`**${card.title}**\nThe card was deleted from *${TaigaColumn.IN_GAME}*, so the post keeps its Approved tag.`)
+          .setColor(REMOVED_COLOR),
+        buttons: [],
+      };
+  }
+}
+
+/** Posts the card lifecycle to the notifications channel. Never throws into the sync path. */
+export async function postNotice(client: Client, channelId: string, notice: TaigaNotice): Promise<void> {
+  try {
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel || channel.type === ChannelType.GuildForum || !channel.isSendable()) return;
+    const { embed, buttons } = renderNotice(notice);
+    const components = buttons.length ? [new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons)] : [];
+    await (channel as SendableChannels).send({ embeds: [embed], components });
+  } catch (error) {
+    appLogger().warn({ category: "taiga", err: error, errorType: errorType(error) }, "Could not post to the notifications channel");
   }
 }

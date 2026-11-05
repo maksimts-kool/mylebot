@@ -1,6 +1,5 @@
 import type { CommandRisk } from "@prisma/client";
 import type { Db } from "../core/db.js";
-import { RISK_ORDER } from "./discord/risk.js";
 
 /**
  * Where a staff member's two records meet: the shift the session tracker holds
@@ -14,6 +13,9 @@ import { RISK_ORDER } from "./discord/risk.js";
 
 /** How many distinct commands a summary names before it stops counting. */
 const TOP_COMMANDS = 3;
+
+/** Worst first, which is the order anything summarising a run of them reads in. */
+export const RISK_ORDER: readonly CommandRisk[] = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
 
 export type CommandActivity = {
   total: number;

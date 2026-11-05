@@ -1,12 +1,12 @@
 import { EmbedBuilder, MessageFlags, type ChatInputCommandInteraction, type Client } from "discord.js";
 import type { Config } from "../../../core/config.js";
-import type { Db } from "../../../core/db.js";
 import { UserFacingError, errorType, userError } from "../../../core/errors.js";
 import { appLogger } from "../../../core/logger.js";
+import { permissionLevelFor, type AccessSource } from "../../../shared/discord/access.js";
 import { BRAND_COLOR } from "../../../shared/discord/colors.js";
 import type { HelpSection } from "../../../shared/discord/help.js";
 import { InteractionLog, type InteractionOutcome } from "../../../shared/discord/interaction-log.js";
-import { permissionLabel, permissionLevelFor, PermissionLevel } from "../../../shared/permissions.js";
+import { permissionLabel, PermissionLevel } from "../../../shared/permissions.js";
 
 /**
  * `/help` lists the commands of every feature that was actually composed, so it
@@ -16,7 +16,7 @@ import { permissionLabel, permissionLevelFor, PermissionLevel } from "../../../s
 export class HelpCommandHandler {
   constructor(
     private readonly client: Client,
-    private readonly db: Db,
+    private readonly access: AccessSource,
     private readonly config: Config,
     private readonly sections: HelpSection[],
   ) {}
@@ -44,7 +44,7 @@ export class HelpCommandHandler {
     }
     // The list is the same for everyone, so it is answered in the channel.
     await interaction.deferReply();
-    const level = await permissionLevelFor(this.db, interaction);
+    const level = await permissionLevelFor(this.access, interaction);
     await interaction.editReply({ embeds: [helpEmbed(this.sections, level)] });
     return {
       did: "sent the command list",

@@ -1,5 +1,4 @@
 import { ButtonStyle, type Client } from "discord.js";
-import type { Db } from "../../../core/db.js";
 import { userError } from "../../../core/errors.js";
 import {
   actionButton, backButton, configPage, configRow, field, note, optionSelect, roleSelect, selectedValue,
@@ -7,6 +6,10 @@ import {
 } from "../../../shared/discord/config-presets.js";
 import type { ConfigComponentInteraction, ConfigRow, ConfigSection, ConfigView } from "../../../shared/discord/config-section.js";
 import { PermissionLevel, permissionLabel } from "../../../shared/permissions.js";
+import type { SharedServerPort } from "../../../shared/server-port.js";
+
+/** The role permission rows, which the server half keeps. */
+export type PermissionRoleStore = Pick<SharedServerPort, "permissionRoles" | "permissionRole" | "setPermissionRole" | "removePermissionRole">;
 
 const META: ConfigSectionMeta = {
   id: "permissions",
@@ -33,16 +36,16 @@ export function parsePermissionAction(action: string): { roleId: string; choice:
  * Create, read, update and delete the role permissions the bot grants. Guild
  * administrators always have manager access; everything else is decided here.
  */
-export function permissionsSection(db: Db, client: Client, guildId: string): ConfigSection {
+export function permissionsSection(roles: PermissionRoleStore, client: Client, guildId: string): ConfigSection {
   function roleName(roleId: string): string {
     return client.guilds.cache.get(guildId)?.roles.cache.get(roleId)?.name ?? `Role ${roleId}`;
   }
 
   async function view(): Promise<ConfigView> {
-    const roles = await db.permissionRole.findMany({ orderBy: [{ level: "desc" }, { createdAt: "asc" }] });
+    const configured = await roles.permissionRoles();
     const rows: ConfigRow[] = [roleSelect(META, ACTIONS.role, "Add or change a role's access")];
-    if (roles.length) {
-      rows.push(optionSelect(META, ACTIONS.revoke, "Remove a role's access", roles.map((role) => ({
+    if (configured.length) {
+      rows.push(optionSelect(META, ACTIONS.revoke, "Remove a role's access", configured.map((role) => ({
         label: roleName(role.roleId),
         description: `Currently ${permissionLabel(role.level)}`,
         value: role.roleId,
@@ -50,7 +53,7 @@ export function permissionsSection(db: Db, client: Client, guildId: string): Con
     }
     return configPage(META, {
       fields: [...ASSIGNABLE_LEVELS].reverse().map((level) => {
-        const members = roles.filter((role) => role.level === level);
+        const members = configured.filter((role) => role.level === level);
         return note(
           `${permissionLabel(level)} — ${members.length} ${members.length === 1 ? "role" : "roles"}`,
           members.length ? members.map(({ roleId }) => `<@&${roleId}>`).join(" ") : "_No roles_",
@@ -61,7 +64,7 @@ export function permissionsSection(db: Db, client: Client, guildId: string): Con
   }
 
   async function levelView(roleId: string): Promise<ConfigView> {
-    const current = await db.permissionRole.findUnique({ where: { roleId } });
+    const current = await roles.permissionRole(roleId);
     return configPage(META, {
       summary: `Choose the access level for <@&${roleId}>.`,
       fields: [field("Current access", current ? permissionLabel(current.level) : "None")],
@@ -81,19 +84,19 @@ export function permissionsSection(db: Db, client: Client, guildId: string): Con
       return levelView(selectedValue(interaction, "Choose a role"));
     }
     if (action === ACTIONS.revoke && interaction.isStringSelectMenu()) {
-      await db.permissionRole.deleteMany({ where: { roleId: selectedValue(interaction, "Choose a role") } });
+      await roles.removePermissionRole(selectedValue(interaction, "Choose a role"));
       return null;
     }
     const selection = parsePermissionAction(action);
     if (selection) {
       const { roleId, choice } = selection;
       if (choice === "remove") {
-        await db.permissionRole.deleteMany({ where: { roleId } });
+        await roles.removePermissionRole(roleId);
         return null;
       }
       const level = Number(choice);
       if (!ASSIGNABLE_LEVELS.includes(level as (typeof ASSIGNABLE_LEVELS)[number])) userError("Invalid permission level");
-      await db.permissionRole.upsert({ where: { roleId }, create: { roleId, level }, update: { level } });
+      await roles.setPermissionRole(roleId, level);
       return null;
     }
     return null;

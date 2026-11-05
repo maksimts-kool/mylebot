@@ -5,9 +5,10 @@ import { formatDuration, type LogFields, type Logger } from "../../../core/logge
 import type { RuntimeSettingsService } from "../../../shared/runtime-settings.js";
 import type { PresenceEvent } from "../domain/events.js";
 import { announcementRetentionCutoff, recordedTimeMeetsSessionMinimum, sessionRetentionCutoff } from "../domain/policy.js";
+import type { DiscordMessageReference } from "../link.js";
 import { purgeBadges } from "./badge-service.js";
 
-export type DiscordMessageReference = { channelId: string; messageId: string };
+export type { DiscordMessageReference };
 
 /** A staff-chat announcement that is due to be taken down. */
 export type ExpiredAnnouncement = DiscordMessageReference & { id: string };

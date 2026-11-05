@@ -40,8 +40,8 @@ export function summarizeCommandBatch(results: ReadonlyArray<{ status: string; r
 }
 
 /**
- * Where the Adonis plugin reports command runs. Posting them needs the Discord
- * gateway, so this half only runs where the gateway is.
+ * Where the Adonis plugin reports command runs. Runs are stored here and then
+ * handed to the bot half to post; a run is kept even when Discord is away.
  */
 export function commandRunRoutes({ config, service, onRecorded, onReported }: CommandRunRouteOptions): FastifyPluginAsync {
   return async (app) => {
@@ -110,8 +110,8 @@ export function commandRunRoutes({ config, service, onRecorded, onReported }: Co
 
 /**
  * The list the plugin polls to learn who currently has no command access.
- * Reading it needs nothing but the database, so it stays in the API half and
- * keeps working while Discord is down.
+ * Reading it needs nothing but the database, so it keeps working while
+ * Discord is down.
  */
 export function commandBlockRoutes({ config, service }: CommandBlockRouteOptions): FastifyPluginAsync {
   return async (app) => {

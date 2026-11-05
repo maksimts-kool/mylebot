@@ -6,7 +6,6 @@ import { DateTime } from "luxon";
 import type { Config } from "../../../../core/config.js";
 import { BRAND_COLOR } from "../../../../shared/discord/colors.js";
 import type { InteractionOutcome } from "../../../../shared/discord/interaction-log.js";
-import { buildLeaderboard, tallinnDateRange } from "../../domain/reporting.js";
 import type { SessionCommandContext } from "./context.js";
 import { friendlyDuration, friendlyPeriod } from "./format.js";
 
@@ -31,14 +30,6 @@ export function presetDates(
     if (first > start && first <= end) start = first;
   }
   return { startDate: start.toISODate()!, endDate: end.toISODate()! };
-}
-
-/** When the oldest session still on record started, or null before the first one. */
-export async function firstRecordedSession(ctx: SessionCommandContext): Promise<Date | null> {
-  const first = await ctx.db.session.findFirst({
-    where: { deletedAt: null }, orderBy: { startedAt: "asc" }, select: { startedAt: true },
-  });
-  return first?.startedAt ?? null;
 }
 
 export function leaderboardComponents(
@@ -79,13 +70,7 @@ export async function renderLeaderboard(
   minimum: number,
   page: number,
 ): Promise<InteractionOutcome> {
-  const { start, end } = tallinnDateRange(startDate, endDate, ctx.config.REPORT_TIMEZONE);
-  const identities = await ctx.db.identity.findMany({ include: { sessions: { where: { deletedAt: null, startedAt: { lt: end }, OR: [{ endedAt: null }, { endedAt: { gt: start } }] }, include: { segments: true } } } });
-  const rows = buildLeaderboard(identities.map((identity) => ({
-    identityId: identity.id,
-    username: identity.discordUserId ? `${identity.robloxUsername} · <@${identity.discordUserId}>` : identity.robloxUsername,
-    sessions: identity.sessions,
-  })), start, end, minimum);
+  const rows = await ctx.sessions.leaderboard(startDate, endDate, minimum);
   const pageRows = rows.slice(page*PAGE_SIZE, page*PAGE_SIZE+PAGE_SIZE);
   const period = friendlyPeriod(startDate, endDate, ctx.config.REPORT_TIMEZONE);
   const ranking = pageRows.map((row, index) => {
