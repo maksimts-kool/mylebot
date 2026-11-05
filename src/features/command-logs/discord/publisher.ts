@@ -143,6 +143,11 @@ export class CommandLogPublisher {
     if (server.panelMessageId) {
       try {
         await channel.messages.edit(server.panelMessageId, view);
+        // Rosters repaint the panel every minute, so only a closing is news.
+        this.log[server.closedAt ? "info" : "debug"](
+          { jobId: server.jobId, staff: this.service.staffOf(server).length },
+          server.closedAt ? "Closed the server panel" : "Updated the server panel",
+        );
         return;
       } catch (error) {
         const code = error instanceof DiscordAPIError ? error.code : null;
@@ -283,6 +288,10 @@ export class CommandLogPublisher {
       shiftStatusFor(this.db, entry.robloxUserId, entry.occurredAt),
     ]);
     const message = await thread.send({ embeds: [commandLogEmbed(entry, { discordUserId, shift })] });
+    this.log.info(
+      { actor: entry.robloxUsername, risk: entry.risk, targets: entry.targets, jobId: entry.jobId },
+      `Posted :${entry.commandAlias} to the server's log thread`,
+    );
     await this.service.recordMessage(entry.id, thread.id, message.id);
     await this.db.commandLogThread.update({
       where: { jobId: entry.jobId },

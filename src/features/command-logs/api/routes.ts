@@ -2,7 +2,7 @@ import type { FastifyPluginAsync } from "fastify";
 import type { CommandLogEntry } from "@prisma/client";
 import { ZodError } from "zod";
 import type { Config } from "../../../core/config.js";
-import { replyWithDefaultError, secretMatches } from "../../../core/http.js";
+import { describeRequest, replyWithDefaultError, secretMatches } from "../../../core/http.js";
 import { commandBatchSchema } from "../domain/events.js";
 import { rosterSchema } from "../domain/roster.js";
 import type { ServerRoster } from "../domain/roster.js";
@@ -26,6 +26,19 @@ export type CommandBlockRouteOptions = {
   service: CommandLogService;
 };
 
+/** `stored 2 command runs; 1 skipped (quiet_command)`. */
+export function summarizeCommandBatch(results: ReadonlyArray<{ status: string; reason?: string }>): string {
+  const count = (status: string) => results.filter((result) => result.status === status).length;
+  const reasons = [...new Set(results.flatMap((result) => result.status === "skipped" && result.reason ? [result.reason] : []))];
+  const recorded = count("recorded");
+  const parts = [
+    `stored ${recorded} command ${recorded === 1 ? "run" : "runs"}`,
+    count("duplicate") ? `${count("duplicate")} already stored` : "",
+    count("skipped") ? `${count("skipped")} skipped (${reasons.join(", ")})` : "",
+  ];
+  return parts.filter(Boolean).join("; ");
+}
+
 /**
  * Where the Adonis plugin reports command runs. Posting them needs the Discord
  * gateway, so this half only runs where the gateway is.
@@ -35,10 +48,11 @@ export function commandRunRoutes({ config, service, onRecorded, onReported }: Co
     // A batch from the wrong universe or place is the caller's problem, not a
     // server fault. Payload-shape errors are checked first, as they do for
     // presence ingestion, because a Zod message names the same fields.
-    app.setErrorHandler((error, _request, reply) => {
+    app.setErrorHandler((error, request, reply) => {
       if (!(error instanceof ZodError)) {
         const message = error instanceof Error ? error.message : "Unknown error";
         if (message.includes("universe") || message.includes("place")) {
+          describeRequest(request, { did: `rejected: ${message}` });
           return reply.code(400).send({ error: "rejected_event", message });
         }
       }
@@ -47,6 +61,7 @@ export function commandRunRoutes({ config, service, onRecorded, onReported }: Co
 
     app.post("/v1/roblox/commands/batch", async (request, reply) => {
       if (!secretMatches(request.headers.authorization, config.ROBLOX_INGESTION_SECRET)) {
+        describeRequest(request, { did: "wrong ingestion secret" });
         return reply.code(401).send({ error: "invalid_authentication" });
       }
       const batch = commandBatchSchema.parse(request.body);
@@ -66,7 +81,8 @@ export function commandRunRoutes({ config, service, onRecorded, onReported }: Co
       // Posting is the slow part and the plugin does not need to wait for it,
       // but a failure must not be hidden either: `postMany` logs per entry.
       if (recorded.length) await onRecorded(recorded);
-      app.log.debug({ category: "command", events: batch.events.length, posted: recorded.length }, "Command batch accepted");
+      // Each run that is posted gets its own line from the publisher.
+      describeRequest(request, { did: summarizeCommandBatch(results), routine: true });
       return reply.code(202).send({ results });
     });
 
@@ -74,12 +90,19 @@ export function commandRunRoutes({ config, service, onRecorded, onReported }: Co
     // come and go, and it is what the server's panel is drawn from.
     app.post("/v1/roblox/commands/roster", async (request, reply) => {
       if (!secretMatches(request.headers.authorization, config.ROBLOX_INGESTION_SECRET)) {
+        describeRequest(request, { did: "wrong ingestion secret" });
         return reply.code(401).send({ error: "invalid_authentication" });
       }
       const roster = rosterSchema.parse(request.body);
       const shown = await service.rosterAllowed(roster);
       if (shown) await onReported(roster);
-      app.log.debug({ category: "command", jobId: roster.jobId, staff: roster.staff.length }, "Server roster accepted");
+      describeRequest(request, {
+        did: shown
+          ? `${roster.closed ? "closed" : "updated"} the server panel, ${roster.staff.length} staff in game`
+          : "ignored, this server has no open panel",
+        routine: true,
+        fields: { jobId: roster.jobId },
+      });
       return reply.code(202).send({ status: shown ? "shown" : "ignored" });
     });
   };
@@ -94,9 +117,14 @@ export function commandBlockRoutes({ config, service }: CommandBlockRouteOptions
   return async (app) => {
     app.get("/v1/roblox/command-blocks", async (request, reply) => {
       if (!secretMatches(request.headers.authorization, config.ROBLOX_INGESTION_SECRET)) {
+        describeRequest(request, { did: "wrong ingestion secret" });
         return reply.code(401).send({ error: "invalid_authentication" });
       }
       const blocks = await service.activeBlocks();
+      describeRequest(request, {
+        did: blocks.length ? `sent ${blocks.length} active command ${blocks.length === 1 ? "block" : "blocks"}` : "no active command blocks",
+        routine: true,
+      });
       return reply.code(200).send({
         blocks: blocks.map((block) => ({
           // Roblox IDs cross the JSON boundary as decimal strings, both ways.

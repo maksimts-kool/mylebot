@@ -1,7 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../../src/core/config.js";
-import { createLogger } from "../../src/core/logger.js";
 import { CommandLogService } from "../../src/features/command-logs/service/command-log-service.js";
 import type { CommandEvent } from "../../src/features/command-logs/domain/events.js";
 import { commandBatchSchema } from "../../src/features/command-logs/domain/events.js";
@@ -15,7 +14,6 @@ const config = loadConfig({
   ROBLOX_GROUP_ID: "200",
   ROBLOX_ALLOWED_PLACE_IDS: "300",
 });
-const silent = createLogger({ service: "test", level: "silent" });
 
 /** One valid event, parsed through the wire schema so the types are real. */
 const BASE = commandBatchSchema.parse({
@@ -55,7 +53,7 @@ function build(settings: Partial<CommandLogSettings> = {}, create = vi.fn().mock
   return {
     db,
     create,
-    service: new CommandLogService(db as never, config, settingsService, silent),
+    service: new CommandLogService(db as never, config, settingsService),
   };
 }
 
@@ -141,14 +139,13 @@ describe("command blocks", () => {
 
   it("gives access back, and says when there was nothing to give back", async () => {
     const { service, db } = build();
-    const by = { discordName: "presser", robloxUsername: "MaksimTs" };
     db.commandBlock.deleteMany.mockResolvedValue({ count: 1 });
-    expect(await service.unblock(999n, by)).toBe(true);
+    expect(await service.unblock(999n)).toBe(true);
     expect(db.commandBlock.deleteMany).toHaveBeenCalledWith({ where: { robloxUserId: 999n } });
 
     // Two people pressing at once, or a block that simply ran its course.
     db.commandBlock.deleteMany.mockResolvedValue({ count: 0 });
-    expect(await service.unblock(999n, by)).toBe(false);
+    expect(await service.unblock(999n)).toBe(false);
   });
 });
 
@@ -175,6 +172,16 @@ describe("live servers", () => {
     db.commandLogThread.findUnique.mockResolvedValue(null);
     expect(await service.rosterAllowed(roster)).toBe(false);
     expect(db.commandLogThread.findUnique).toHaveBeenCalledWith({ where: { jobId: "job-2" } });
+  });
+
+  it("ignores a roster from a server whose panel is already closed", async () => {
+    const roster = {
+      universeId: 100n, placeId: 300n, jobId: "job-3", serverType: "PUBLIC" as const,
+      playerCount: 14, maxPlayers: 30, closed: false, staff: [],
+    };
+    const { service, db } = build();
+    db.commandLogThread.findUnique.mockResolvedValue({ jobId: "job-3", closedAt: new Date("2026-09-20T18:00:00Z") });
+    expect(await service.rosterAllowed(roster)).toBe(false);
   });
 
   it("finds panels with no logged runs, judging only servers the retention still covers", async () => {

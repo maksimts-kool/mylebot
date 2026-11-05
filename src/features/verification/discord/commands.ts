@@ -17,6 +17,7 @@ import type { Db } from "../../../core/db.js";
 import { UserFacingError, errorType, userError } from "../../../core/errors.js";
 import { appLogger } from "../../../core/logger.js";
 import type { HelpSection } from "../../../shared/discord/help.js";
+import { InteractionLog, type InteractionOutcome } from "../../../shared/discord/interaction-log.js";
 import { PermissionLevel, hasPermission } from "../../../shared/permissions.js";
 import type { VerificationService, VerificationStatus, VerificationStatusMember } from "../service/verification-service.js";
 
@@ -172,34 +173,38 @@ export class VerificationCommandHandler {
   ) {}
 
   register(): void {
-    this.client.on("interactionCreate", (interaction) => void this.handle(interaction).catch(async (error: unknown) => {
-      const message = error instanceof UserFacingError ? error.message : "The verification status could not be loaded. Please try again later.";
-      if (!(error instanceof UserFacingError)) appLogger().error({ category: "verify", err: error, errorType: errorType(error) }, "Verification command failed");
-      if (!interaction.isRepliable()) return;
-      try {
-        if (interaction.deferred && !interaction.replied) await interaction.editReply({ content: `Error: ${message}` });
-        else if (interaction.replied) await interaction.followUp({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
-        else await interaction.reply({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
-      } catch (replyError) {
-        appLogger().error({ category: "verify", err: replyError, errorType: errorType(replyError) }, "Could not tell the user the command failed");
-      }
-    }));
+    this.client.on("interactionCreate", (interaction) => {
+      const ours = (interaction.isButton() && interaction.customId === VERIFICATION_CLOSE_ID)
+        || (interaction.isChatInputCommand() && interaction.commandName === "verification");
+      if (!ours) return;
+      const trace = new InteractionLog(interaction, appLogger().child({ category: "verify" }));
+      void this.handle(interaction).then((outcome) => trace.done(outcome), async (error: unknown) => {
+        trace.failed(error);
+        const message = error instanceof UserFacingError ? error.message : "The verification status could not be loaded. Please try again later.";
+        if (!interaction.isRepliable()) return;
+        try {
+          if (interaction.deferred && !interaction.replied) await interaction.editReply({ content: `Error: ${message}` });
+          else if (interaction.replied) await interaction.followUp({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
+          else await interaction.reply({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
+        } catch (replyError) {
+          appLogger().error({ category: "verify", err: replyError, errorType: errorType(replyError) }, "Could not tell the user the command failed");
+        }
+      });
+    });
   }
 
-  private async handle(interaction: Interaction): Promise<void> {
-    if (interaction.isButton() && interaction.customId === VERIFICATION_CLOSE_ID) {
-      await this.close(interaction);
-      return;
-    }
+  private async handle(interaction: Interaction): Promise<InteractionOutcome | void> {
+    if (interaction.isButton() && interaction.customId === VERIFICATION_CLOSE_ID) return this.close(interaction);
     if (!interaction.isChatInputCommand() || interaction.commandName !== "verification") return;
     if (interaction.guildId !== this.config.DISCORD_GUILD_ID) userError("This command is not available in this server");
     if (!await hasPermission(this.db, interaction, PermissionLevel.MANAGER)) userError("Manager role required");
-    await this.replyStatus(interaction);
+    return this.replyStatus(interaction);
   }
 
-  private async replyStatus(interaction: ChatInputCommandInteraction): Promise<void> {
+  private async replyStatus(interaction: ChatInputCommandInteraction): Promise<InteractionOutcome> {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const embeds = verificationStatusEmbeds(await this.service.status());
+    const status = await this.service.status();
+    const embeds = verificationStatusEmbeds(status);
     const sent: string[] = [];
     for (const [index, embed] of embeds.entries()) {
       const last = index === embeds.length - 1;
@@ -209,18 +214,23 @@ export class VerificationCommandHandler {
         : await interaction.followUp({ ...body, flags: MessageFlags.Ephemeral });
       sent.push(message.id);
     }
+    const outcome = {
+      did: `sent the verification dashboard privately in ${sent.length} ${sent.length === 1 ? "message" : "messages"}`,
+      fields: { unverified: status.members.length },
+    };
     const lastId = sent.pop();
-    if (!lastId) return;
+    if (!lastId) return outcome;
     const timeout = setTimeout(() => this.open.delete(lastId), OPEN_DASHBOARD_MS);
     timeout.unref();
     this.open.set(lastId, { command: interaction, earlier: sent, timeout });
+    return outcome;
   }
 
   /**
    * Takes the dashboard down. While the command's token is still valid that is
    * every message it sent; after that, only the one the button is on.
    */
-  private async close(interaction: ButtonInteraction): Promise<void> {
+  private async close(interaction: ButtonInteraction): Promise<InteractionOutcome> {
     await interaction.deferUpdate();
     const dashboard = this.open.get(interaction.message.id);
     if (dashboard) {
@@ -236,5 +246,6 @@ export class VerificationCommandHandler {
       }
     }
     await interaction.deleteReply(interaction.message.id);
+    return { did: dashboard ? "took the verification dashboard down" : "took down the last message of an old dashboard" };
   }
 }

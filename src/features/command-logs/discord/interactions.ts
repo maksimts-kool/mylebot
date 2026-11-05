@@ -1,8 +1,9 @@
 import { Events, MessageFlags, type Client, type StringSelectMenuInteraction } from "discord.js";
 import type { CommandLogThread } from "@prisma/client";
-import { UserFacingError, errorType, userError } from "../../../core/errors.js";
+import { UserFacingError, userError } from "../../../core/errors.js";
 import type { Logger } from "../../../core/logger.js";
 import type { BloxlinkService } from "../../../shared/bloxlink.js";
+import { InteractionLog, type InteractionOutcome } from "../../../shared/discord/interaction-log.js";
 import { BLOCK_MINUTES } from "../domain/policy.js";
 import type { StoredStaff } from "../domain/roster.js";
 import { MINIMUM_RESTORE_LEVEL, levelForGroupRank, minimumPresserLevel, tierName } from "../domain/staff-ladder.js";
@@ -56,7 +57,7 @@ async function picked(
   return { server, member };
 }
 
-async function disableAccess(interaction: StringSelectMenuInteraction, deps: CommandLogInteractionDeps): Promise<void> {
+async function disableAccess(interaction: StringSelectMenuInteraction, deps: CommandLogInteractionDeps): Promise<InteractionOutcome> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const { server, member } = await picked(interaction, deps);
   const robloxUserId = BigInt(member.userId);
@@ -64,7 +65,7 @@ async function disableAccess(interaction: StringSelectMenuInteraction, deps: Com
   const existing = await deps.service.activeBlock(robloxUserId);
   if (existing) {
     await interaction.editReply(`**${member.username}** already has no command access until <t:${Math.floor(existing.expiresAt.getTime() / 1000)}:t>`);
-    return;
+    return { did: `left ${member.username} alone, their command access is already taken away`, fields: { jobId: server.jobId } };
   }
 
   await requireLevel(interaction, deps, minimumPresserLevel(member.adminLevel));
@@ -80,6 +81,7 @@ async function disableAccess(interaction: StringSelectMenuInteraction, deps: Com
     `**${member.username}** cannot run Adonis commands for ${BLOCK_MINUTES} minutes, in every server. `
     + `Access comes back <t:${Math.floor(expiresAt.getTime() / 1000)}:R>.`,
   );
+  return { did: `took command access from ${member.username} for ${BLOCK_MINUTES} minutes`, fields: { jobId: server.jobId } };
 }
 
 /**
@@ -87,15 +89,12 @@ async function disableAccess(interaction: StringSelectMenuInteraction, deps: Com
  * away follows the ladder; handing it back overrules whoever took it, so it
  * takes a Manager whatever tier the person is.
  */
-async function restoreAccess(interaction: StringSelectMenuInteraction, deps: CommandLogInteractionDeps): Promise<void> {
+async function restoreAccess(interaction: StringSelectMenuInteraction, deps: CommandLogInteractionDeps): Promise<InteractionOutcome> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const { server, member } = await picked(interaction, deps);
 
   await requireLevel(interaction, deps, MINIMUM_RESTORE_LEVEL);
-  const lifted = await deps.service.unblock(BigInt(member.userId), {
-    discordName: interaction.user.username,
-    robloxUsername: member.username,
-  });
+  const lifted = await deps.service.unblock(BigInt(member.userId));
   await deps.publisher.refreshPanel(server.jobId);
   if (lifted) {
     await deps.publisher.notice(server.jobId, accessNotice("restored", member.username, `<@${interaction.user.id}>`));
@@ -103,6 +102,10 @@ async function restoreAccess(interaction: StringSelectMenuInteraction, deps: Com
   await interaction.editReply(lifted
     ? `**${member.username}** can run Adonis commands again.`
     : `**${member.username}** already had their command access back.`);
+  return {
+    did: lifted ? `gave command access back to ${member.username}` : `left ${member.username} alone, they already had command access`,
+    fields: { jobId: server.jobId },
+  };
 }
 
 /**
@@ -119,16 +122,12 @@ export function registerCommandLogInteractions(client: Client, deps: CommandLogI
       ? disableAccess
       : action === PANEL_ACTIONS.restore ? restoreAccess : null;
     if (!press) return;
-    void press(interaction, deps).catch(async (error: unknown) => {
+    const trace = new InteractionLog(interaction, deps.log.child({ category: "command" }));
+    void press(interaction, deps).then((outcome) => trace.done(outcome), async (error: unknown) => {
+      trace.failed(error);
       const message = error instanceof UserFacingError
         ? error.message
         : "The request could not be completed. Please try again later.";
-      if (!(error instanceof UserFacingError)) {
-        deps.log.error({
-          category: "command", actor: interaction.user.username, err: error, errorType: errorType(error),
-          customId: interaction.customId,
-        }, "A command access press failed");
-      }
       try {
         if (interaction.deferred) await interaction.editReply({ content: `Error: ${message}` });
         else await interaction.reply({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });

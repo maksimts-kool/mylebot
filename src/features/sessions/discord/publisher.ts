@@ -12,7 +12,9 @@ import type { RuntimeSettingsService } from "../../../shared/runtime-settings.js
 import { commandActivityDuring, topCommandsLine } from "../../../shared/staff-activity.js";
 import { totalsForPeriod } from "../domain/accounting.js";
 import { calendarYearRange } from "../domain/reporting.js";
-import { MINIMUM_SESSION_MILLISECONDS, announcementRetentionElapsed, sessionMeetsMinimum } from "../domain/policy.js";
+import {
+  MINIMUM_SESSION_MILLISECONDS, announcementRetentionElapsed, restoreCutoff, sessionMeetsMinimum,
+} from "../domain/policy.js";
 import type { DiscordMessageReference } from "../service/session-service.js";
 import { friendlyDuration } from "./commands/format.js";
 import { statusColor, statusIcon, statusName } from "./session-embed.js";
@@ -34,6 +36,25 @@ type MessageStore = {
   /** Points the session at a replacement for a message that is already gone. */
   replace: (channelId: string, messageId: string) => Promise<void>;
 };
+
+/** Which of a session's messages this is, for the line that says it was sent. */
+type MessageAbout = {
+  what: "session record" | "shift announcement";
+  actor: string;
+  sessionId: string;
+  /**
+   * The announcement is only ever edited when a shift settles, so each edit is
+   * news. The record is edited on every refresh, which is not.
+   */
+  editsAreNews: boolean;
+  /** `live`, `ended`, `removed` — what the message now says. */
+  state: string;
+};
+
+function messageState(session: { state: SessionState; deletedAt: Date | null }): string {
+  if (session.deletedAt) return "removed";
+  return session.state === "ENDED" ? "ended" : "live";
+}
 
 function formatClock(milliseconds: number): string {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000));
@@ -158,6 +179,10 @@ export class DiscordPublisher {
         await this.removeMessages(stale.map(({ channelId, messageId }) => ({ channelId, messageId })));
         await this.db.discordMessage.deleteMany({ where: { sessionId: session.id } });
         await this.db.sessionAnnouncement.deleteMany({ where: { sessionId: session.id } });
+        this.log.info(
+          { actor: session.identity.robloxUsername, sessionId: session.id, messages: stale.length },
+          "Took down the messages of a shift shorter than a minute",
+        );
       }
       return;
     }
@@ -244,6 +269,10 @@ export class DiscordPublisher {
           update: { channelId, messageId },
         }).then(() => undefined),
       },
+      {
+        what: "session record", actor: session.identity.robloxUsername, sessionId: session.id,
+        editsAreNews: false, state: messageState(session),
+      },
     );
   }
 
@@ -308,6 +337,10 @@ export class DiscordPublisher {
           update: { channelId, messageId },
         }).then(() => undefined),
       },
+      {
+        what: "shift announcement", actor: session.identity.robloxUsername, sessionId: session.id,
+        editsAreNews: true, state: messageState(session),
+      },
     );
   }
 
@@ -341,8 +374,10 @@ export class DiscordPublisher {
     channelId: string,
     payload: MessagePayload,
     store: MessageStore,
+    about: MessageAbout,
   ): Promise<void> {
     const channel = await this.client.channels.fetch(channelId) as TextChannel;
+    const fields = { actor: about.actor, sessionId: about.sessionId, channel: channel.name ? `#${channel.name}` : undefined };
     let replacing = false;
     if (existing) {
       replacing = true;
@@ -350,8 +385,10 @@ export class DiscordPublisher {
         await this.removeMessages([{ channelId: existing.channelId, messageId: existing.messageId }]);
       } else {
         try {
-          const message = await channel.messages.fetch(existing.messageId);
-          await message.edit(payload);
+          // Editing by id is one call; fetching the message first would be two
+          // for every live session on every refresh.
+          await channel.messages.edit(existing.messageId, payload);
+          this.log[about.editsAreNews ? "info" : "debug"](fields, `Updated the ${about.what}: ${about.state}`);
           return;
         } catch (error) {
           if (!(error instanceof DiscordAPIError) || error.code !== 10008) throw error;
@@ -359,23 +396,41 @@ export class DiscordPublisher {
       }
     }
     const message = await channel.send(payload);
-    if (replacing) return store.replace(channel.id, message.id);
-    if (await store.claim(channel.id, message.id)) return;
+    if (replacing) {
+      await store.replace(channel.id, message.id);
+      this.log.info(fields, `Reposted the ${about.what}, the old message was gone: ${about.state}`);
+      return;
+    }
+    if (await store.claim(channel.id, message.id)) {
+      this.log.info(fields, `Posted the ${about.what}: ${about.state}`);
+      return;
+    }
     this.log.debug({ messageId: message.id }, "Discarded a duplicate session message");
     await this.removeMessages([{ channelId: channel.id, messageId: message.id }]);
   }
 
-  async restore(): Promise<void> {
+  /**
+   * Catches Discord up once the gateway is ready: removals queued while it was
+   * not, every live session, every announcement still up, and the finished
+   * records whose session changed recently enough to have changed unseen.
+   * Returns how many sessions it brought up to date.
+   */
+  async restore(now = new Date()): Promise<number> {
     const pending = this.pendingMessageRemovals.splice(0);
     await this.removeMessages(pending);
     const sessions = await this.db.session.findMany({
       where: {
         deletedAt: null,
-        OR: [{ state: { not: "ENDED" } }, { discordMessage: { isNot: null } }, { announcement: { isNot: null } }],
+        OR: [
+          { state: { not: "ENDED" } },
+          { announcement: { isNot: null } },
+          { discordMessage: { isNot: null }, updatedAt: { gte: restoreCutoff(now) } },
+        ],
       },
       select: { id: true },
     });
     await this.refreshMany(sessions.map(({ id }) => id));
+    return sessions.length;
   }
 }
 

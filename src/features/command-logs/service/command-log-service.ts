@@ -1,7 +1,6 @@
 import { Prisma, type CommandBlock, type CommandLogEntry, type CommandLogThread } from "@prisma/client";
 import type { Config } from "../../../core/config.js";
 import type { Db } from "../../../core/db.js";
-import type { Logger } from "../../../core/logger.js";
 import { BLOCK_MINUTES, isQuietCommand } from "../domain/policy.js";
 import type { CommandEvent } from "../domain/events.js";
 import { readStoredStaff, toStoredStaff, type ServerRoster, type StoredStaff } from "../domain/roster.js";
@@ -31,16 +30,11 @@ export type BlockRequest = {
  * twice, and the temporary blocks the plugin polls for.
  */
 export class CommandLogService {
-  private readonly log: Logger;
-
   constructor(
     private readonly db: Db,
     private readonly config: Config,
     private readonly settings: CommandLogSettingsService,
-    log: Logger,
-  ) {
-    this.log = log.child({ category: "command" });
-  }
+  ) {}
 
   /**
    * Rejects an event that did not come from this universe, exactly as presence
@@ -118,7 +112,10 @@ export class CommandLogService {
     const settings = await this.settings.get();
     if (!settings.enabled || !settings.channelId) return false;
     if (roster.serverType === "STUDIO" && !settings.includeStudio) return false;
-    return (await this.server(roster.jobId)) !== null;
+    // A closed panel stays closed, so its server's reports can change nothing.
+    // Saying so lets the plugin stop sending them.
+    const server = await this.server(roster.jobId);
+    return server !== null && !server.closedAt;
   }
 
   async server(jobId: string): Promise<CommandLogThread | null> {
@@ -225,10 +222,6 @@ export class CommandLogService {
       create: { ...request, expiresAt },
       update: { ...request, expiresAt },
     });
-    this.log.info(
-      { actor: request.byDiscordName, target: request.robloxUsername, minutes: BLOCK_MINUTES },
-      `Command access taken from ${request.robloxUsername}`,
-    );
     return expiresAt;
   }
 
@@ -241,16 +234,10 @@ export class CommandLogService {
   /**
    * Gives command access back before the fifteen minutes are up. The return
    * says whether there was anything to give back, so two people pressing at
-   * once are told different things.
+   * once are told different things. The press that did it is logged by the panel.
    */
-  async unblock(robloxUserId: bigint, by: { discordName: string; robloxUsername: string }): Promise<boolean> {
+  async unblock(robloxUserId: bigint): Promise<boolean> {
     const { count } = await this.db.commandBlock.deleteMany({ where: { robloxUserId } });
-    if (count) {
-      this.log.info(
-        { actor: by.discordName, target: by.robloxUsername },
-        `Command access given back to ${by.robloxUsername}`,
-      );
-    }
     return count > 0;
   }
 

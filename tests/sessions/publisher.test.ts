@@ -80,9 +80,9 @@ function publisherFor(
   const channels = new Map<string, {
     id: string;
     send: ReturnType<typeof vi.fn>;
-    messages: { fetch: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
+    messages: { edit: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
   }>();
-  const edits = new Map<string, ReturnType<typeof vi.fn>>();
+  const edits = new Map<string, ReturnType<typeof vi.fn<(payload: unknown) => void>>>();
   const channelFor = (channelId: string) => {
     const existing = channels.get(channelId);
     if (existing) return existing;
@@ -90,9 +90,11 @@ function publisherFor(
       id: channelId,
       send: vi.fn().mockResolvedValue({ id: `${channelId}-message` }),
       messages: {
-        fetch: vi.fn(async (messageId: string) => {
+        // Edited by id in one call, never fetched first.
+        edit: vi.fn(async (messageId: string, payload: unknown) => {
           if (!edits.has(messageId)) edits.set(messageId, vi.fn());
-          return { edit: edits.get(messageId)! };
+          edits.get(messageId)!(payload);
+          return { id: messageId };
         }),
         delete: vi.fn(),
       },
@@ -264,7 +266,7 @@ describe("staff chat announcement", () => {
     expect(channels.has("staff")).toBe(false);
     expect(db.sessionAnnouncement.create).not.toHaveBeenCalled();
     // The permanent record in the logs channel is still kept up to date.
-    expect(channels.get("logs")!.messages.fetch).toHaveBeenCalledWith("log-1");
+    expect(channels.get("logs")!.messages.edit).toHaveBeenCalledWith("log-1", expect.anything());
   });
 
   it("still announces a shift that ends within the retention window", async () => {
@@ -317,7 +319,7 @@ describe("concurrent refreshes of one session", () => {
 
     expect(channels.get("logs")!.send).toHaveBeenCalledTimes(1);
     expect(db.discordMessage.create).toHaveBeenCalledTimes(1);
-    expect(channels.get("logs")!.messages.fetch).toHaveBeenCalledWith("logs-message");
+    expect(channels.get("logs")!.messages.edit).toHaveBeenCalledWith("logs-message", expect.anything());
   });
 
   it("takes its own message back down when another writer already claimed the session", async () => {
@@ -331,5 +333,32 @@ describe("concurrent refreshes of one session", () => {
 
     expect(channels.get("logs")!.send).toHaveBeenCalledTimes(1);
     expect(channels.get("logs")!.messages.delete).toHaveBeenCalledWith("logs-message");
+  });
+});
+
+/**
+ * The startup pass used to re-edit every record posted in the past year, on
+ * every restart. Only a session that changed while the bot could not show it
+ * can be out of date, and its row says when it changed.
+ */
+describe("catching Discord up after startup", () => {
+  it("re-renders live sessions, open announcements, and only recently changed records", async () => {
+    const { publisher, db } = publisherFor(liveSession(), { logsChannelId: "logs" });
+    db.session.findMany.mockResolvedValue([{ id: "session-1" }]);
+    const now = new Date("2026-11-05T12:00:00Z");
+
+    expect(await publisher.restore(now)).toBe(1);
+
+    expect(db.session.findMany).toHaveBeenCalledWith({
+      where: {
+        deletedAt: null,
+        OR: [
+          { state: { not: "ENDED" } },
+          { announcement: { isNot: null } },
+          { discordMessage: { isNot: null }, updatedAt: { gte: new Date("2026-10-29T12:00:00Z") } },
+        ],
+      },
+      select: { id: true },
+    });
   });
 });

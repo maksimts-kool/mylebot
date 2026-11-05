@@ -8,12 +8,23 @@ import { UserFacingError, errorType, userError } from "../../../core/errors.js";
 import { appLogger } from "../../../core/logger.js";
 import { BRAND_COLOR } from "../../../shared/discord/colors.js";
 import type { ConfigComponentInteraction, ConfigRow, ConfigSection, ConfigView } from "../../../shared/discord/config-section.js";
+import { InteractionLog, type InteractionOutcome } from "../../../shared/discord/interaction-log.js";
 import { PermissionLevel, hasPermission } from "../../../shared/permissions.js";
 import {
   CONFIG_CLOSE_VALUE, CONFIG_CUSTOM_ID_PREFIX, CONFIG_HOME_VALUE, CONFIG_NAV_CUSTOM_ID,
 } from "./definitions.js";
 
 type PanelMessage = { embeds: EmbedBuilder[]; components: ConfigRow[] };
+
+/** What a select menu was set to, by name, so a settings change can be read back from the log. */
+function chosen(interaction: ConfigComponentInteraction): string | undefined {
+  if (interaction.isChannelSelectMenu()) {
+    return interaction.channels.map((channel) => ("name" in channel && channel.name ? `#${channel.name}` : channel.id)).join(", ");
+  }
+  if (interaction.isRoleSelectMenu()) return interaction.roles.map((role) => `@${role.name}`).join(", ");
+  if (interaction.isStringSelectMenu()) return interaction.values.join(", ");
+  return undefined;
+}
 
 /**
  * `/config` is the single place every server setting lives. The panel owns the
@@ -29,18 +40,22 @@ export class ConfigPanelHandler {
   ) {}
 
   register(): void {
-    this.client.on("interactionCreate", (interaction) => void this.handle(interaction).catch(async (error: unknown) => {
-      const message = error instanceof UserFacingError ? error.message : "The configuration panel could not be updated. Please try again later.";
-      if (!(error instanceof UserFacingError)) appLogger().error({ category: "config", err: error, errorType: errorType(error) }, "Configuration panel failed");
-      if (!interaction.isRepliable()) return;
-      try {
-        if (interaction.deferred && !interaction.replied) await interaction.editReply({ content: `Error: ${message}` });
-        else if (interaction.replied) await interaction.followUp({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
-        else await interaction.reply({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
-      } catch (replyError) {
-        appLogger().error({ category: "config", err: replyError, errorType: errorType(replyError) }, "Could not tell the user the panel failed");
-      }
-    }));
+    this.client.on("interactionCreate", (interaction) => {
+      if (!this.owns(interaction)) return;
+      const trace = new InteractionLog(interaction, appLogger().child({ category: "config" }));
+      void this.handle(interaction).then((outcome) => trace.done(outcome), async (error: unknown) => {
+        trace.failed(error);
+        const message = error instanceof UserFacingError ? error.message : "The configuration panel could not be updated. Please try again later.";
+        if (!interaction.isRepliable()) return;
+        try {
+          if (interaction.deferred && !interaction.replied) await interaction.editReply({ content: `Error: ${message}` });
+          else if (interaction.replied) await interaction.followUp({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
+          else await interaction.reply({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
+        } catch (replyError) {
+          appLogger().error({ category: "config", err: replyError, errorType: errorType(replyError) }, "Could not tell the user the panel failed");
+        }
+      });
+    });
   }
 
   private owns(interaction: Interaction): boolean {
@@ -49,8 +64,7 @@ export class ConfigPanelHandler {
     return false;
   }
 
-  private async handle(interaction: Interaction): Promise<void> {
-    if (!this.owns(interaction)) return;
+  private async handle(interaction: Interaction): Promise<InteractionOutcome | void> {
     if (this.config.DISCORD_GUILD_ID && interaction.guildId !== this.config.DISCORD_GUILD_ID) {
       userError("This command is not available in this server");
     }
@@ -61,31 +75,34 @@ export class ConfigPanelHandler {
     if (interaction.isChatInputCommand()) {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await interaction.editReply(await this.render(CONFIG_HOME_VALUE));
-      return;
+      return { did: "opened the configuration panel" };
     }
     if (interaction.isStringSelectMenu() && interaction.customId === CONFIG_NAV_CUSTOM_ID) {
       const target = interaction.values[0] ?? CONFIG_HOME_VALUE;
       if (target === CONFIG_CLOSE_VALUE) {
         await interaction.deferUpdate();
         await interaction.deleteReply(interaction.message.id);
-        return;
+        return { did: "closed the configuration panel" };
       }
       await interaction.deferUpdate();
       await interaction.editReply(await this.render(target));
-      return;
+      const section = this.sections.find(({ id }) => id === target);
+      return { did: `opened the ${section?.label ?? "Overview"} page` };
     }
     if (interaction.isButton() || interaction.isChannelSelectMenu() || interaction.isRoleSelectMenu() || interaction.isStringSelectMenu()) {
-      await this.applySection(interaction);
+      return this.applySection(interaction);
     }
   }
 
-  private async applySection(interaction: ConfigComponentInteraction): Promise<void> {
+  private async applySection(interaction: ConfigComponentInteraction): Promise<InteractionOutcome> {
     const [, sectionId, ...rest] = interaction.customId.split(":");
     const section = this.sections.find(({ id }) => id === sectionId);
     if (!section) userError("That configuration page is no longer available");
     await interaction.deferUpdate();
-    const view = await section.apply(interaction, rest.join(":")) ?? await section.view();
+    const action = rest.join(":");
+    const view = await section.apply(interaction, action) ?? await section.view();
     await interaction.editReply(this.compose(section.id, view));
+    return { did: `applied ${action} on the ${section.label} page`, fields: { chose: chosen(interaction) } };
   }
 
   private async render(sectionId: string): Promise<PanelMessage> {

@@ -5,10 +5,11 @@ import {
 } from "discord.js";
 import type { Config } from "../../../../core/config.js";
 import type { Db } from "../../../../core/db.js";
-import { UserFacingError, errorType, userError } from "../../../../core/errors.js";
+import { UserFacingError, userError } from "../../../../core/errors.js";
 import { appLogger } from "../../../../core/logger.js";
 import type { BloxlinkService } from "../../../../shared/bloxlink.js";
 import { PublicComponentTracker } from "../../../../shared/discord/components.js";
+import { InteractionLog, type InteractionOutcome } from "../../../../shared/discord/interaction-log.js";
 import { PermissionLevel, hasPermission, permissionLabel } from "../../../../shared/permissions.js";
 import type { RuntimeSettingsService } from "../../../../shared/runtime-settings.js";
 import type { BadgeService } from "../../service/badge-service.js";
@@ -60,35 +61,34 @@ export class SessionCommandHandler {
   }
 
   register(): void {
-    this.client.on("interactionCreate", (interaction) => void this.handle(interaction).catch(async (error: unknown) => {
-      const message = error instanceof UserFacingError ? error.message : "The request could not be completed. Please try again later.";
-      if (!(error instanceof UserFacingError)) {
-        appLogger().error({
-          category: "command",
-          actor: interaction.user.username,
-          err: error,
-          errorType: errorType(error),
-          command: interaction.isCommand() ? interaction.commandName : undefined,
-          customId: interaction.isMessageComponent() || interaction.isModalSubmit() ? interaction.customId : undefined,
-        }, "Command failed");
-      }
-      if (interaction.isRepliable()) {
-        // Delivering the error can itself fail (e.g. the interaction already
-        // expired with a 10062). Swallow that so it never crashes the process.
-        try {
-          if (interaction.isChatInputCommand() && interaction.deferred && !interaction.replied && !interaction.ephemeral) {
-            // A public command was already acknowledged in the channel. Errors
-            // are the caller's alone, so take the placeholder down and say it privately.
-            await interaction.deleteReply();
-            await interaction.followUp({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
-          } else if (interaction.deferred && !interaction.replied) await interaction.editReply({ content: `Error: ${message}` });
-          else if (interaction.replied) await interaction.followUp({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
-          else await interaction.reply({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
-        } catch (replyError) {
-          appLogger().error({ category: "command", actor: interaction.user.username, err: replyError }, "Could not tell the user the command failed");
-        }
-      }
-    }));
+    this.client.on("interactionCreate", (interaction) => {
+      if (!this.owns(interaction)) return;
+      const trace = new InteractionLog(interaction, appLogger().child({ category: "command" }));
+      void this.handle(interaction).then((outcome) => trace.done(outcome), (error: unknown) => {
+        trace.failed(error);
+        return this.reportError(interaction, error);
+      });
+    });
+  }
+
+  /** Tells the caller why nothing happened. Delivering that can fail too, and is only logged. */
+  private async reportError(interaction: Interaction, error: unknown): Promise<void> {
+    if (!interaction.isRepliable()) return;
+    const message = error instanceof UserFacingError ? error.message : "The request could not be completed. Please try again later.";
+    // Delivering the error can itself fail (e.g. the interaction already
+    // expired with a 10062). Swallow that so it never crashes the process.
+    try {
+      if (interaction.isChatInputCommand() && interaction.deferred && !interaction.replied && !interaction.ephemeral) {
+        // A public command was already acknowledged in the channel. Errors
+        // are the caller's alone, so take the placeholder down and say it privately.
+        await interaction.deleteReply();
+        await interaction.followUp({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
+      } else if (interaction.deferred && !interaction.replied) await interaction.editReply({ content: `Error: ${message}` });
+      else if (interaction.replied) await interaction.followUp({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
+      else await interaction.reply({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
+    } catch (replyError) {
+      appLogger().error({ category: "command", actor: interaction.user.username, err: replyError }, "Could not tell the user the command failed");
+    }
   }
 
   /** Other features share this gateway event, so ignore anything not ours. */
@@ -98,101 +98,90 @@ export class SessionCommandHandler {
     return false;
   }
 
-  private async handle(interaction: Interaction): Promise<void> {
-    if (!this.owns(interaction)) return;
+  private async handle(interaction: Interaction): Promise<InteractionOutcome | void> {
     if (this.config.DISCORD_GUILD_ID && interaction.guildId !== this.config.DISCORD_GUILD_ID) {
       userError("This command is not available in this server");
     }
-    if (interaction.isChatInputCommand()) await this.handleCommand(interaction);
-    else if (interaction.isModalSubmit()) await this.handleModal(interaction);
-    else if (interaction.isButton()) await this.handleButton(interaction);
-    else if (interaction.isStringSelectMenu()) await this.handleSelect(interaction);
+    if (interaction.isChatInputCommand()) return this.handleCommand(interaction);
+    if (interaction.isModalSubmit()) return this.handleModal(interaction);
+    if (interaction.isButton()) return this.handleButton(interaction);
+    if (interaction.isStringSelectMenu()) return this.handleSelect(interaction);
   }
 
-  private async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
-    const subcommand = interaction.options.getSubcommand(false);
-    appLogger().info(
-      { category: "command", actor: interaction.user.username },
-      `/${interaction.commandName}${subcommand ? ` ${subcommand}` : ""}`,
-    );
+  private async handleCommand(interaction: ChatInputCommandInteraction): Promise<InteractionOutcome | void> {
     if (interaction.commandName === "leaderboard") {
       await interaction.deferReply();
       const period = interaction.options.getString("period") ?? "month";
       const { startDate, endDate } = presetDates(this.config, period, await firstRecordedSession(this.ctx));
-      await renderLeaderboard(this.ctx, interaction, startDate, endDate, 0, 0); return;
+      return renderLeaderboard(this.ctx, interaction, startDate, endDate, 0, 0);
     }
-    if (interaction.commandName === "profile") { await showProfile(this.ctx, interaction); return; }
-    if (interaction.commandName === "badges") { await showBadgeGuide(this.ctx, interaction); return; }
+    if (interaction.commandName === "profile") return showProfile(this.ctx, interaction);
+    if (interaction.commandName === "badges") return showBadgeGuide(this.ctx, interaction);
     const action = interaction.options.getSubcommand();
     await this.ctx.requirePermission(interaction, requiredPermission(interaction.commandName, action));
-    if (action === "view") await showView(this.ctx, interaction);
-    if (action === "active") await showActive(this.ctx, interaction);
+    if (action === "view") return showView(this.ctx, interaction);
+    if (action === "active") return showActive(this.ctx, interaction);
   }
 
-  private async handleModal(interaction: ModalSubmitInteraction): Promise<void> {
+  private async handleModal(interaction: ModalSubmitInteraction): Promise<InteractionOutcome | void> {
     const addFor = parseAddCustomId(interaction.customId);
-    if (addFor) await addSession(this.ctx, interaction, addFor);
-    else if (interaction.customId.startsWith("editended:")) await editEnded(this.ctx, interaction);
+    if (addFor) return addSession(this.ctx, interaction, addFor);
+    if (interaction.customId.startsWith("editended:")) return editEnded(this.ctx, interaction);
   }
 
-  private async handleButton(interaction: ButtonInteraction): Promise<void> {
+  private async handleButton(interaction: ButtonInteraction): Promise<InteractionOutcome | void> {
     if (interaction.customId.startsWith("refresh:")) {
       await interaction.deferUpdate();
-      await this.ctx.publisher.refresh(interaction.customId.slice(8));
-      return;
+      const sessionId = interaction.customId.slice(8);
+      await this.ctx.publisher.refresh(sessionId);
+      return { did: "refreshed the session message", fields: { sessionId } };
     }
     if (interaction.customId.startsWith("details:")) {
       await this.ctx.requirePermission(interaction, PermissionLevel.STAFF);
-      await showSessionDetails(this.ctx, interaction, interaction.customId.slice("details:".length));
-      return;
+      return showSessionDetails(this.ctx, interaction, interaction.customId.slice("details:".length));
     }
     if (interaction.customId.startsWith("history:")) {
       await this.ctx.requirePermission(interaction, PermissionLevel.STAFF);
       // The record lives in the logs channel; keep that channel free of replies.
-      await replyHistory(this.ctx, interaction, { identityId: interaction.customId.slice(8) }, "private");
-      return;
+      return replyHistory(this.ctx, interaction, { identityId: interaction.customId.slice(8) }, "private");
     }
     if (interaction.customId.startsWith(HISTORY_IDS.page)) {
       await this.requireOwnerIfPublic(interaction);
       await this.ctx.requirePermission(interaction, PermissionLevel.STAFF);
       const [, identityId, page] = interaction.customId.split(":");
-      await updateHistoryPage(this.ctx, interaction, identityId!, Number(page));
-      return;
+      return updateHistoryPage(this.ctx, interaction, identityId!, Number(page));
     }
     if (interaction.customId.startsWith(SESSION_RETRY_PREFIX)) {
       // Sits on a private error reply, and the answers it refills are the clicker's own.
-      await reopenSessionForm(this.ctx, interaction, interaction.customId.slice(SESSION_RETRY_PREFIX.length));
-      return;
+      return reopenSessionForm(this.ctx, interaction, interaction.customId.slice(SESSION_RETRY_PREFIX.length));
     }
     const addFor = parseAddCustomId(interaction.customId);
     if (addFor) {
       await this.requireOwnerIfPublic(interaction);
-      await showAddModal(this.ctx, interaction, addFor);
-      return;
+      return showAddModal(this.ctx, interaction, addFor);
     }
     if (interaction.customId.startsWith("leaderboard:")) {
       await this.requirePublicComponentOwner(interaction);
       const [, startDate, endDate, minimum, page] = interaction.customId.split(":");
-      await renderLeaderboard(this.ctx, interaction, startDate!, endDate!, Number(minimum), Number(page)); return;
+      return renderLeaderboard(this.ctx, interaction, startDate!, endDate!, Number(minimum), Number(page));
     }
     if (interaction.customId.startsWith("editended:")) {
-      await showEditEndedModal(this.ctx, interaction, interaction.customId.slice("editended:".length)); return;
+      return showEditEndedModal(this.ctx, interaction, interaction.customId.slice("editended:".length));
     }
     if (interaction.customId.startsWith("remove:")) {
-      await removeSession(this.ctx, interaction, interaction.customId.slice(7));
+      return removeSession(this.ctx, interaction, interaction.customId.slice(7));
     }
   }
 
-  private async handleSelect(interaction: StringSelectMenuInteraction): Promise<void> {
+  private async handleSelect(interaction: StringSelectMenuInteraction): Promise<InteractionOutcome | void> {
     if (interaction.customId === HISTORY_IDS.manage) {
       await this.requireOwnerIfPublic(interaction);
-      await showManagePanel(this.ctx, interaction);
-      return;
+      return showManagePanel(this.ctx, interaction);
     }
     if (interaction.customId !== "leaderboard-user") return;
     await this.requirePublicComponentOwner(interaction);
     await this.ctx.requirePermission(interaction, PermissionLevel.STAFF);
-    await replyHistory(this.ctx, interaction, { identityId: interaction.values[0]! }, "public");
+    return replyHistory(this.ctx, interaction, { identityId: interaction.values[0]! }, "public");
   }
 
   /** Only the caller sees a private message, so only a public one needs the owner check. */

@@ -15,6 +15,7 @@ return {
 	-- Adonis command logging (Config.Plugins > Server-CommandLogs).
 	CommandLogsEnabled = true,
 	CommandLogFlushSeconds = 5,
+	-- Only polled while somebody with an Adonis level is in the server.
 	CommandBlockPollSeconds = 15,
 	CommandRosterSeconds = 60,
 	CommandLogMaximumPending = 200,

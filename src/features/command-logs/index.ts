@@ -27,7 +27,7 @@ const SERVER_STALE_MS = 5 * 60 * 1000;
  */
 export function createCommandLogsFeature(ctx: FeatureContext): Feature {
   const settings = new CommandLogSettingsService(ctx.db);
-  const service = new CommandLogService(ctx.db, ctx.config, settings, ctx.log);
+  const service = new CommandLogService(ctx.db, ctx.config, settings);
   const ranks = new GroupRankService(ctx.config, ctx.log);
   const publisher = new CommandLogPublisher(ctx.client, ctx.db, ctx.bloxlink, settings, service, ctx.log);
 

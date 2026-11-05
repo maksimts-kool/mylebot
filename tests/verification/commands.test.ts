@@ -135,6 +135,8 @@ describe("verification status close button", () => {
       isChatInputCommand: () => true,
       isRepliable: () => true,
       commandName: "verification",
+      user: { username: "manager" },
+      options: { getSubcommandGroup: () => null, getSubcommand: () => "status", data: [] },
       guildId: "guild",
       member: manager(),
       deferReply: vi.fn().mockResolvedValue(undefined),
@@ -149,8 +151,11 @@ describe("verification status close button", () => {
     const close = (messageId: string) => {
       const button = {
         isButton: () => true,
+        isChatInputCommand: () => false,
         isRepliable: () => true,
         customId: VERIFICATION_CLOSE_ID,
+        component: { label: "Close" },
+        user: { username: "manager" },
         message: { id: messageId },
         deferUpdate: vi.fn().mockResolvedValue(undefined),
         deleteReply: vi.fn().mockResolvedValue(undefined),

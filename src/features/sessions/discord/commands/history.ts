@@ -5,6 +5,7 @@ import {
 } from "discord.js";
 import { userError } from "../../../../core/errors.js";
 import { BRAND_COLOR } from "../../../../shared/discord/colors.js";
+import type { InteractionOutcome } from "../../../../shared/discord/interaction-log.js";
 import { PermissionLevel } from "../../../../shared/permissions.js";
 import { totalsForPeriod } from "../../domain/accounting.js";
 import { recordedTimeMeetsSessionMinimum, sessionMeetsMinimum } from "../../domain/policy.js";
@@ -46,6 +47,9 @@ type HistoryResponse = {
   components: Array<ActionRowBuilder<MessageActionRowComponentBuilder>>;
 };
 
+/** A rendered history and what it showed, for the log line. */
+type RenderedHistory = { response: HistoryResponse; outcome: InteractionOutcome };
+
 export function addCustomId(subject: HistorySubject): string {
   return "identityId" in subject ? `${HISTORY_IDS.add}i:${subject.identityId}` : `${HISTORY_IDS.add}u:${subject.discordUserId}`;
 }
@@ -65,16 +69,18 @@ async function renderHistory(
   interaction: HistoryInteraction,
   subject: HistorySubject,
   requestedPage: number,
-): Promise<HistoryResponse> {
+): Promise<RenderedHistory> {
   const now = new Date();
   const canManage = await ctx.hasPermission(interaction, PermissionLevel.ADMIN);
 
   let owner: string;
+  let ownerName = "an untracked member";
   let sessions: Awaited<ReturnType<typeof loadSessions>> = [];
   if ("identityId" in subject) {
     const identity = await ctx.db.identity.findUnique({ where: { id: subject.identityId } });
     if (!identity) userError("No sessions found");
     owner = sessionOwner(identity);
+    ownerName = identity.robloxUsername;
     sessions = (await loadSessions(ctx, subject.identityId)).filter((session) => sessionMeetsMinimum(session, now));
   } else {
     owner = `<@${subject.discordUserId}>`;
@@ -128,12 +134,18 @@ async function renderHistory(
   if (buttons.length) components.push(new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(...buttons));
 
   return {
-    embeds: [new EmbedBuilder()
-      .setColor(BRAND_COLOR)
-      .setTitle("📚 Session history")
-      .setDescription(`👤 ${owner}\n\n${description}`)
-      .setFooter({ text: `Page ${page + 1} of ${pageCount}` })],
-    components,
+    response: {
+      embeds: [new EmbedBuilder()
+        .setColor(BRAND_COLOR)
+        .setTitle("📚 Session history")
+        .setDescription(`👤 ${owner}\n\n${description}`)
+        .setFooter({ text: `Page ${page + 1} of ${pageCount}` })],
+      components,
+    },
+    outcome: {
+      did: `page ${page + 1} of ${ownerName}'s session history`,
+      fields: { sessions: sessions.length },
+    },
   };
 }
 
@@ -158,12 +170,14 @@ export async function replyHistory(
   interaction: HistoryInteraction,
   subject: HistorySubject,
   visibility: HistoryVisibility,
-): Promise<void> {
+): Promise<InteractionOutcome> {
   if (!interaction.deferred && !interaction.replied) {
     await interaction.deferReply(visibility === "private" ? { flags: MessageFlags.Ephemeral } : {});
   }
-  const message = await interaction.editReply(await renderHistory(ctx, interaction, subject, 0));
+  const { response, outcome } = await renderHistory(ctx, interaction, subject, 0);
+  const message = await interaction.editReply(response);
   if (visibility === "public") trackPublic(ctx, message, interaction.user.id);
+  return { ...outcome, did: `sent ${outcome.did}${visibility === "private" ? " privately" : ""}` };
 }
 
 /** Moves the history a button sits on to another page, in place. */
@@ -172,8 +186,10 @@ export async function updateHistoryPage(
   interaction: ButtonInteraction,
   identityId: string,
   page: number,
-): Promise<void> {
+): Promise<InteractionOutcome> {
   await interaction.deferUpdate();
-  const message = await interaction.editReply(await renderHistory(ctx, interaction, { identityId }, page));
+  const { response, outcome } = await renderHistory(ctx, interaction, { identityId }, page);
+  const message = await interaction.editReply(response);
   if (!interaction.message.flags.has(MessageFlags.Ephemeral)) trackPublic(ctx, message, interaction.user.id);
+  return { ...outcome, did: `showed ${outcome.did}` };
 }

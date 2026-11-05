@@ -2,7 +2,7 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { Config } from "./config.js";
 import { errorType } from "./errors.js";
-import { secretMatches } from "./http.js";
+import { describeRequest, secretMatches } from "./http.js";
 import type { Logger } from "./logger.js";
 
 /**
@@ -25,6 +25,11 @@ const CONNECTION_HEADERS = new Set([
 ]);
 
 const FORWARD_TIMEOUT_MS = 15_000;
+
+/** `1 session` / `3 sessions`. */
+function countOf(count: number, noun: string): string {
+  return `${count} ${count === 1 ? noun : `${noun}s`}`;
+}
 const NOTIFY_TIMEOUT_MS = 5_000;
 
 /** The path the bot answers refresh notifications on. */
@@ -85,6 +90,13 @@ export function botInternalRoutes({ config, onSessionsChanged }: BotInternalRout
       }
       const { ids, removedMessages } = sessionsChangedSchema.parse(request.body);
       await onSessionsChanged(ids, removedMessages);
+      // The publisher logs each message it actually posts; this is only the ask.
+      describeRequest(request, {
+        did: removedMessages.length
+          ? `brought ${countOf(ids.length, "session")} up to date and took down ${countOf(removedMessages.length, "message")}`
+          : `brought ${countOf(ids.length, "session")} up to date in Discord`,
+        routine: true,
+      });
       return reply.code(202).send({ status: "accepted" });
     });
   };
@@ -128,6 +140,8 @@ export function gatewayProxy({ config, patterns, log }: GatewayProxyOptions): Fa
         });
         const contentType = response.headers.get("content-type");
         if (contentType) reply.header("content-type", contentType);
+        // The bot logs what the request did; this half only passed it on.
+        describeRequest(request, { did: "forwarded to the bot", routine: true });
         return reply.code(response.status).send(Buffer.from(await response.arrayBuffer()));
       } catch (error) {
         log.error({ category: "http", err: error, errorType: errorType(error) }, `The bot container did not answer ${request.url}`);

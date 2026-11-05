@@ -1,12 +1,11 @@
-import {
-  EmbedBuilder, MessageFlags, type ChatInputCommandInteraction, type Client, type Interaction,
-} from "discord.js";
+import { EmbedBuilder, MessageFlags, type ChatInputCommandInteraction, type Client } from "discord.js";
 import type { Config } from "../../../core/config.js";
 import type { Db } from "../../../core/db.js";
 import { UserFacingError, errorType, userError } from "../../../core/errors.js";
 import { appLogger } from "../../../core/logger.js";
 import { BRAND_COLOR } from "../../../shared/discord/colors.js";
 import type { HelpSection } from "../../../shared/discord/help.js";
+import { InteractionLog, type InteractionOutcome } from "../../../shared/discord/interaction-log.js";
 import { permissionLabel, permissionLevelFor, PermissionLevel } from "../../../shared/permissions.js";
 
 /**
@@ -23,32 +22,34 @@ export class HelpCommandHandler {
   ) {}
 
   register(): void {
-    this.client.on("interactionCreate", (interaction) => void this.handle(interaction).catch(async (error: unknown) => {
-      const message = error instanceof UserFacingError ? error.message : "The command list could not be loaded. Please try again later.";
-      if (!(error instanceof UserFacingError)) appLogger().error({ category: "command", err: error, errorType: errorType(error) }, "/help failed");
-      if (!interaction.isRepliable()) return;
-      try {
-        if (interaction.deferred && !interaction.replied) await interaction.editReply({ content: `Error: ${message}` });
-        else await interaction.reply({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
-      } catch (replyError) {
-        appLogger().error({ category: "command", err: replyError, errorType: errorType(replyError) }, "Could not tell the user /help failed");
-      }
-    }));
+    this.client.on("interactionCreate", (interaction) => {
+      if (!interaction.isChatInputCommand() || interaction.commandName !== "help") return;
+      const trace = new InteractionLog(interaction, appLogger().child({ category: "command" }));
+      void this.handle(interaction).then((outcome) => trace.done(outcome), async (error: unknown) => {
+        trace.failed(error);
+        const message = error instanceof UserFacingError ? error.message : "The command list could not be loaded. Please try again later.";
+        try {
+          if (interaction.deferred && !interaction.replied) await interaction.editReply({ content: `Error: ${message}` });
+          else await interaction.reply({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral });
+        } catch (replyError) {
+          appLogger().error({ category: "command", err: replyError, errorType: errorType(replyError) }, "Could not tell the user /help failed");
+        }
+      });
+    });
   }
 
-  private async handle(interaction: Interaction): Promise<void> {
-    if (!interaction.isChatInputCommand() || interaction.commandName !== "help") return;
+  private async handle(interaction: ChatInputCommandInteraction): Promise<InteractionOutcome> {
     if (this.config.DISCORD_GUILD_ID && interaction.guildId !== this.config.DISCORD_GUILD_ID) {
       userError("This command is not available in this server");
     }
-    await this.reply(interaction);
-  }
-
-  private async reply(interaction: ChatInputCommandInteraction): Promise<void> {
     // The list is the same for everyone, so it is answered in the channel.
     await interaction.deferReply();
     const level = await permissionLevelFor(this.db, interaction);
     await interaction.editReply({ embeds: [helpEmbed(this.sections, level)] });
+    return {
+      did: "sent the command list",
+      fields: { access: level === PermissionLevel.EVERYONE ? "Everyone" : permissionLabel(level) },
+    };
   }
 }
 

@@ -1,10 +1,12 @@
 import { timingSafeEqual } from "node:crypto";
 import rateLimit from "@fastify/rate-limit";
-import Fastify, { LogController, type FastifyBaseLogger, type FastifyInstance, type FastifyReply } from "fastify";
+import Fastify, {
+  LogController, type FastifyBaseLogger, type FastifyInstance, type FastifyReply, type FastifyRequest,
+} from "fastify";
 import { ZodError } from "zod";
 import type { Config } from "./config.js";
 import { errorType } from "./errors.js";
-import { createAppLogger, type Logger } from "./logger.js";
+import { createAppLogger, type LogFields, type Logger } from "./logger.js";
 
 export type Readiness = () => Promise<void>;
 
@@ -13,6 +15,30 @@ const PROBE_PATHS = new Set(["/health", "/ready"]);
 
 /** A request slower than this is worth reading about even if it succeeded. */
 const SLOW_REQUEST_MS = 1000;
+
+/**
+ * What a route did with a request, for the one line that request is logged as.
+ * Without it the line can only say `POST /path → 202`, which tells a reader
+ * that something answered but not what it read, wrote, or sent.
+ */
+export type RequestOutcome = {
+  /** A short sentence, lower case: `0 active blocks`, `3 heartbeats, nothing changed`. */
+  did: string;
+  /**
+   * Traffic a game server sends on a timer — heartbeats, polls, rosters. It is
+   * logged at `debug`, so the default output is not one line every few seconds
+   * per server. A failure or a slow answer is still logged at its own level.
+   */
+  routine?: boolean;
+  fields?: LogFields;
+};
+
+const outcomes = new WeakMap<FastifyRequest, RequestOutcome>();
+
+/** Says what this request did. The last description given wins. */
+export function describeRequest(request: FastifyRequest, outcome: RequestOutcome): void {
+  outcomes.set(request, outcome);
+}
 
 /** Constant-time comparison of a `Bearer <secret>` header against a shared secret. */
 export function secretMatches(header: string | undefined, expected: string): boolean {
@@ -57,9 +83,14 @@ export async function buildHttpServer(
     const durationMs = reply.elapsedTime;
     const path = request.url.split("?")[0] ?? request.url;
     const healthy = reply.statusCode < 400;
-    if (PROBE_PATHS.has(path) && healthy && durationMs < SLOW_REQUEST_MS) return;
-    const level = reply.statusCode >= 500 ? "error" : reply.statusCode >= 400 ? "warn" : "info";
-    log[level]({ category: "http", durationMs }, `${request.method} ${path} → ${reply.statusCode}`);
+    const slow = durationMs >= SLOW_REQUEST_MS;
+    if (PROBE_PATHS.has(path) && healthy && !slow) return;
+    const outcome = outcomes.get(request);
+    const level = reply.statusCode >= 500 ? "error"
+      : reply.statusCode >= 400 ? "warn"
+        : outcome?.routine && !slow ? "debug" : "info";
+    const line = `${request.method} ${path} → ${reply.statusCode}`;
+    log[level]({ category: "http", ...outcome?.fields, durationMs }, outcome ? `${line}: ${outcome.did}` : line);
   });
 
   app.get("/health", async () => ({ status: "ok" }));

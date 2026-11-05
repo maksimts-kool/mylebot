@@ -1,6 +1,8 @@
 import { AttachmentBuilder, EmbedBuilder, MessageFlags, type ChatInputCommandInteraction, type User } from "discord.js";
 import { userError } from "../../../../core/errors.js";
+import { formatDuration } from "../../../../core/logger.js";
 import { BRAND_COLOR } from "../../../../shared/discord/colors.js";
+import type { InteractionOutcome } from "../../../../shared/discord/interaction-log.js";
 import { profileStats } from "../../domain/profile.js";
 import { renderProfileCard } from "../profile-card.js";
 import { badgeGuide, profileCardModel } from "../profile-view.js";
@@ -17,7 +19,7 @@ async function resolveMember(ctx: SessionCommandContext, user: User, isSelf: boo
   return { robloxUserId: mapped.userId, robloxUsername: tracked?.robloxUsername ?? mapped.username, identity: tracked };
 }
 
-export async function showProfile(ctx: SessionCommandContext, interaction: ChatInputCommandInteraction): Promise<void> {
+export async function showProfile(ctx: SessionCommandContext, interaction: ChatInputCommandInteraction): Promise<InteractionOutcome> {
   const user = interaction.options.getUser("user") ?? interaction.user;
   const isSelf = user.id === interaction.user.id;
   await interaction.deferReply();
@@ -38,20 +40,30 @@ export async function showProfile(ctx: SessionCommandContext, interaction: ChatI
     : [];
   const latest = sessions[0];
   const avatar = await robloxHeadshot(member.robloxUserId);
+  const stats = profileStats(sessions, now, ctx.config.REPORT_TIMEZONE);
   const card = await renderProfileCard(profileCardModel({
     robloxUsername: member.robloxUsername,
     rank: latest ? { name: latest.rankName, number: latest.rankNumber } : null,
     avatar,
-    stats: profileStats(sessions, now, ctx.config.REPORT_TIMEZONE),
+    stats,
     standing,
     now,
     timezone: ctx.config.REPORT_TIMEZONE,
   }));
   const name = `profile-${member.robloxUsername.toLowerCase().replace(/[^a-z0-9_]/g, "")}.png`;
   await interaction.editReply({ files: [new AttachmentBuilder(card, { name })] });
+  return {
+    did: `sent the profile card for ${member.robloxUsername}`,
+    fields: {
+      shifts: stats?.shifts ?? 0,
+      pastYear: formatDuration(stats?.yearMs ?? 0),
+      badges: standing.awards.length,
+      avatar: avatar ? undefined : "missing",
+    },
+  };
 }
 
-export async function showBadgeGuide(ctx: SessionCommandContext, interaction: ChatInputCommandInteraction): Promise<void> {
+export async function showBadgeGuide(ctx: SessionCommandContext, interaction: ChatInputCommandInteraction): Promise<InteractionOutcome> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const now = new Date();
   const identity = await ctx.db.identity.findFirst({ where: { discordUserId: interaction.user.id } })
@@ -73,4 +85,8 @@ export async function showBadgeGuide(ctx: SessionCommandContext, interaction: Ch
       .addFields(guide.fields)
       .setFooter({ text: guide.footer })],
   });
+  return {
+    did: identity ? `sent the badge guide with ${identity.robloxUsername}'s progress` : "sent the badge guide",
+    fields: { badges: standing?.awards.length },
+  };
 }

@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import type { Config } from "../../../core/config.js";
 import { errorType } from "../../../core/errors.js";
+import { describeRequest } from "../../../core/http.js";
 import { taigaWebhookSchema, verifyTaigaSignature, webhookFingerprint, type TaigaWebhookPayload } from "../domain/webhook.js";
 
 export type TaigaDelivery = (payload: TaigaWebhookPayload, fingerprint: string) => Promise<boolean>;
@@ -23,6 +24,7 @@ export function taigaRoutes({ config, onDelivery }: TaigaRouteOptions): FastifyP
       const rawBody = typeof request.body === "string" ? request.body : "";
       const signature = request.headers["x-taiga-webhook-signature"];
       if (!verifyTaigaSignature(rawBody, typeof signature === "string" ? signature : undefined, config.TAIGA_WEBHOOK_SECRET)) {
+        describeRequest(request, { did: "signature did not match" });
         return reply.code(401).send({ error: "invalid_signature" });
       }
 
@@ -37,6 +39,11 @@ export function taigaRoutes({ config, onDelivery }: TaigaRouteOptions): FastifyP
 
       try {
         const applied = await onDelivery(result.data, webhookFingerprint(rawBody));
+        // A card that actually moved is logged by the sync with its name.
+        describeRequest(request, {
+          did: applied ? `applied a ${result.data.type} ${result.data.action}` : `${result.data.type} ${result.data.action} already applied`,
+          routine: true,
+        });
         return reply.code(202).send({ status: applied ? "accepted" : "duplicate" });
       } catch (error) {
         // Answer 202 anyway: a retry carries the same body and is deduplicated,

@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { loadConfig } from "../../src/core/config.js";
 import { buildHttpServer } from "../../src/core/http.js";
-import { commandBlockRoutes, commandRunRoutes } from "../../src/features/command-logs/api/routes.js";
+import { createLogger } from "../../src/core/logger.js";
+import { commandBlockRoutes, commandRunRoutes, summarizeCommandBatch } from "../../src/features/command-logs/api/routes.js";
 import type { CommandLogService } from "../../src/features/command-logs/service/command-log-service.js";
 
 const config = loadConfig({
@@ -33,12 +34,17 @@ const validEvent = {
 const apps: FastifyInstance[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
 
+/** Every line the server logged, parsed from the JSON format. */
+let logged: Array<{ level: string; msg: string }> = [];
+
 async function buildApp(
   service: Partial<CommandLogService>,
   onRecorded = vi.fn(),
   onReported = vi.fn(),
 ): Promise<FastifyInstance> {
-  const app = await buildHttpServer(config);
+  logged = [];
+  const log = createLogger({ service: "server", level: "debug", format: "json", write: (line) => logged.push(JSON.parse(line)) });
+  const app = await buildHttpServer(config, undefined, log);
   await app.register(commandRunRoutes({ config, service: service as CommandLogService, onRecorded, onReported }));
   await app.register(commandBlockRoutes({ config, service: service as CommandLogService }));
   apps.push(app);
@@ -129,7 +135,7 @@ describe("server rosters", () => {
     const response = await app.inject({
       method: "POST", url: "/v1/roblox/commands/roster", headers: authorized, payload: roster,
     });
-    // The plugin keeps reporting either way; telling it off is the bot's job.
+    // "ignored" is what tells the plugin to stop reporting until its next logged run.
     expect(response.json()).toEqual({ status: "ignored" });
     expect(onReported).not.toHaveBeenCalled();
   });
@@ -162,5 +168,23 @@ describe("the block list the plugin polls", () => {
     expect(response.json()).toEqual({
       blocks: [{ userId: "999999999999999999", username: "MaksimTs", expiresAt: expiresAt.toISOString() }],
     });
+  });
+
+  it("keeps the poll out of the default log, since every server sends it every few seconds", async () => {
+    const app = await buildApp({ activeBlocks: vi.fn().mockResolvedValue([]) });
+    await app.inject({ method: "GET", url: "/v1/roblox/command-blocks", headers: authorized });
+    expect(logged.find(({ msg }) => msg.startsWith("GET /v1/roblox/command-blocks"))).toMatchObject({
+      level: "debug", msg: "GET /v1/roblox/command-blocks → 200: no active command blocks",
+    });
+  });
+});
+
+describe("command batch summaries", () => {
+  it("says how many runs were stored and why the rest were not", () => {
+    expect(summarizeCommandBatch([{ status: "recorded" }])).toBe("stored 1 command run");
+    expect(summarizeCommandBatch([
+      { status: "recorded" }, { status: "duplicate" },
+      { status: "skipped", reason: "quiet_command" }, { status: "skipped", reason: "quiet_command" },
+    ])).toBe("stored 1 command run; 1 already stored; 2 skipped (quiet_command)");
   });
 });

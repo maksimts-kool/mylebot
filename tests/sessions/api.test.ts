@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { loadConfig } from "../../src/core/config.js";
 import { buildHttpServer, type Readiness } from "../../src/core/http.js";
+import { createLogger } from "../../src/core/logger.js";
 import { sessionRoutes, type SessionsChanged } from "../../src/features/sessions/api/routes.js";
+import { summarizePresenceBatch } from "../../src/features/sessions/domain/events.js";
 import type { SessionService } from "../../src/features/sessions/service/session-service.js";
 
 const config = loadConfig({
@@ -22,11 +24,20 @@ const validEvent = {
 const apps: FastifyInstance[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
 
+/** Every line the server logged, parsed from the JSON format. */
+let logged: Array<{ level: string; msg: string } & Record<string, unknown>> = [];
+
 async function buildApp(sessions: SessionService, onChanged: SessionsChanged, readiness?: Readiness): Promise<FastifyInstance> {
-  const app = await buildHttpServer(config, readiness);
+  logged = [];
+  const log = createLogger({ service: "server", level: "debug", format: "json", write: (line) => logged.push(JSON.parse(line)) });
+  const app = await buildHttpServer(config, readiness, log);
   await app.register(sessionRoutes({ config, sessions, onChanged }));
   apps.push(app);
   return app;
+}
+
+function requestLine(path: string) {
+  return logged.find((line) => line.category === "http" && line.msg.includes(path));
 }
 
 describe("ingestion API", () => {
@@ -49,14 +60,31 @@ describe("ingestion API", () => {
   it("accepts an authenticated event and reports changed sessions", async () => {
     const process = vi.fn().mockResolvedValue({ eventId: validEvent.eventId, status: "accepted", sessionId: "session-1", changed: true });
     const changed = vi.fn(); const app = await buildApp({ process } as never, changed);
-    // The batch itself is routine traffic, so it only reaches the log at debug.
-    const debug = vi.spyOn(app.log, "debug");
     const response = await app.inject({ method: "POST", url: "/v1/roblox/presence/batch", headers: { authorization: `Bearer ${config.ROBLOX_INGESTION_SECRET}` }, payload: { events: [validEvent] } });
     expect(response.statusCode).toBe(202); expect(process).toHaveBeenCalledOnce(); expect(changed).toHaveBeenCalledWith(["session-1"]);
-    expect(debug).toHaveBeenCalledWith({ category: "session", events: 1, changed: 1 }, "Presence batch accepted");
-    const completion = debug.mock.calls.find(([, message]) => message === "Presence batch accepted");
-    expect(JSON.stringify(completion)).not.toContain(config.ROBLOX_INGESTION_SECRET);
-    expect(JSON.stringify(completion)).not.toContain(validEvent.player.userId);
+    // A batch that changed a shift says so at the default level.
+    const line = requestLine("/v1/roblox/presence/batch");
+    expect(line).toMatchObject({ level: "info", msg: "POST /v1/roblox/presence/batch → 202: 1 join; 1 shift changed" });
+    expect(JSON.stringify(logged)).not.toContain(config.ROBLOX_INGESTION_SECRET);
+    expect(JSON.stringify(logged)).not.toContain(validEvent.player.userId);
+  });
+
+  it("keeps a batch that changed nothing out of the default log", async () => {
+    const process = vi.fn().mockResolvedValue({ eventId: validEvent.eventId, status: "accepted", sessionId: "session-1", changed: false });
+    const app = await buildApp({ process } as never, vi.fn());
+    const heartbeat = { ...validEvent, kind: "HEARTBEAT" };
+    await app.inject({ method: "POST", url: "/v1/roblox/presence/batch", headers: { authorization: `Bearer ${config.ROBLOX_INGESTION_SECRET}` }, payload: { events: [heartbeat] } });
+    expect(requestLine("/v1/roblox/presence/batch")).toMatchObject({
+      level: "debug", msg: "POST /v1/roblox/presence/batch → 202: 1 heartbeat; nothing changed",
+    });
+  });
+
+  it("says why a request was turned away", async () => {
+    const app = await buildApp({ process: vi.fn() } as never, vi.fn());
+    await app.inject({ method: "POST", url: "/v1/roblox/presence/batch", payload: { events: [validEvent] } });
+    expect(requestLine("/v1/roblox/presence/batch")).toMatchObject({
+      level: "warn", msg: "POST /v1/roblox/presence/batch → 401: wrong ingestion secret",
+    });
   });
 
   it("passes low-rank Discord messages to the publisher for deletion", async () => {
@@ -95,5 +123,24 @@ describe("ingestion API", () => {
     });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: "invalid_payload" });
+  });
+});
+
+describe("presence batch summaries", () => {
+  it("counts each kind of event and the shifts that changed", () => {
+    expect(summarizePresenceBatch(["HEARTBEAT", "JOIN", "HEARTBEAT"], ["accepted", "accepted", "accepted"], 1)).toEqual({
+      did: "1 join, 2 heartbeats; 1 shift changed", routine: false,
+    });
+  });
+
+  it("treats a batch that changed nothing as routine, and notes what was skipped", () => {
+    expect(summarizePresenceBatch(["HEARTBEAT", "HEARTBEAT"], ["accepted", "duplicate"], 0)).toEqual({
+      did: "2 heartbeats; nothing changed; 1 already applied", routine: true,
+    });
+    expect(summarizePresenceBatch(["HEARTBEAT"], ["tracking_disabled"], 0).did).toBe("1 heartbeat; nothing changed; 1 ignored because tracking is off");
+  });
+
+  it("never treats a low-rank purge as routine", () => {
+    expect(summarizePresenceBatch(["HEARTBEAT"], ["removed_low_rank"], 0).routine).toBe(false);
   });
 });

@@ -13,6 +13,23 @@ export const SESSION_RETENTION_YEARS = 1;
  */
 export const ANNOUNCEMENT_RETENTION_MILLISECONDS = 5 * 60_000;
 
+/**
+ * How far back the bot's startup pass re-renders finished session records.
+ *
+ * A finished record can only be out of date in Discord if its session changed
+ * while the bot could not show it: the API half ended the shift during a bot
+ * outage, or the startup sweep ended it before the gateway was ready. Either
+ * way the row was written then, so its `updatedAt` says so. Re-editing every
+ * record of the past year on each restart bought nothing but a burst of
+ * Discord calls; a bot outage longer than this is what the narrower pass gives up.
+ */
+export const RESTORE_WINDOW_MILLISECONDS = 7 * 24 * 60 * 60_000;
+
+/** Finished sessions changed at or after this instant are re-rendered on startup. */
+export function restoreCutoff(now = new Date()): Date {
+  return new Date(now.getTime() - RESTORE_WINDOW_MILLISECONDS);
+}
+
 /** A session's announcement only counts the shift's own outcome, never a later edit. */
 export type AnnouncementTimingLike = {
   endedAt: Date | null;

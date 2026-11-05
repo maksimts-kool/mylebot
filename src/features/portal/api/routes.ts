@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import type { Config } from "../../../core/config.js";
-import { secretMatches } from "../../../core/http.js";
+import { describeRequest, secretMatches } from "../../../core/http.js";
 
 // Payload for the store-owners site's DM notification endpoint.
 const notifySchema = z.object({
@@ -57,7 +57,11 @@ export function portalRoutes({
         : null;
       const message = input.message.replaceAll("{{uploader}}", uploaderName ?? "A store owner");
       const result = await sendDirectMessage({ ...input, message });
-      if (!result.ok) return reply.code(result.status ?? 502).send({ error: result.error ?? "dm_failed" });
+      if (!result.ok) {
+        describeRequest(request, { did: `could not send the DM (${result.error ?? "dm_failed"})` });
+        return reply.code(result.status ?? 502).send({ error: result.error ?? "dm_failed" });
+      }
+      describeRequest(request, { did: `sent the DM "${input.title}"` });
       return reply.code(200).send({ status: "sent" });
     });
 
@@ -70,6 +74,7 @@ export function portalRoutes({
       }
       const { discordId } = z.object({ discordId: z.string().regex(/^\d{5,25}$/) }).parse(request.params);
       const username = await resolveRobloxUsername(discordId);
+      describeRequest(request, { did: username ? `resolved to ${username}` : "no linked Roblox account", routine: true });
       return reply.code(200).send({ username });
     });
 
@@ -80,7 +85,9 @@ export function portalRoutes({
       if (!secretMatches(request.headers.authorization, config.SITE_NOTIFY_SECRET)) {
         return reply.code(401).send({ error: "invalid_authentication" });
       }
-      return reply.code(200).send({ members: await listVerifiedGuildMembers() });
+      const members = await listVerifiedGuildMembers();
+      describeRequest(request, { did: `listed ${members.length} verified ${members.length === 1 ? "member" : "members"}`, routine: true });
+      return reply.code(200).send({ members });
     });
   };
 }

@@ -297,13 +297,26 @@ return function(Vargs)
 		})
 	end)
 
-	--[[ Who is in the server that can run commands. Players with no Adonis level
-		are not staff, and this is a staff panel. ]]
+	--[[ Whether somebody can run commands. Players with no Adonis level are not
+		staff: they have nothing to block and no place on the panel. ]]
+	local function isStaff(player)
+		local ok, level = pcall(server.Admin.GetLevel, player)
+		return ok and type(level) == "number" and level > 0, level
+	end
+
+	local function hasStaff()
+		for _, player in Players:GetPlayers() do
+			if isStaff(player) then return true end
+		end
+		return false
+	end
+
+	--[[ Who is in the server that can run commands. This is a staff panel. ]]
 	local function currentStaff()
 		local staff = {}
 		for _, player in Players:GetPlayers() do
-			local ok, level = pcall(server.Admin.GetLevel, player)
-			if ok and type(level) == "number" and level > 0 then
+			local staffMember, level = isStaff(player)
+			if staffMember then
 				local rankNumber, rankName = rankOf(player)
 				table.insert(staff, {
 					userId = tostring(player.UserId),
@@ -320,11 +333,16 @@ return function(Vargs)
 	--[[ The panel is a live picture of this server, so it is reported on a timer
 		as well as whenever somebody arrives or leaves. `closed` is this server
 		saying goodbye; without it the bot has to guess from silence. None of it
-		is sent before the first logged command, which is what opens the panel. ]]
+		is sent before the first logged command, which is what opens the panel.
+
+		The bot answers "ignored" once there is no open panel to draw on: it was
+		closed, deleted, or command logs were switched off. Nothing this server
+		reports can change that, so reporting stops until the next logged command
+		run turns it back on. ]]
 	local function reportRoster(closed)
 		if not active then return end
 		local staff = (not closed) and currentStaff() or {}
-		request("/v1/roblox/commands/roster", "POST", {
+		local ok, response = request("/v1/roblox/commands/roster", "POST", {
 			universeId = tostring(game.GameId),
 			placeId = tostring(game.PlaceId),
 			jobId = jobId,
@@ -334,6 +352,9 @@ return function(Vargs)
 			closed = closed and true or false,
 			staff = staff,
 		})
+		if closed or not ok or not response or not response.Success then return end
+		local decoded, body = pcall(HttpService.JSONDecode, HttpService, response.Body)
+		if decoded and type(body) == "table" and body.status == "ignored" then active = false end
 	end
 
 	local rosterQueued = false
@@ -403,11 +424,23 @@ return function(Vargs)
 		return originalCommand(player, message, options, ...)
 	end
 
+	--[[ A block only matters to somebody who can run commands, so a server with
+		no staff in it does not ask. The blocks it last heard about stay in force
+		in the meantime, and a staff member arriving is checked within seconds
+		rather than at the next tick. ]]
 	task.spawn(function()
 		while not closing do
-			pollBlocks()
+			if hasStaff() then pollBlocks() end
 			task.wait(pollSeconds)
 		end
+	end)
+
+	Players.PlayerAdded:Connect(function(player)
+		-- Adonis settles somebody's level a moment after they arrive.
+		task.delay(2, function()
+			if closing or player.Parent ~= Players then return end
+			if isStaff(player) then pollBlocks() end
+		end)
 	end)
 
 	task.spawn(function()

@@ -60,7 +60,8 @@ export function createSessionsFeature(ctx: FeatureContext): Feature {
       if (ids.length) log.info(`Closed ${plural(ids.length, "session")} left open by the last shutdown`);
     },
     onReady: async () => {
-      await publisher.restore();
+      const restored = await publisher.restore();
+      if (restored) log.info(`Brought ${plural(restored, "session")} up to date in Discord after startup`);
     },
     jobs: [
       {

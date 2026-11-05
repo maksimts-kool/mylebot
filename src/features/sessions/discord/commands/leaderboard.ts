@@ -5,6 +5,7 @@ import {
 import { DateTime } from "luxon";
 import type { Config } from "../../../../core/config.js";
 import { BRAND_COLOR } from "../../../../shared/discord/colors.js";
+import type { InteractionOutcome } from "../../../../shared/discord/interaction-log.js";
 import { buildLeaderboard, tallinnDateRange } from "../../domain/reporting.js";
 import type { SessionCommandContext } from "./context.js";
 import { friendlyDuration, friendlyPeriod } from "./format.js";
@@ -77,7 +78,7 @@ export async function renderLeaderboard(
   endDate: string,
   minimum: number,
   page: number,
-): Promise<void> {
+): Promise<InteractionOutcome> {
   const { start, end } = tallinnDateRange(startDate, endDate, ctx.config.REPORT_TIMEZONE);
   const identities = await ctx.db.identity.findMany({ include: { sessions: { where: { deletedAt: null, startedAt: { lt: end }, OR: [{ endedAt: null }, { endedAt: { gt: start } }] }, include: { segments: true } } } });
   const rows = buildLeaderboard(identities.map((identity) => ({
@@ -118,4 +119,8 @@ export async function renderLeaderboard(
       await message.edit({ components: expiredComponents });
     });
   }
+  return {
+    did: `${interaction.isButton() ? "showed" : "sent"} page ${page + 1} of the leaderboard for ${period}`,
+    fields: { ranked: rows.length },
+  };
 }
