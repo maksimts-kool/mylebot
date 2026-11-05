@@ -4,6 +4,10 @@ All notable changes are recorded here.
 
 ## Unreleased
 
+_Nothing yet._
+
+## 0.16.2 - 2026-11-05
+
 - Made every log line say what the bot actually did. A slash command, button, menu or form now leaves one line when it finishes, naming what was asked and what came of it — `/profile → sent the profile card for zdenek99000  shifts=42 pastYear=31h12m badges=4  1.3s` instead of a bare `/profile` — including the options it was run with. When the bot says no, the line gives the reason the person was shown (`/session active → refused: You have no active session right now`), and a failure carries its error. `/config` changes name the page and what was chosen, and the command-access menus on server panels say whose access moved.
 - Logged the Discord messages the bot sends: posting a session record or shift announcement, updating an announcement when the shift ends, reposting one somebody deleted, posting a command run to its server's thread, and closing a server panel. The edits a live session gets every minute stay at `debug`.
 - Made every HTTP request line say what the endpoint did with it — `1 join; 1 shift changed`, `stored 1 command run`, `no active command blocks`, `wrong ingestion secret`. The traffic game servers send on a timer — heartbeats that changed nothing, rosters, the command-block poll, and requests the API half only forwards to the bot — is now logged at `debug`, so the default output is no longer a line every few seconds per server.
